@@ -41,4 +41,8 @@ jobs:
         run: |
           # Dashboard HTTP 200 confirms tetragon-dashboard.py restarted cleanly
           # with the new symlinks in place and WEBHOOK_SECRET still loaded.
-          curl -sS -o /dev/null -w "Dashboard HTTP %{http_code}\n" http://127.0.0.1:8080/
+          # --retry handles the brief window after launchctl kickstart before
+          # the service has rebound port 8080.
+          curl -sS --retry 10 --retry-all-errors --retry-delay 2 \
+            -o /dev/null -w "Dashboard HTTP %{http_code}\n" \
+            http://127.0.0.1:8080/
