@@ -1939,7 +1939,11 @@ a{{color:#0a6aba}}
                 self.end_headers()
         elif self.path == '/logo.png':
             try:
-                with open('/usr/local/share/tetragon-dashboard/logo.png', 'rb') as lf:
+                # Resolve logo relative to this script so it works from any install layout.
+                # Follows symlinks (deploy.sh installs bin/ scripts as symlinks into the repo).
+                _script = os.path.realpath(__file__)
+                _logo_path = os.path.join(os.path.dirname(os.path.dirname(_script)), 'assets', 'logo.png')
+                with open(_logo_path, 'rb') as lf:
                     data = lf.read()
                 self.send_response(200)
                 self.send_header('Content-Type', 'image/png')
