@@ -26,16 +26,22 @@ echo "==> Syncing scripts into $BIN_TARGET (via symlinks)"
 for f in "$REPO_DIR"/bin/*; do
     name=$(basename "$f")
     target="$BIN_TARGET/$name"
-    if [ -L "$target" ] || [ ! -e "$target" ] || ! diff -q "$f" "$target" >/dev/null 2>&1; then
+    current=$(readlink "$target" 2>/dev/null || true)
+    if [ "$current" != "$f" ]; then
         sudo -u aetherclaude ln -sfn "$f" "$target"
         echo "   linked $name"
     fi
 done
 
-echo "==> Syncing skills into $SKILLS_TARGET"
+echo "==> Syncing skills into $SKILLS_TARGET (via symlinks)"
 for f in "$REPO_DIR"/skills/*.md; do
     name=$(basename "$f")
-    sudo -u aetherclaude ln -sfn "$f" "$SKILLS_TARGET/$name"
+    target="$SKILLS_TARGET/$name"
+    current=$(readlink "$target" 2>/dev/null || true)
+    if [ "$current" != "$f" ]; then
+        sudo -u aetherclaude ln -sfn "$f" "$target"
+        echo "   linked $name"
+    fi
 done
 
 echo "==> Syncing pf anchor"
