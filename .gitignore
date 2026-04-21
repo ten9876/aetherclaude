@@ -1,0 +1,37 @@
+# Secrets — never commit
+.env
+*.pem
+*.key
+.credentials.json
+hosts.yml
+gh-hosts.yml
+device.key
+*-credentials.json
+6c4cfcc1-*.json
+
+# Runtime state / data / logs
+state/
+data/
+logs/
+audit.db
+audit.db-journal
+audit.db-wal
+audit.db-shm
+*.sqlite
+*.sqlite-journal
+last-poll.json
+.last-scrub
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Backups created in-place
+*.bak
+*.bak-*
+*.pre-db-bak

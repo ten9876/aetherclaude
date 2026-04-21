@@ -1,0 +1,9 @@
+tunnel: 6c4cfcc1-f51d-4843-bd19-b1895c6d335b
+credentials-file: /Users/aetherclaude/.cloudflared/6c4cfcc1-f51d-4843-bd19-b1895c6d335b.json
+
+ingress:
+  - hostname: dashboard.aethersdr.com
+    service: http://localhost:8080
+  - hostname: ssh.aethersdr.com
+    service: ssh://localhost:22
+  - service: http_status:404

@@ -1,0 +1,34 @@
+# AetherClaude firewall rules — matches whitepaper Ring 1
+
+# Allow agent to reach localhost (proxy, MCP server, dashboard)
+pass out quick proto tcp from any to 127.0.0.1 user 965
+
+# Allow DNS (Cloudflare, Google, Quad9, router)
+pass out quick proto udp from any to { 1.1.1.1 8.8.8.8 9.9.9.9 192.168.50.1 } port 53 user 965
+
+# GitHub (140.82.112.0/20, 143.55.64.0/20, 185.199.108.0/22, 192.30.252.0/22)
+pass out quick proto tcp from any to { 140.82.112.0/20 143.55.64.0/20 185.199.108.0/22 192.30.252.0/22 } port 443 user 965
+
+# Anthropic (160.79.104.0/24) — api.anthropic.com, claude.ai
+pass out quick proto tcp from any to 160.79.104.0/24 port 443 user 965
+
+# Anthropic telemetry — statsig (34.36.57.0/24), sentry (35.186.247.0/24)
+pass out quick proto tcp from any to { 34.36.57.0/24 35.186.247.0/24 } port 443 user 965
+
+# Claude OAuth login (AWS Cognito — dynamic IPs)
+pass out quick proto tcp from any to <anthropic_auth> port 443 user 965
+
+# Cloudflare tunnel (QUIC + TCP)
+pass out quick proto udp from any to { 198.41.192.0/21 198.41.200.0/21 } user 965
+pass out quick proto tcp from any to { 198.41.192.0/21 198.41.200.0/21 } port 443 user 965
+
+# Allow established connection responses (dashboard, cloudflared)
+pass out quick proto tcp all user 965 flags A/A
+
+# Block everything else from agent
+block out log proto tcp from any user 965 flags S/SA
+block out log proto udp from any user 965
+
+# Inbound: dashboard from anywhere, SSH from LAN
+pass in quick proto tcp from any to any port 8080
+pass in quick proto tcp from { 192.168.50.0/24 127.0.0.1 } to any port 22

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aetherclaude.dashboard</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/python3</string>
+        <string>/Users/aetherclaude/bin/tetragon-dashboard.py</string>
+        <string>--port</string>
+        <string>8080</string>
+        <string>--bind</string>
+        <string>0.0.0.0</string>
+    </array>
+    <key>UserName</key>
+    <string>aetherclaude</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/aetherclaude/logs/dashboard.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/aetherclaude/logs/dashboard-error.log</string>
+</dict>
+</plist>

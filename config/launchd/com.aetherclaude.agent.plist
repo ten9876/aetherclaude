@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aetherclaude.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/bash</string>
+        <string>/Users/aetherclaude/bin/run-agent.sh</string>
+    </array>
+    <key>UserName</key>
+    <string>aetherclaude</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/aetherclaude/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin</string>
+        <key>HOME</key>
+        <string>/Users/aetherclaude</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/aetherclaude/logs/agent-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/aetherclaude/logs/agent-stderr.log</string>
+    <key>TimeOut</key>
+    <integer>1800</integer>
+</dict>
+</plist>
