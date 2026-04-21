@@ -1,0 +1,44 @@
+name: Deploy to Mac Mini
+
+# Triggers a redeploy on every push to main.
+# Runs on a self-hosted runner on the Mac Mini — no inbound ports are
+# exposed. The runner long-polls GitHub for jobs over HTTPS outbound.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # allow manual trigger from GitHub UI
+
+# Prevent concurrent deploys from stomping on each other
+concurrency:
+  group: deploy-mac-mini
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Restrict to our specific self-hosted runner via labels.
+    # The runner is registered with labels: self-hosted, macos, aethersdr-mac
+    runs-on: [self-hosted, macOS, aethersdr-mac]
+
+    # Extra guard: only run on exact main branch refs, not tags or other refs
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Show context
+        run: |
+          echo "Commit: ${{ github.sha }}"
+          echo "Actor:  ${{ github.actor }}"
+          echo "Event:  ${{ github.event_name }}"
+
+      - name: Pull and deploy
+        run: |
+          # Canonical repo lives at /Users/Shared/aetherclaude (owned by ghrunner).
+          # deploy.sh is invoked via sudoers NOPASSWD — it's the ONLY command
+          # ghrunner is allowed to run as root on this host.
+          sudo /Users/Shared/aetherclaude/scripts/deploy.sh
+
+      - name: Report health
+        run: |
+          # Dashboard HTTP 200 confirms tetragon-dashboard.py restarted cleanly
+          # with the new symlinks in place and WEBHOOK_SECRET still loaded.
+          curl -sS -o /dev/null -w "Dashboard HTTP %{http_code}\n" http://127.0.0.1:8080/
