@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aetherclaude.ghrunner</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ghrunner/actions-runner/run.sh</string>
+    </array>
+    <key>UserName</key>
+    <string>ghrunner</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/ghrunner/actions-runner</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/ghrunner</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/ghrunner/ghrunner.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ghrunner/ghrunner-error.log</string>
+</dict>
+</plist>
