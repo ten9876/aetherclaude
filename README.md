@@ -48,18 +48,6 @@ scripts/
   deploy.sh      pull + restart on the Mac Mini
 ```
 
-## Secrets
-
-Nothing secret lives in this repo. All credentials stay on the host:
-
-| Secret | Location |
-|---|---|
-| GitHub App RSA private key | `~/.github-app-key.pem` |
-| Anthropic OAuth credentials | `~/.claude/.credentials.json` |
-| Cloudflare tunnel credentials | `~/.cloudflared/*.json` |
-| DefenseClaw device key | `~/.defenseclaw/device.key` |
-| `GITHUB_APP_ID`, `WEBHOOK_SECRET` | `~/.env` (mode 600) |
-
 Copy `.env.example` to `~/.env` and fill in the two values to bootstrap.
 
 ## Deploying
