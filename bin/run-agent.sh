@@ -1077,12 +1077,22 @@ ${rejected_pr_comments:-No comments}"
                 break
             fi
 
-            # ORCHESTRATOR: Push to fork (from worktree)
-            # Credential helper provides AetherClaude token automatically
-            log "Pushing branch ${branch} to fork"
-            if ! git -C "$WORKTREE" push origin "$branch" 2>&1; then
-                log "ERROR: git push failed for issue #${number}"
-                record_action "$number" "push_failed" "failed" "failure" "git push origin ${branch} failed"
+            # ORCHESTRATOR: Push to remote as a SIGNED commit
+            # Use createCommitOnBranch GraphQL — commits made via the GitHub
+            # API on behalf of a GitHub App are auto-signed with GitHub's key,
+            # so the resulting commit shows verified status. Replaces the
+            # plain `git push` (which would push unsigned local commits).
+            local commit_msg
+            commit_msg=$(git -C "$WORKTREE" log -1 --format=%B 2>/dev/null || echo "Fix issue #${number}")
+            log "Pushing branch ${branch} as signed commit via API"
+            local commit_result
+            commit_result=$(/opt/homebrew/bin/node /Users/aetherclaude/bin/commit-signed.js \
+                "$branch" "$commit_msg" "$WORKTREE" 2>&1)
+            if echo "$commit_result" | jq -e '.error' >/dev/null 2>&1; then
+                local err
+                err=$(echo "$commit_result" | jq -r '.error')
+                log "ERROR: signed commit failed for issue #${number}: ${err}"
+                record_action "$number" "push_failed" "failed" "failure" "commit-signed.js: ${err}"
                 set_state "issue_${number}_state" "failed"
                 remove_label "$number" "claude-active" "$token"
                 cd "$WORKSPACE"
@@ -1091,6 +1101,9 @@ ${rejected_pr_comments:-No comments}"
                 processed=$((processed + 1))
                 break
             fi
+            local signed_sha
+            signed_sha=$(echo "$commit_result" | jq -r '.sha')
+            log "Signed commit ${signed_sha:0:7} pushed to ${branch}"
 
             # ORCHESTRATOR: Create PR
             log "Creating PR for issue #${number}"
