@@ -114,7 +114,30 @@ async function main() {
                 base: 'main',
                 draft: true
             }, tok.token, false);
-            console.log(JSON.stringify({number: pr.number, url: pr.html_url}));
+
+            // Enable GitHub's native auto-merge so the PR squash-merges itself
+            // once it leaves draft, gets approved, and CI passes. Best-effort —
+            // if the repo doesn't permit auto-merge or required checks aren't
+            // configured, log and continue (PR creation still succeeded).
+            const autoMergeMutation =
+                'mutation($id: ID!) { ' +
+                '  enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: SQUASH}) { ' +
+                '    pullRequest { autoMergeRequest { enabledAt } } ' +
+                '  } ' +
+                '}';
+            let autoMergeStatus = 'enabled';
+            try {
+                const gql = await apiCall('POST', '/graphql',
+                    {query: autoMergeMutation, variables: {id: pr.node_id}},
+                    tok.token, false);
+                if (gql.errors && gql.errors.length) {
+                    autoMergeStatus = 'failed: ' + gql.errors.map(e => e.message).join('; ');
+                }
+            } catch(e) {
+                autoMergeStatus = 'failed: ' + e.message;
+            }
+
+            console.log(JSON.stringify({number: pr.number, url: pr.html_url, autoMerge: autoMergeStatus}));
             return;
         } catch(e) {
             lastError = e.message;
