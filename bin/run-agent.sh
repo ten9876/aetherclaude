@@ -485,87 +485,6 @@ skill_review_prs() {
 }
 
 # =====================================================================
-# SKILL: Auto-merge approved PRs
-#
-# Squash-merges any open PR that meets ALL of:
-#   - has at least one APPROVED review
-#   - no outstanding CHANGES_REQUESTED reviews
-#   - all CI checks complete and passing (no failures, no pending)
-#   - GitHub reports mergeable + clean state (no conflicts, no protection block)
-#
-# Branch protection rules (signed commits, required status checks, etc.) are
-# enforced on the GitHub side — this skill does not bypass them; it just
-# automates the click of the merge button once the rules are satisfied.
-# =====================================================================
-skill_auto_merge_approved_prs() {
-    log "--- Skill: Auto-merge approved PRs ---"
-    local token="$1"
-
-    local prs
-    prs=$(github_api GET "/repos/${REPO}/pulls?state=open&per_page=20" "$token")
-
-    echo "$prs" | jq -c '.[]' | while read -r pr; do
-        local pr_number pr_title pr_draft head_sha
-        pr_number=$(echo "$pr" | jq -r '.number')
-        pr_title=$(echo "$pr" | jq -r '.title')
-        pr_draft=$(echo "$pr" | jq -r '.draft')
-        head_sha=$(echo "$pr" | jq -r '.head.sha')
-
-        [ "$pr_draft" = "true" ] && continue
-
-        # Latest review state per reviewer (newer reviews supersede older ones).
-        local reviews
-        reviews=$(github_api GET "/repos/${REPO}/pulls/${pr_number}/reviews" "$token")
-        local approved changes_requested
-        approved=$(echo "$reviews" | jq '
-            [group_by(.user.login)[] | sort_by(.submitted_at) | last]
-            | any(.state == "APPROVED")')
-        changes_requested=$(echo "$reviews" | jq '
-            [group_by(.user.login)[] | sort_by(.submitted_at) | last]
-            | any(.state == "CHANGES_REQUESTED")')
-        [ "$approved" != "true" ] && continue
-        [ "$changes_requested" = "true" ] && {
-            log "PR #${pr_number} — outstanding change requests, skipping"
-            continue
-        }
-
-        # CI must be entirely complete and passing.
-        local ci_status
-        ci_status=$(github_api GET "/repos/${REPO}/commits/${head_sha}/check-runs" "$token" | jq -r '
-            if .total_count == 0 then "none"
-            elif [.check_runs[].status] | all(. == "completed") | not then "pending"
-            elif [.check_runs[].conclusion] | any(. == "failure") then "failed"
-            else "passed" end')
-        if [ "$ci_status" != "passed" ]; then
-            log "PR #${pr_number} — CI ${ci_status}, deferring auto-merge"
-            continue
-        fi
-
-        # GitHub computes mergeability asynchronously; re-fetch to force calc.
-        local pr_detail mergeable mergeable_state
-        pr_detail=$(github_api GET "/repos/${REPO}/pulls/${pr_number}" "$token")
-        mergeable=$(echo "$pr_detail" | jq -r '.mergeable')
-        mergeable_state=$(echo "$pr_detail" | jq -r '.mergeable_state')
-        if [ "$mergeable" != "true" ] || [ "$mergeable_state" != "clean" ]; then
-            log "PR #${pr_number} — mergeable=${mergeable} state=${mergeable_state}, skipping"
-            continue
-        fi
-
-        log "Auto-merging PR #${pr_number}: ${pr_title}"
-        local merge_body
-        merge_body=$(jq -nc --arg t "${pr_title} (#${pr_number})" \
-            '{commit_title: $t, merge_method: "squash"}')
-        if github_api_body PUT "/repos/${REPO}/pulls/${pr_number}/merge" "$token" "$merge_body" > /dev/null 2>&1; then
-            log "PR #${pr_number} merged"
-            record_action "$pr_number" "auto_merge" "merged" "success" "approved + CI green"
-        else
-            log "PR #${pr_number} — merge API call failed"
-            record_action "$pr_number" "auto_merge" "merged" "failure" "GitHub API rejected merge"
-        fi
-    done
-}
-
-# =====================================================================
 # SKILL: CI Failure Explainer
 # =====================================================================
 skill_explain_ci_failures() {
@@ -1417,7 +1336,6 @@ skill_check_bug_reports "$APP_TOKEN"
 skill_process_issues "$APP_TOKEN"
 skill_explain_ci_failures "$APP_TOKEN"
 skill_review_prs "$APP_TOKEN"
-skill_auto_merge_approved_prs "$APP_TOKEN"
 skill_detect_duplicates "$APP_TOKEN"
 skill_respond_discussions "$APP_TOKEN"
 
