@@ -112,7 +112,7 @@ async function main() {
                 body: prBody,
                 head: branch,
                 base: 'main',
-                draft: true
+                draft: false
             }, tok.token, false);
 
             // Enable GitHub's native auto-merge so the PR squash-merges itself
