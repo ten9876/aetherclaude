@@ -862,8 +862,12 @@ skill_process_issues() {
                 add_label "$number" "insufficient-info" "$token"
                 record_action "$number" "auto_close_zero_effort" "closed" "success" "${close_reason}"
                 set_state "issue_${number}_state" "closed"
+                # Update local var too — `continue` would re-enter the case on
+                # "new" and loop forever; `break` exits the per-issue state
+                # machine cleanly so the outer loop reads the next issue.
+                issue_state="closed"
                 processed=$((processed + 1))
-                continue
+                break
             fi
 
             log "TRIAGE: Analyzing issue #${number}"
