@@ -19,8 +19,11 @@ ${RETRY_CONTEXT}
 
 Your task for this pass (IMPLEMENT):
 1. Read the relevant source files
-2. Implement the fix with focused, minimal changes
-3. Commit with message: "Short description (#${ISSUE_NUMBER})"
+2. For SmartSDR protocol questions, consult the FlexLib C# reference at
+   `/Users/aetherclaude/reference/FlexLib/` — read-only upstream source,
+   authoritative for command/status/VITA-49 behavior.
+3. Implement the fix with focused, minimal changes
+4. Commit with message: "Short description (#${ISSUE_NUMBER})"
 
 IMPORTANT RULES:
 - Do NOT run git push — the orchestrator handles pushing.
