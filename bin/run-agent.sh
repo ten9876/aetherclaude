@@ -792,6 +792,17 @@ skill_process_issues() {
         local issue_labels_str
         issue_labels_str=$(echo "$issue_data" | jq -r '[.labels[].name] | join(" ")')
 
+        # State override: if a maintainer-review issue gets the
+        # 'aetherclaude-eligible' label added, transition to implement.
+        # That label is the maintainer's authorization to write the fix.
+        if [ "$issue_state" = "maintainer-review" ] && \
+           echo "$issue_data" | jq -e '[.labels[].name] | any(. == "aetherclaude-eligible")' >/dev/null; then
+            log "Issue #${number} — maintainer added aetherclaude-eligible, transitioning to implement"
+            record_action "$number" "maintainer-review" "implement" "success" "aetherclaude-eligible label added"
+            issue_state="implement"
+            set_state "issue_${number}_state" "implement"
+        fi
+
         local out_of_scope=false
         for label in github_actions ci cd release build docker workflow; do
             echo "$issue_labels_str" | grep -qi "$label" && out_of_scope=true
@@ -930,29 +941,48 @@ skill_process_issues() {
                 jq "[.[] | select(.user.login != \"aethersdr-agent[bot]\") | select(.created_at > \"${our_last_comment_time}\")] | length")
 
             if [ "$new_user_comments" -gt 0 ]; then
-                # Gate: only auto-implement if the issue carries the
-                # 'aetherclaude-eligible' label. Otherwise, AetherClaude has
-                # done its part (triage + conversation) and the maintainer
-                # decides whether to write the fix manually.
-                local is_eligible
-                is_eligible=$(echo "$issue_data" | jq '[.labels[].name] | any(. == "aetherclaude-eligible")')
-                if [ "$is_eligible" = "true" ]; then
-                    log "Issue #${number} — user replied, eligible label set, moving to IMPLEMENT"
-                    record_action "$number" "waiting" "implement" "success" "User replied; aetherclaude-eligible"
-                    remove_label "$number" "awaiting-response" "$token"
-                    add_label "$number" "claude-active" "$token"
-                    set_state "issue_${number}_state" "implement"
-                    # Don't count this as an action — let it fall through to implement on next cycle
-                else
-                    log "Issue #${number} — user replied, no aetherclaude-eligible label — leaving for maintainer"
-                    remove_label "$number" "awaiting-response" "$token"
-                    add_label "$number" "maintainer-review" "$token"
-                    record_action "$number" "waiting" "maintainer-review" "success" "User replied; not eligible for auto-implement"
-                    set_state "issue_${number}_state" "maintainer-review"
-                    issue_state="maintainer-review"
+                # User replied. Run continue-triage Claude pass: it either
+                # asks ONE targeted follow-up question (stay in waiting) or
+                # adds 'maintainer-review' label to hand off (state changes).
+                # Implement only fires later, after the maintainer separately
+                # authorizes by adding 'aetherclaude-eligible' (handled by
+                # the label-based state override at top of skill_process_issues).
+                log "Issue #${number} — user replied, running continue-triage"
+                local issue_body issue_comments
+                issue_body=$(sanitize_input "$(echo "$issue_data" | jq -r '.body // "No body"')")
+                issue_comments=$(sanitize_input "$(github_api GET "/repos/${REPO}/issues/${number}/comments?per_page=50" "$token" | jq -r '.[] | "[\(.user.login) \(.created_at)] \(.body)"' 2>/dev/null || echo "No comments")")
+
+                local triage_log="$LOGDIR/continue-triage-${number}-$(date +%Y%m%d-%H%M%S).log"
+                local skill_template
+                skill_template=$(load_skill "continue-triage")
+                local prompt
+                prompt=$(render_skill "$skill_template"                     "ISSUE_NUMBER" "$number"                     "ISSUE_TITLE" "$title"                     "ISSUE_BODY" "$issue_body"                     "ISSUE_COMMENTS" "$issue_comments")
+
+                cd "$WORKSPACE"
+                if ! run_claude "$prompt" "$triage_log"; then
+                    log "ERROR: continue-triage failed for #${number}"
+                    record_action "$number" "continue-triage" "waiting" "failure" "Claude exited non-zero"
                     processed=$((processed + 1))
                     break
                 fi
+
+                # Did Claude add the maintainer-review label? Re-fetch labels.
+                local refreshed_labels
+                refreshed_labels=$(github_api GET "/repos/${REPO}/issues/${number}" "$token" | jq -r '[.labels[].name]')
+                if echo "$refreshed_labels" | jq -e 'any(. == "maintainer-review")' >/dev/null; then
+                    log "Issue #${number} — Claude handed off to maintainer"
+                    record_action "$number" "continue-triage" "maintainer-review" "success" "Claude has enough info, handed off"
+                    remove_label "$number" "awaiting-response" "$token"
+                    set_state "issue_${number}_state" "maintainer-review"
+                    issue_state="maintainer-review"
+                else
+                    log "Issue #${number} — Claude posted follow-up, staying in waiting"
+                    record_action "$number" "continue-triage" "waiting" "success" "Claude asked follow-up question"
+                    # awaiting-response label stays; reset stale clock
+                    set_state "issue_${number}_last_action" "$(date "+%Y-%m-%dT%H:%M:%S")"
+                fi
+                processed=$((processed + 1))
+                break
             else
                 # No user reply — check how long we've been waiting
                 local days_waited=0
