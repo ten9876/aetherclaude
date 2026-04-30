@@ -930,12 +930,29 @@ skill_process_issues() {
                 jq "[.[] | select(.user.login != \"aethersdr-agent[bot]\") | select(.created_at > \"${our_last_comment_time}\")] | length")
 
             if [ "$new_user_comments" -gt 0 ]; then
-                log "Issue #${number} — user replied, moving to IMPLEMENT"
-                record_action "$number" "waiting" "implement" "success" "User replied"
-                remove_label "$number" "awaiting-response" "$token"
-                add_label "$number" "claude-active" "$token"
-                set_state "issue_${number}_state" "implement"
-                # Don't count this as an action — let it fall through to implement on next cycle
+                # Gate: only auto-implement if the issue carries the
+                # 'aetherclaude-eligible' label. Otherwise, AetherClaude has
+                # done its part (triage + conversation) and the maintainer
+                # decides whether to write the fix manually.
+                local is_eligible
+                is_eligible=$(echo "$issue_data" | jq '[.labels[].name] | any(. == "aetherclaude-eligible")')
+                if [ "$is_eligible" = "true" ]; then
+                    log "Issue #${number} — user replied, eligible label set, moving to IMPLEMENT"
+                    record_action "$number" "waiting" "implement" "success" "User replied; aetherclaude-eligible"
+                    remove_label "$number" "awaiting-response" "$token"
+                    add_label "$number" "claude-active" "$token"
+                    set_state "issue_${number}_state" "implement"
+                    # Don't count this as an action — let it fall through to implement on next cycle
+                else
+                    log "Issue #${number} — user replied, no aetherclaude-eligible label — leaving for maintainer"
+                    remove_label "$number" "awaiting-response" "$token"
+                    add_label "$number" "maintainer-review" "$token"
+                    record_action "$number" "waiting" "maintainer-review" "success" "User replied; not eligible for auto-implement"
+                    set_state "issue_${number}_state" "maintainer-review"
+                    issue_state="maintainer-review"
+                    processed=$((processed + 1))
+                    break
+                fi
             else
                 # No user reply — check how long we've been waiting
                 local days_waited=0
@@ -977,7 +994,25 @@ except Exception:
         implement)
             # ---------------------------------------------------------
             # STATE: IMPLEMENT — Create the fix and PR
+            # Gated: requires the 'aetherclaude-eligible' label to be
+            # present at the moment of implementation. Defensive — the
+            # waiting->implement transition already checks for it, but
+            # an issue could lose the label between cycles or be moved
+            # into 'implement' state directly.
             # ---------------------------------------------------------
+            local _impl_eligible
+            _impl_eligible=$(echo "$issue_data" | jq '[.labels[].name] | any(. == "aetherclaude-eligible")')
+            if [ "$_impl_eligible" != "true" ]; then
+                log "Issue #${number} — implement requested but aetherclaude-eligible label missing; punting to maintainer"
+                add_label "$number" "maintainer-review" "$token"
+                remove_label "$number" "claude-active" "$token"
+                record_action "$number" "implement" "maintainer-review" "skipped" "aetherclaude-eligible label missing"
+                set_state "issue_${number}_state" "maintainer-review"
+                issue_state="maintainer-review"
+                processed=$((processed + 1))
+                break
+            fi
+
             log "IMPLEMENT: Fixing issue #${number}"
             add_label "$number" "claude-active" "$token"
 
