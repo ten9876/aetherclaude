@@ -43,10 +43,14 @@ Your task for this pass (TRIAGE ONLY — do NOT implement a fix yet):
      - `float32-regression` — audio regression from the v0.8.9 audio refactor
      - `safety` — equipment protection concern (TX power, ATU, antenna switching)
 
-   **DO NOT** apply state-tracking labels (`awaiting-response`,
-   `claude-active`, `maintainer-review`, `aetherclaude-eligible`,
-   `no-claude`, `insufficient-info`, `awaiting-confirmation`) — those are
-   managed by the orchestrator.
+   **State labels you MAY apply (when appropriate):**
+   - `awaiting-response` — you posted a question, need user to reply
+   - `insufficient-info` — issue is too vague to act on as written
+   - `maintainer-review` — info is sufficient, handing off to maintainer
+
+   **DO NOT** apply these state labels — they are managed by the orchestrator
+   or reserved for the maintainer:
+   `claude-active`, `aetherclaude-eligible`, `no-claude`, `awaiting-confirmation`
 
 4. Post ONE comment on issue #${ISSUE_NUMBER} with:
    - Your analysis of the root cause
