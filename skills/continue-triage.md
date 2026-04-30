@@ -34,13 +34,18 @@ If so, do BOTH of:
 2. Add the label `maintainer-review` to the issue using the GitHub MCP
    tools (mcp__aetherclaude-github__add_labels with labels: ["maintainer-review"]).
 
-### Path B: ask one targeted follow-up question
+### Path B: ask up to 3 targeted follow-up questions
 
-Choose this if you still need a specific piece of information to proceed.
-Ask exactly ONE question. Be specific:
-- "Can you share the log from `~/.config/AetherSDR/aethersdr.log`?" — good
-- "Tell me more about what's happening" — bad
-- Asking three things at once — bad, ask one
+Choose this if you still need specific information to proceed.
+Ask **at most 3 questions** in one comment — bundle questions that make sense
+together so we don't drag this out over many round-trips. Be specific:
+- "Can you share `~/.config/AetherSDR/aethersdr.log`? What OS/version are you on? Did this work in 0.8.x?" — good
+- "Tell me more about what's happening" — bad (vague)
+- More than 3 questions, or open-ended ones — bad (overwhelming)
+
+Prioritize the questions whose answers you actually need to decide on path A.
+If you can answer something yourself by reading the codebase, do that instead
+of asking.
 
 Do NOT add the maintainer-review label in this path. The user's next reply
 will trigger another pass of this skill.
