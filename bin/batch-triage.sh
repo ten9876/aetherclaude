@@ -159,8 +159,23 @@ log "=== Batch triage starting (dry_run=$DRY_RUN, limit=$LIMIT) ==="
 log "Workspace: $WORKSPACE"
 log "Logs: $LOGDIR"
 
-APP_TOKEN=$(get_app_token)
-[ -n "$APP_TOKEN" ] || { log "FATAL: failed to get app token"; exit 1; }
+APP_TOKEN=""
+APP_TOKEN_REFRESHED=0
+ensure_token() {
+    # GitHub App installation tokens last 60 min. Refresh every 40 min so we
+    # never let one go stale mid-issue. The Claude MCP server has its own
+    # cache + refresh; this one is just for the script's own GitHub calls
+    # (re-fetch issue, post zero-effort comment, close issue).
+    local now=$(date +%s)
+    local age=$((now - APP_TOKEN_REFRESHED))
+    if [ -z "$APP_TOKEN" ] || [ "$age" -gt 2400 ]; then
+        APP_TOKEN=$(get_app_token)
+        [ -n "$APP_TOKEN" ] || { log "FATAL: failed to refresh app token"; exit 1; }
+        APP_TOKEN_REFRESHED=$now
+        [ "$age" -gt 0 ] && log "  (refreshed app token after ${age}s)"
+    fi
+}
+ensure_token
 
 cd "$WORKSPACE"
 git fetch origin --quiet 2>/dev/null || true
@@ -196,6 +211,7 @@ processed=0
 while IFS= read -r issue; do
     [ -z "$issue" ] && continue
     [ "$LIMIT" -gt 0 ] && [ "$processed" -ge "$LIMIT" ] && { log "Hit limit $LIMIT, stopping"; break; }
+    ensure_token
 
     number=$(echo "$issue" | jq -r '.number')
     title=$(echo "$issue" | jq -r '.title')
