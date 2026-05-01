@@ -3,7 +3,11 @@
 # SECURITY: Uses Python urllib instead of curl to avoid token in process args
 set -euo pipefail
 
-exec python3 -c "
+# Use the homebrew python3 explicitly: the system /usr/bin/python3 (3.9.x)
+# doesn't have the `cryptography` module, while the homebrew python3 does.
+# Without this, invocations from interactive shells (sudo -u aetherclaude)
+# silently fail because PATH puts /usr/bin first.
+exec /opt/homebrew/bin/python3 -c "
 import json, time, sys, os, urllib.request, urllib.error
 
 
