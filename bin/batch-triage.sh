@@ -74,8 +74,13 @@ record_action() {
 }
 
 sanitize_input() {
-    # Drop control chars except tab/newline; truncate to 32K to keep prompts reasonable
-    printf "%s" "$1" | tr -d '\000-\010\013\014\016-\037\177' | head -c 32768
+    # Drop control chars except tab/newline; truncate to 32K to keep prompts reasonable.
+    # Don't use `... | head -c N` — when input exceeds N bytes, head closes its pipe
+    # mid-stream and the upstream `tr` gets SIGPIPE (141). With `set -o pipefail`,
+    # the whole script dies. Use bash substring expansion instead — no pipe at all.
+    local cleaned
+    cleaned=$(printf "%s" "$1" | tr -d '\000-\010\013\014\016-\037\177')
+    printf "%s" "${cleaned:0:32768}"
 }
 
 load_skill() {
