@@ -20,8 +20,36 @@ and feeds them into the dashboard's append_event() format.
 Usage: sudo python3 eslogger-bridge.py
 """
 import json, re, subprocess, sys, time, threading, os
+from datetime import datetime, timezone
 
 AETHERCLAUDE_UID = 965
+
+# Match the dashboard's canonical timestamp shape: YYYY-MM-DDTHH:MM:SS.mmmZ.
+_iso_re = re.compile(r'^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:?\d{2})?$')
+
+def now_utc_iso():
+    t = time.time()
+    ms = int((t - int(t)) * 1000)
+    return time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(t)) + f'.{ms:03d}Z'
+
+def coerce_ms_iso(s):
+    """Normalize any ISO-8601 string (including eslogger's `2024-01-15 14:23:45.123456+0000`
+    space-separated form) to YYYY-MM-DDTHH:MM:SS.mmmZ. Naive inputs treated as UTC."""
+    if not s:
+        return ''
+    m = _iso_re.match(s.strip())
+    if not m:
+        return s
+    base, frac, zone = m.group(1).replace(' ', 'T'), m.group(2) or '', m.group(3) or ''
+    frac6 = (frac + '000000')[:6] if frac else '000000'
+    iso_zone = '+00:00' if (zone == 'Z' or not zone) else zone
+    if len(iso_zone) == 5:
+        iso_zone = iso_zone[:3] + ':' + iso_zone[3:]
+    try:
+        dt = datetime.fromisoformat(f'{base}.{frac6}{iso_zone}').astimezone(timezone.utc)
+    except ValueError:
+        return s
+    return dt.strftime('%Y-%m-%dT%H:%M:%S') + f'.{dt.microsecond // 1000:03d}Z'
 
 # --- Secret redaction ---
 _SECRET_PATTERNS = [
@@ -76,7 +104,8 @@ def parse_event(line):
         return None
 
     event_type = ev.get('event_type', -1)
-    timestamp = ev.get('time', time.strftime('%Y-%m-%dT%H:%M:%S'))
+    raw_ts = ev.get('time', '')
+    timestamp = coerce_ms_iso(raw_ts) if raw_ts else now_utc_iso()
 
     # Get executable path
     exe = proc.get('executable', {}).get('path', '')
@@ -126,7 +155,7 @@ def parse_event(line):
         return None
 
     return {
-        'time': timestamp[:19],  # Trim to seconds
+        'time': timestamp,
         'type': es_type,
         'uid': uid,
         'binary': redact(exe),
