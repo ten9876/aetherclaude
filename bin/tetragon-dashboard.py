@@ -2585,6 +2585,73 @@ a{{color:#0a6aba}}
                 self.send_response(400); self.end_headers()
                 self.wfile.write(f'Bad request: {e}'.encode())
             return
+        elif self.path == '/defenseclaw-webhook':
+            # DefenseClaw audit-sink webhook receiver. The gateway POSTs
+            # newline-delimited JSON in v7 schema (one event per line) to
+            # this endpoint. Verify the shared bearer (from env), then
+            # convert each event into a source=defenseclaw event in the
+            # stream — same shape the tail_defenseclaw_audit thread
+            # produces, so they merge cleanly.
+            try:
+                expected = os.environ.get('DEFENSECLAW_DASHBOARD_BEARER', '').strip()
+                got = self.headers.get('Authorization', '')
+                if expected:
+                    if not got.startswith('Bearer '):
+                        self.send_response(401); self.end_headers()
+                        self.wfile.write(b'Missing bearer'); return
+                    if got[7:] != expected:
+                        self.send_response(401); self.end_headers()
+                        self.wfile.write(b'Invalid bearer'); return
+                length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(length).decode('utf-8', errors='replace')
+                count = 0
+                for line in body.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    ts = rec.get('ts', rec.get('timestamp', ''))[:19]
+                    etype = rec.get('event_type', rec.get('action', 'unknown'))
+                    args_text = ''
+                    policy = ''
+                    if isinstance(rec.get('lifecycle'), dict):
+                        lc = rec['lifecycle']
+                        args_text = f"{lc.get('subsystem','?')} {lc.get('transition','?')}"
+                    elif isinstance(rec.get('verdict'), dict):
+                        v = rec['verdict']
+                        args_text = f"{v.get('action','?')} — {v.get('reason','')[:80]}"
+                        policy = v.get('rule_pack', '')
+                    elif isinstance(rec.get('error'), dict):
+                        e = rec['error']
+                        args_text = f"{e.get('code','ERROR')}: {e.get('subsystem','?')}"
+                        policy = e.get('code', '')
+                    elif isinstance(rec.get('scan'), dict):
+                        s = rec['scan']
+                        args_text = f"{s.get('scanner','?')} → {s.get('result','?')}"
+                        policy = s.get('scanner', '')
+                    else:
+                        args_text = etype
+                    entry = {
+                        'time': ts,
+                        'type': 'DEFENSE',
+                        'uid': 965,
+                        'binary': 'defenseclaw-webhook',
+                        'args': args_text,
+                        'policy': policy,
+                        'is_agent': True,
+                        'source': 'defenseclaw',
+                    }
+                    append_event(entry)
+                    count += 1
+                self.send_response(200); self.end_headers()
+                self.wfile.write(json.dumps({'accepted': count}).encode())
+            except Exception as ex:
+                self.send_response(500); self.end_headers()
+                self.wfile.write(f'error: {ex}'.encode())
+            return
         elif self.path == '/webhook':
             import hmac, hashlib
             global _last_webhook_trigger
