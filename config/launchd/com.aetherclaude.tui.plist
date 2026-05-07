@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aetherclaude.tui</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/ttyd</string>
+        <string>--port</string>
+        <string>7681</string>
+        <string>--interface</string>
+        <string>0.0.0.0</string>
+        <string>--writable</string>
+        <string>--max-clients</string>
+        <string>3</string>
+        <string>--check-origin</string>
+        <string>/Users/aetherclaude/.local/bin/defenseclaw-gateway</string>
+        <string>tui</string>
+        <string>--skip-first-run-prompt</string>
+    </array>
+    <key>UserName</key>
+    <string>aetherclaude</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/aetherclaude</string>
+        <key>PATH</key>
+        <string>/Users/aetherclaude/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <key>TERM</key>
+        <string>xterm-256color</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/aetherclaude/logs/tui-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/aetherclaude/logs/tui-stderr.log</string>
+</dict>
+</plist>
