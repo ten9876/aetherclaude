@@ -53,16 +53,17 @@ chmod 600 "$tmp"
 mv "$tmp" "$DASH_ENV_FILE"
 trap - EXIT
 
-# 4. Restart gateway so the new token takes effect
-/Users/aetherclaude/.local/bin/defenseclaw-gateway stop >/dev/null 2>&1 || true
-sleep 2
-HTTPS_PROXY=http://127.0.0.1:8888 HTTP_PROXY=http://127.0.0.1:8888 NO_PROXY=localhost,127.0.0.1 \
-    /Users/aetherclaude/.local/bin/defenseclaw-gateway start >/dev/null 2>&1
+# 4. Restart gateway via launchd so the new token takes effect.
+# The gateway runs under com.aetherclaude.dc-gateway (run-defenseclaw-gateway.sh
+# supervisor); kickstart -k cleanly stops and respawns it through launchd
+# rather than racing the supervisor with a direct `gateway stop` call.
+/usr/bin/sudo -n /bin/launchctl kickstart -k system/com.aetherclaude.dc-gateway >/dev/null 2>&1 || true
 sleep 3
 
 # 5. Reload dashboard so the new bearer is read from .env at startup.
 # `launchctl kickstart -k system/...` requires root; a tight sudoers entry
-# at /etc/sudoers.d/aetherclaude-dc-rotate grants exactly this command.
+# at /etc/sudoers.d/aetherclaude-dc-rotate grants exactly these two commands
+# (dashboard + dc-gateway kickstart).
 /usr/bin/sudo -n /bin/launchctl kickstart -k system/com.aetherclaude.dashboard >/dev/null 2>&1 || true
 
 # 6. Log a single line the dashboard tailer will catch

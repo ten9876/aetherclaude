@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aetherclaude.dc-gateway</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/Shared/aetherclaude/bin/run-defenseclaw-gateway.sh</string>
+    </array>
+    <key>UserName</key>
+    <string>aetherclaude</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/aetherclaude</string>
+        <key>PATH</key>
+        <string>/Users/aetherclaude/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <key>HTTPS_PROXY</key>
+        <string>http://127.0.0.1:8888</string>
+        <key>HTTP_PROXY</key>
+        <string>http://127.0.0.1:8888</string>
+        <key>NO_PROXY</key>
+        <string>localhost,127.0.0.1</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/aetherclaude/logs/dc-gateway-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/aetherclaude/logs/dc-gateway-stderr.log</string>
+</dict>
+</plist>
