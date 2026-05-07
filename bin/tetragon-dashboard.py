@@ -21,6 +21,13 @@ import json, os, sys, time, re, sqlite3, threading, argparse, subprocess, glob
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from collections import deque, defaultdict
 
+# Canonical event timestamp format: ISO-8601 UTC with explicit Z marker
+# (e.g. 2025-05-07T21:23:45Z). Mixing local-naive and UTC-with-Z timestamps
+# made the event stream display times that disagreed by the local UTC offset,
+# so every producer should funnel through this helper.
+def now_utc_iso():
+    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
 AETHERCLAUDE_UID = 965
 MAX_EVENTS = 5000
 EVENTS_DB = '/Users/aetherclaude/data/events.db'
@@ -502,7 +509,7 @@ def scan_rings():
                             for detail in mcp_details:
                                 sev = 'SAFE' if detail.get('safe') else detail.get('severity', 'HIGH')
                                 entry = {
-                                    'time': time.strftime('%Y-%m-%dT%H:%M:%S'),
+                                    'time': now_utc_iso(),
                                     'type': 'SCAN',
                                     'uid': 965,
                                     'binary': 'mcp-scanner',
@@ -591,7 +598,7 @@ def scan_rings():
                                 if advisory:
                                     args += f"  ({advisory} advisory)"
                                 entry = {
-                                    'time': time.strftime('%Y-%m-%dT%H:%M:%S'),
+                                    'time': now_utc_iso(),
                                     'type': 'SCAN',
                                     'uid': 965,
                                     'binary': 'prompt-scanner',
@@ -673,7 +680,7 @@ def scan_rings():
                             # Emit one SCAN event per real scan event
                             sev = 'SAFE' if total_findings == 0 else 'HIGH'
                             entry = {
-                                'time': time.strftime('%Y-%m-%dT%H:%M:%S'),
+                                'time': now_utc_iso(),
                                 'type': 'SCAN', 'uid': 965, 'binary': 'skill-scanner',
                                 'args': ring_stats['r6_skill_status'],
                                 'policy': '' if sev == 'SAFE' else 'skill-scanner',
@@ -819,7 +826,7 @@ def scan_rings():
                 try:
                     dbc = sqlite3.connect(ISSUE_ACTIONS_DB)
                     rows = dbc.execute("""
-                        SELECT ia.issue_number, ia.state, ia.outcome, ia.action, ia.detail, ia.created_at
+                        SELECT ia.issue_number, ia.state, ia.outcome, ia.action, ia.detail, ia.created_at || 'Z'
                         FROM issue_actions ia
                         INNER JOIN (
                             SELECT issue_number, MAX(id) as max_id
@@ -891,7 +898,9 @@ def scan_rings():
                                         num = str(args_data.get('issue_number', args_data.get('pr_number', args_data.get('discussion_number', num or ''))))
                                 write_ops = ('comment_on_issue', 'create_pull_request', 'create_pr_review', 'comment_on_discussion')
                                 if (url or num) and op in write_ops:
-                                    recent.append({'op': label, 'url': url, 'num': str(num), 'time': ts[:19]})
+                                    # GitHub returns UTC ISO-8601 with Z; keep the zone.
+                                    recent.append({'op': label, 'url': url, 'num': str(num),
+                                                   'time': (ts[:19] + 'Z') if ts else ''})
                             except:
                                 pass
                     ring_stats['recent_activity'] = recent[-20:]
@@ -1011,10 +1020,15 @@ def tail_mcp_audit(logfile):
                     op = d.get('operation', '?')
                     result_preview = d.get('result', '')[:80]
                     result_preview = re.sub(r"Authorization: (token|Bearer) [A-Za-z0-9_-]+", "Authorization: \\1 ***", result_preview)
-                    entry = {'time': d.get('timestamp', ''), 'type': 'MCP', 'uid': 965, 'binary': 'mcp-server', 'args': f"{op} → {result_preview}", 'policy': '', 'is_agent': True, 'source': 'mcp'}
+                    # MCP server emits new Date().toISOString() — RFC3339
+                    # with milliseconds and Z. Trim to seconds for visual
+                    # parity with other sources.
+                    raw_mcp_ts = d.get('timestamp', '')
+                    mcp_ts = (raw_mcp_ts[:19] + 'Z') if raw_mcp_ts else ''
+                    entry = {'time': mcp_ts, 'type': 'MCP', 'uid': 965, 'binary': 'mcp-server', 'args': f"{op} → {result_preview}", 'policy': '', 'is_agent': True, 'source': 'mcp'}
                     if 'BLOCKED' in result_preview or 'RATE LIMITED' in result_preview:
                         entry['policy'] = 'mcp-blocked'
-                        stats['alerts'].append({'time': d.get('timestamp', ''), 'msg': f"MCP: {op} — {result_preview}", 'severity': 'high'})
+                        stats['alerts'].append({'time': mcp_ts, 'msg': f"MCP: {op} — {result_preview}", 'severity': 'high'})
                     append_event(entry)
             except: continue
 
@@ -1036,7 +1050,7 @@ def tail_tinyproxy_log():
         if not line:
             continue
         with lock:
-            ts = _time.strftime('%Y-%m-%dT%H:%M:%S')
+            ts = now_utc_iso()
 
             if 'Proxying refused on filtered domain' in line:
                 m = re.search(r'filtered domain "([^"]+)"', line)
@@ -1070,7 +1084,7 @@ def tail_nftables_log():
         if not line or 'block' not in line:
             continue
         with lock:
-            ts = _time.strftime('%Y-%m-%dT%H:%M:%S')
+            ts = now_utc_iso()
             # Parse tcpdump pflog output: "... block out ... > dst.port: ..."
             dst = ''
             m = re.search(r'> (\S+?)[\.:]\s', line)
@@ -1190,7 +1204,10 @@ def tail_defenseclaw_audit(logfile):
             except json.JSONDecodeError:
                 continue
 
-            ts = rec.get('ts', '')[:19]
+            # DefenseClaw writes RFC3339 UTC; keep the zone marker so the
+            # frontend renders it in the viewer's local time correctly.
+            raw_ts = rec.get('ts', '')
+            ts = (raw_ts[:19] + 'Z') if raw_ts else ''
             etype = rec.get('event_type', 'unknown')
             sev = (rec.get('severity', 'INFO') or 'INFO').upper()
 
@@ -1305,7 +1322,11 @@ def tail_orchestrator_skills(logfile):
             if m: skill = 'dc-rotate'; detail = m.group(1)
 
             if skill:
-                ts = line[:19] if len(line) > 19 else ''
+                # The orchestrator log timestamps in local time without a zone
+                # marker, which would parse as local in the browser only by
+                # accident. We're tailing in real time, so just stamp "now" in
+                # canonical UTC.
+                ts = now_utc_iso()
                 with lock:
                     entry = {
                         'time': ts,
@@ -1332,7 +1353,12 @@ def tail_log(logfile):
 def process_event(event):
     with lock:
         stats['total_events'] += 1
-        entry = {'time': event.get('time', ''), 'type': '', 'uid': '', 'binary': '', 'args': '', 'policy': '', 'is_agent': False, 'source': 'tetragon'}
+        # eslogger emits RFC3339 with nanoseconds and a zone (e.g.
+        # 2025-05-07T21:23:45.123456789Z). Truncate to second precision and
+        # force a Z so it lines up with the rest of the event stream.
+        raw_ts = event.get('time', '')
+        ts = (raw_ts[:19] + 'Z') if raw_ts else ''
+        entry = {'time': ts, 'type': '', 'uid': '', 'binary': '', 'args': '', 'policy': '', 'is_agent': False, 'source': 'tetragon'}
         if 'process_exec' in event:
             p = event['process_exec']['process']
             entry.update({'type': 'EXEC', 'uid': p.get('uid', '?'), 'binary': p.get('binary', ''), 'args': p.get('arguments', '')[:120]})
@@ -1577,6 +1603,15 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 let _refreshTimer=null;
 function debouncedRefresh(){clearTimeout(_refreshTimer);_refreshTimer=setTimeout(refresh,300)}
+// Server emits all event timestamps as ISO-8601 UTC with Z. Render via
+// toLocaleTimeString so the user sees their local wall-clock time. Falls
+// back to a substring slice only if Date parsing produces NaN.
+function fmtTime(s){
+  if(!s) return '';
+  const dt=new Date(s);
+  if(!isNaN(dt.getTime())) return dt.toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  return s.substring(11,19);
+}
 // Multi-select filter: clicking a button toggles its active state. "All" is
 // implicit — it lights up only when no other buttons are active. Multiple
 // buttons combine OR-style; the search box is additive (AND) on top.
@@ -1596,7 +1631,7 @@ function renderEvents(events,total,filtered){
 let h='';
 for(const e of events){
 let t='';
-if(e.time){try{const dt=new Date(e.time);t=dt.toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'})}catch{t=e.time.substring(11,19)}}
+t=fmtTime(e.time);
 let c='ev';if(e.source==='skill-dispatch')c='ev skill-dispatch';else if(e.source==='claude-code')c='ev claude-code';else if(e.source==='nftables')c='ev nftables';else if(e.source==='mcp-scan')c='ev mcp-scan';else if(e.source==='skill-scan')c='ev skill-scan';else if(e.source==='tinyproxy')c='ev tinyproxy';else if(e.source==='codeguard')c='ev guard';else if(e.source==='mcp')c='ev mcp';else if(e.source==='webhook')c='ev webhook';else if(e.source==='defenseclaw')c='ev defenseclaw';else if(e.is_agent)c='ev agent';
 const p=e.policy?`<span class="pol">[${e.policy}]</span>`:'';
 const st=e.source||'tetragon';
@@ -1714,7 +1749,7 @@ const titles=r.issue_titles||{};
 const opColors={'Commented on issue':'#00b4d8','Created PR':'#00ff88','Replied to discussion':'#aa88ff','Read discussion':'#607080','Reviewed PR':'#ffaa00','Checked CI':'#44ddaa','Searched issues':'#607080'};
 for(const a of [...activity].reverse()){
 const col=opColors[a.op]||'#c8d8e8';
-const t=a.time?a.time.substring(11,19):'';
+const t=fmtTime(a.time);
 let link=a.url;
 let label=a.op;
 // Extract #number from URL for title lookup
@@ -1728,7 +1763,7 @@ else{const ghUrl=a.num?`https://github.com/ten9876/AetherSDR/issues/${a.num}`:''
 document.getElementById('pols').innerHTML=ph||'<div class="si"><span class="n muted">Waiting for agent activity...</span></div>';
 
 // Alerts
-let ah='';for(const a of(s.alerts||[]).reverse())ah+=`<div class="ai ${a.severity}"><div class="msg">${esc(a.msg)}</div><div class="at">${a.time}</div></div>`;
+let ah='';for(const a of(s.alerts||[]).reverse())ah+=`<div class="ai ${a.severity}"><div class="msg">${esc(a.msg)}</div><div class="at">${fmtTime(a.time)}</div></div>`;
 document.getElementById('als').innerHTML=ah||'<div class="si"><span class="n muted">No alerts</span></div>';
 storeData(d);
 renderEvents(d.events,d.total,d.filtered||d.total);
@@ -1908,7 +1943,7 @@ for(const e of d.events.slice(0,200)){
 const isAlert=e.policy&&e.policy.length>0;
 const cls=isAlert?'HIGH':'SAFE';
 fh+=`<div class="modal-finding ${cls}" style="margin-bottom:2px;padding:4px 8px">`;
-fh+=`<span style="color:#607080;margin-right:8px">${esc(e.time||'').substring(11,19)}</span>`;
+fh+=`<span style="color:#607080;margin-right:8px">${fmtTime(e.time||'')}</span>`;
 if(e.type)fh+=`<span style="color:#ffaa00;margin-right:6px;font-weight:bold">${esc(e.type)}</span>`;
 fh+=`${esc(e.args||'')}`;
 if(e.policy)fh+=` <span style="color:#ff6688;font-size:10px">[${esc(e.policy)}]</span>`;
@@ -1962,7 +1997,7 @@ fh+='<p style="color:#607080;margin-bottom:6px;margin-top:12px;font-weight:bold"
 for(const i of d.issues){
 const col=stateColors[i.state]||'#c8d8e8';
 const det=i.detail?` <span style="color:#607080;font-size:10px">— ${esc(i.detail.substring(0,60))}</span>`:'';
-const ts=i.last_seen?i.last_seen.substring(11,19):'';
+const ts=fmtTime(i.last_seen);
 fh+=`<div class="modal-finding SAFE" style="margin-bottom:3px;padding:4px 8px;display:flex;align-items:center;gap:8px"><a href="https://github.com/ten9876/AetherSDR/issues/${i.number}" target="_blank" style="color:#00b4d8;text-decoration:none;min-width:40px">#${i.number}</a><span style="color:${col};font-weight:bold;min-width:70px">${i.state}</span><span style="color:#8090a0;font-size:10px;min-width:90px">${esc(i.last_action||'')}</span>${det}<span style="color:#505060;font-size:9px;margin-left:auto">${ts}</span></div>`}}
 if(d.discussions&&d.discussions.length>0){
 fh+='<p style="color:#607080;margin-bottom:6px;margin-top:12px;font-weight:bold">Discussions responded to:</p>';
@@ -2546,7 +2581,7 @@ a{{color:#0a6aba}}
             try:
                 conn = sqlite3.connect(ISSUE_ACTIONS_DB)
                 rows = conn.execute("""
-                    SELECT ia.issue_number, ia.action, ia.state, ia.outcome, ia.detail, ia.created_at
+                    SELECT ia.issue_number, ia.action, ia.state, ia.outcome, ia.detail, ia.created_at || 'Z'
                     FROM issue_actions ia
                     INNER JOIN (
                         SELECT issue_number, MAX(id) as max_id
@@ -2699,7 +2734,7 @@ a{{color:#0a6aba}}
             elif event_type == 'ping':
                 self.send_response(200); self.end_headers(); self.wfile.write(b'pong'); return
             with lock:
-                entry = {'time': time.strftime('%Y-%m-%dT%H:%M:%S'), 'type': 'WEBHOOK', 'uid': 0,
+                entry = {'time': now_utc_iso(), 'type': 'WEBHOOK', 'uid': 0,
                          'binary': f'github:{event_type}', 'args': summary,
                          'policy': '', 'is_agent': True, 'source': 'webhook'}
                 append_event(entry)
@@ -2765,7 +2800,7 @@ a{{color:#0a6aba}}
                 subprocess.Popen(['/bin/launchctl', 'kickstart', 'system/com.aetherclaude.agent'],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 with lock:
-                    entry = {'time': time.strftime('%Y-%m-%dT%H:%M:%S'), 'type': 'WEBHOOK', 'uid': 0,
+                    entry = {'time': now_utc_iso(), 'type': 'WEBHOOK', 'uid': 0,
                              'binary': 'trigger', 'args': f'Agent triggered by {event_type}: {summary[:80]}',
                              'policy': '', 'is_agent': True, 'source': 'webhook'}
                     append_event(entry)
