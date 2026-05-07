@@ -1445,16 +1445,135 @@ Working directory: ${WORKSPACE}" "$mention_log" || {
     fi
 fi
 
-# --- Quick skills (no Claude Code, template-based) ---
-skill_welcome_first_timers "$APP_TOKEN"
-skill_check_bug_reports "$APP_TOKEN"
+# --- Event-type routing ---
+# The dashboard /webhook handler writes ~/state/trigger-event with the form
+# "<event_type>:<action>" — or "<event_type>:<action>:<label>" specifically
+# for issues:labeled events (so we can distinguish aetherclaude-eligible
+# from other label changes). Calendar-interval / manual runs leave the
+# file absent → full sweep.
+TRIGGER_EVENT=""
+TRIGGER_ACTION=""
+TRIGGER_LABEL=""
+if [ -f /Users/aetherclaude/state/trigger-event ]; then
+    raw=$(cat /Users/aetherclaude/state/trigger-event 2>/dev/null)
+    rm -f /Users/aetherclaude/state/trigger-event
+    IFS=':' read -r TRIGGER_EVENT TRIGGER_ACTION TRIGGER_LABEL <<< "$raw"
+fi
+log "Trigger: ${TRIGGER_EVENT:-interval/manual}${TRIGGER_ACTION:+ ($TRIGGER_ACTION)}${TRIGGER_LABEL:+ label=$TRIGGER_LABEL}"
 
-# --- Claude Code skills ---
-skill_process_issues "$APP_TOKEN"
-skill_explain_ci_failures "$APP_TOKEN"
-skill_review_prs "$APP_TOKEN"
-skill_detect_duplicates "$APP_TOKEN"
-skill_respond_discussions "$APP_TOKEN"
+# Default: nothing runs. Each event type below opts in only the skills it
+# could plausibly affect. Interval/manual runs (no trigger file) opt into
+# everything via the catch-all branch.
+run_first_timers=0
+run_bug_reports=0
+run_process_issues=0
+run_explain_ci=0
+run_review_prs=0
+run_detect_duplicates=0
+
+case "$TRIGGER_EVENT" in
+    issues)
+        if [ "$TRIGGER_ACTION" = "closed" ]; then
+            # Issue closed — no skills needed. The next interval sweep will
+            # update internal state. Recording the event for observability
+            # is enough.
+            :
+        elif [ "$TRIGGER_ACTION" = "labeled" ] && [ "$TRIGGER_LABEL" = "aetherclaude-eligible" ]; then
+            # Subcase: maintainer added the implement-authorize label.
+            # Only the issue pipeline matters — it has the state-override
+            # that transitions maintainer-review → implement. Welcome /
+            # bug-report / dup-detection would be no-ops on a triaged issue.
+            run_process_issues=1
+        else
+            # New / edited / reopened / other-label issue. The pipeline does
+            # the work; the others handle first-timer welcome, bug-report
+            # quality nudge, and duplicate detection on freshly-filed issues.
+            run_first_timers=1
+            run_bug_reports=1
+            run_process_issues=1
+            run_detect_duplicates=1
+        fi
+        ;;
+    issue_comment)
+        # User replied. Pipeline picks up continue-triage; first-timer welcome
+        # may apply if it's their very first interaction.
+        run_first_timers=1
+        run_process_issues=1
+        ;;
+    pull_request)
+        if [ "$TRIGGER_ACTION" = "closed" ]; then
+            # PR closed — could be merge or rejection. The retry-context
+            # path inside skill_process_issues will pick up rejected PRs
+            # next time the issue runs through the pipeline; for merges,
+            # the implement state already cleaned up. No skills needed
+            # here — just record the event for observability.
+            :
+        else
+            # New / sync / reopened PR. Welcome (in case it's their first
+            # PR) + PR review.
+            run_first_timers=1
+            run_review_prs=1
+        fi
+        ;;
+    pull_request_review)
+        # A reviewer left feedback — may unblock implement-fix retry context.
+        # All actions (submitted/edited/dismissed) routed the same — process
+        # _issues self-filters via DB state on a per-issue basis.
+        run_process_issues=1
+        ;;
+    discussion|discussion_comment)
+        # Discussion responder is permanently disabled (app tokens can't
+        # write to discussions). Nothing to do.
+        :
+        ;;
+    check_run|workflow_run)
+        # CI failure (the dashboard only forwards `completed` runs with
+        # conclusion=failure). Run the explainer + give the issue pipeline
+        # a chance to surface retry context for the affected PR's source
+        # issue.
+        run_explain_ci=1
+        run_process_issues=1
+        ;;
+    release)
+        # Release published — generate / refresh release notes. Done as a
+        # detached one-shot so it doesn't hold the orchestrator's lock or
+        # block other skills if it takes a while.
+        log "Trigger: release published — kicking off release-notes generator"
+        if [ -x /Users/aetherclaude/bin/run-release-notes.sh ]; then
+            /Users/aetherclaude/bin/run-release-notes.sh > "$LOGDIR/release-notes-$(date +%Y%m%d-%H%M%S).log" 2>&1 &
+        fi
+        ;;
+    "")
+        # Interval / manual kickstart — full sweep.
+        run_first_timers=1
+        run_bug_reports=1
+        run_process_issues=1
+        run_explain_ci=1
+        run_review_prs=1
+        run_detect_duplicates=1
+        ;;
+    *)
+        log "Unknown trigger event '$TRIGGER_EVENT' — running full sweep"
+        run_first_timers=1
+        run_bug_reports=1
+        run_process_issues=1
+        run_explain_ci=1
+        run_review_prs=1
+        run_detect_duplicates=1
+        ;;
+esac
+
+# Quick skills (no Claude Code, template-based)
+[ "$run_first_timers" = "1" ] && skill_welcome_first_timers "$APP_TOKEN"
+[ "$run_bug_reports" = "1" ] && skill_check_bug_reports "$APP_TOKEN"
+
+# Claude Code skills
+[ "$run_process_issues" = "1" ]    && skill_process_issues    "$APP_TOKEN"
+[ "$run_explain_ci" = "1" ]        && skill_explain_ci_failures "$APP_TOKEN"
+[ "$run_review_prs" = "1" ]        && skill_review_prs        "$APP_TOKEN"
+[ "$run_detect_duplicates" = "1" ] && skill_detect_duplicates "$APP_TOKEN"
+# skill_respond_discussions is permanently disabled — the function definition
+# remains for future use but is no longer dispatched.
 
 # No GIT_ASKPASS cleanup needed — credential helper handles git auth
 

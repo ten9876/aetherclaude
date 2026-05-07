@@ -37,7 +37,9 @@ MCP_SCAN_FILE = '/Users/aetherclaude/logs/mcp-scan-latest.json'
 SKILL_SCAN_FILE = '/Users/aetherclaude/logs/skill-scan-latest.json'
 NOISE_BINARIES = {'/usr/bin/python3', '/usr/local/bin/tetragon-dashboard.py'}
 WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', '')
-WEBHOOK_EVENTS = {'issues', 'issue_comment', 'pull_request', 'pull_request_review', 'discussion', 'discussion_comment'}
+WEBHOOK_EVENTS = {'issues', 'issue_comment', 'pull_request', 'pull_request_review',
+                  'discussion', 'discussion_comment',
+                  'check_run', 'workflow_run', 'release'}
 _last_webhook_trigger = 0
 
 # Track last-persisted scan file mtimes to avoid duplicate DB inserts
@@ -2544,6 +2546,15 @@ a{{color:#0a6aba}}
                 summary = f"Review on PR #{payload.get('pull_request',{}).get('number','')} by {payload.get('review',{}).get('user',{}).get('login','')}"
             elif event_type in ('discussion', 'discussion_comment'):
                 summary = f"Discussion #{payload.get('discussion',{}).get('number','')} {action}"
+            elif event_type == 'check_run':
+                cr = payload.get('check_run', {}) or {}
+                summary = f"Check {cr.get('name','')[:40]} {action}: {cr.get('conclusion','')}"
+            elif event_type == 'workflow_run':
+                wr = payload.get('workflow_run', {}) or {}
+                summary = f"Workflow {wr.get('name','')[:40]} {action}: {wr.get('conclusion','')}"
+            elif event_type == 'release':
+                rel = payload.get('release', {}) or {}
+                summary = f"Release {rel.get('tag_name','')} {action}: {rel.get('name','')[:60]}"
             elif event_type == 'ping':
                 self.send_response(200); self.end_headers(); self.wfile.write(b'pong'); return
             with lock:
@@ -2562,11 +2573,22 @@ a{{color:#0a6aba}}
             if sender == 'ten9876' and not is_mention:
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (maintainer)'); return
             # Skip irrelevant actions
-            if event_type == 'issues' and action not in ('opened', 'edited', 'labeled', 'reopened'):
+            if event_type == 'issues' and action not in ('opened', 'edited', 'labeled', 'reopened', 'closed'):
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (action)'); return
             if event_type == 'issue_comment' and action != 'created':
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (action)'); return
-            if event_type == 'pull_request' and action not in ('opened', 'synchronize', 'reopened'):
+            if event_type == 'pull_request' and action not in ('opened', 'synchronize', 'reopened', 'closed'):
+                self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (action)'); return
+            # CI events: only react when a run has finished AND failed.
+            # Started / in_progress / passed runs are noise.
+            if event_type in ('check_run', 'workflow_run'):
+                if action != 'completed':
+                    self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (action)'); return
+                conclusion_root = payload.get(event_type, {}) or {}
+                if conclusion_root.get('conclusion') != 'failure':
+                    self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (CI passed)'); return
+            # Releases: only react when a release is actually published.
+            if event_type == 'release' and action != 'published':
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (action)'); return
             # Debounce — don't trigger more than once per 60 seconds (unless @mention)
             now = time.time()
@@ -2580,6 +2602,22 @@ a{{color:#0a6aba}}
                     with open('/Users/aetherclaude/state/mention', 'w') as mf:
                         mf.write(str(mention_issue))
                 except: pass
+            # Stash the trigger event type so run-agent.sh can route to only
+            # the relevant skills (instead of running all 7 every webhook).
+            # Calendar-interval and manual kickstarts leave this file absent
+            # → orchestrator runs everything (sweep mode).
+            # Format: "<event_type>:<action>" or "<event_type>:<action>:<label>"
+            # for issues:labeled events, where the label name distinguishes
+            # `aetherclaude-eligible` (implement-authorize) from other labels.
+            try:
+                trigger_str = f"{event_type}:{action}"
+                if event_type == 'issues' and action == 'labeled':
+                    label_name = (payload.get('label') or {}).get('name', '')
+                    if label_name:
+                        trigger_str += f":{label_name}"
+                with open('/Users/aetherclaude/state/trigger-event', 'w') as tf:
+                    tf.write(trigger_str)
+            except: pass
             # Trigger agent run locally via launchctl
             try:
                 import subprocess
