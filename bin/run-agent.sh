@@ -1320,14 +1320,102 @@ if [ "${_token_remaining}" -ge 0 ] && [ "${_token_remaining}" -lt "$CLAUDE_MIN_T
     exit 0
 fi
 
+# --- Trigger-event scope decision (drives both the pre-flight scanners
+# and the skill dispatcher below) ---
+# The dashboard /webhook handler stashed the trigger info in
+# ~/state/trigger-event before kickstart. Format:
+#   "<event_type>:<action>"            for most events
+#   "<event_type>:<action>:<label>"    for issues:labeled
+# Calendar-interval / manual kickstarts leave the file absent → full sweep.
+TRIGGER_EVENT=""
+TRIGGER_ACTION=""
+TRIGGER_LABEL=""
+if [ -f /Users/aetherclaude/state/trigger-event ]; then
+    raw=$(cat /Users/aetherclaude/state/trigger-event 2>/dev/null)
+    rm -f /Users/aetherclaude/state/trigger-event
+    IFS=':' read -r TRIGGER_EVENT TRIGGER_ACTION TRIGGER_LABEL <<< "$raw"
+fi
+log "Trigger: ${TRIGGER_EVENT:-interval/manual}${TRIGGER_ACTION:+ ($TRIGGER_ACTION)}${TRIGGER_LABEL:+ label=$TRIGGER_LABEL}"
+
+# Compute the scope of skills (prompts) and MCP tools that the routed
+# workflow will actually use. The pre-flight scanners narrow themselves
+# to this scope so we get fresh per-event scan output without re-scanning
+# everything. Empty = no skills relevant, scanners skip. "all" = sweep.
+EVENT_SKILLS=""
+EVENT_TOOLS=""
+case "$TRIGGER_EVENT" in
+    issues)
+        if [ "$TRIGGER_ACTION" = "closed" ]; then
+            : # observability only — no skills, no scan
+        elif [ "$TRIGGER_ACTION" = "labeled" ] && [ "$TRIGGER_LABEL" = "aetherclaude-eligible" ]; then
+            EVENT_SKILLS="implement-fix"
+            EVENT_TOOLS="read_issue,list_issue_comments,comment_on_issue,add_labels"
+        else
+            EVENT_SKILLS="triage-issue,detect-duplicate"
+            EVENT_TOOLS="read_issue,list_issue_comments,comment_on_issue,add_labels,search_issues"
+        fi
+        ;;
+    issue_comment)
+        EVENT_SKILLS="continue-triage"
+        EVENT_TOOLS="read_issue,list_issue_comments,comment_on_issue,add_labels,remove_label"
+        ;;
+    pull_request)
+        if [ "$TRIGGER_ACTION" = "closed" ]; then
+            : # observability only
+        else
+            EVENT_SKILLS="review-pr"
+            EVENT_TOOLS="read_issue,list_open_prs,list_pr_files,get_pr_diff,get_check_runs,create_pr_review"
+        fi
+        ;;
+    pull_request_review)
+        EVENT_SKILLS="continue-triage,implement-fix"
+        EVENT_TOOLS="read_issue,list_issue_comments"
+        ;;
+    check_run|workflow_run)
+        EVENT_SKILLS="explain-ci"
+        EVENT_TOOLS="get_ci_run_log,get_check_runs"
+        ;;
+    discussion|discussion_comment)
+        : # responder disabled — no scope
+        ;;
+    release)
+        : # release-notes is a separate script — no skill/tool scan
+        ;;
+    "")
+        EVENT_SKILLS="all"
+        EVENT_TOOLS="all"
+        ;;
+    *)
+        EVENT_SKILLS="all"
+        EVENT_TOOLS="all"
+        ;;
+esac
+log "Scope: skills=[${EVENT_SKILLS:-none}] tools=[${EVENT_TOOLS:-none}]"
+
 # --- Cisco AI Defense: Pre-flight security scans ---
 
-# MCP Scanner: scan MCP server tools for threats
-if command -v mcp-scanner &>/dev/null; then
+# MCP Scanner: scan MCP server tools for threats.
+# Context-aware: scans only the subset of tools that the skills the trigger
+# event routes to actually use (computed in EVENT_TOOLS below). Empty list
+# = no skills, skip entirely. "all" = full manifest scan (interval/manual).
+if command -v mcp-scanner &>/dev/null && [ -n "${EVENT_TOOLS:-}" ]; then
     MCP_MANIFEST="${HOME}/config/mcp-tools.json"
+    MCP_LATEST="$LOGDIR/mcp-scan-latest.json"
     if [ -f "$MCP_MANIFEST" ]; then
+        # Build the tools file we'll actually scan: the full manifest, or
+        # a filtered subset based on EVENT_TOOLS.
+        if [ "$EVENT_TOOLS" = "all" ]; then
+            SCAN_MANIFEST="$MCP_MANIFEST"
+            SCAN_TOOL_LABEL="all"
+        else
+            SCAN_MANIFEST=$(mktemp)
+            jq --arg names "$EVENT_TOOLS" \
+               '.tools |= map(select(.name as $n | $names | split(",") | index($n)))' \
+               "$MCP_MANIFEST" > "$SCAN_MANIFEST"
+            SCAN_TOOL_LABEL="$EVENT_TOOLS"
+        fi
         MCP_SCAN=$(mcp-scanner --analyzers yara --format raw \
-            static --tools "$MCP_MANIFEST" 2>/dev/null)
+            static --tools "$SCAN_MANIFEST" 2>/dev/null)
         MCP_UNSAFE=$(echo "$MCP_SCAN" | python3 -c "
 import sys, json
 try:
@@ -1341,23 +1429,37 @@ try:
     print(high)
 except: print(0)
 " 2>/dev/null)
-        echo "$MCP_SCAN" > "$LOGDIR/mcp-scan-latest.json"
+        echo "$MCP_SCAN" > "$MCP_LATEST"
+        # Clean up temp filtered manifest if we created one
+        [ "$SCAN_MANIFEST" != "$MCP_MANIFEST" ] && rm -f "$SCAN_MANIFEST"
         if [ "${MCP_UNSAFE:-0}" -gt 0 ]; then
             log "CRITICAL: MCP Scanner found $MCP_UNSAFE threats — aborting"
             exit 1
         fi
-        log "MCP Scanner: 14 tools scanned, clean"
+        scanned_count=$(echo "$MCP_SCAN" | jq '.scan_results | length' 2>/dev/null || echo 0)
+        log "MCP Scanner: ${scanned_count} tools scanned (scope=${SCAN_TOOL_LABEL}), clean"
     fi
 fi
 
-# Prompt Scanner: scan AetherClaude skill templates with YARA (and
-# prompt_defense once the upstream cli static-subcommand bug is patched).
+# Prompt Scanner: scan AetherClaude skill templates with YARA + prompt_defense.
+# Context-aware: scans only the subset of skills the trigger event routes to
+# (EVENT_SKILLS, set above). Empty list = no skills relevant, skip. "all" =
+# full skill set (interval/manual sweep).
 # Findings are logged but do NOT abort — the analyzer can produce false
 # positives on legitimate phrasings, and we want surface-level visibility
 # without breaking agent runs.
-if command -v mcp-scanner &>/dev/null && [ -x /Users/aetherclaude/bin/skills-to-prompts-json.py ]; then
+if command -v mcp-scanner &>/dev/null \
+    && [ -x /Users/aetherclaude/bin/skills-to-prompts-json.py ] \
+    && [ -n "${EVENT_SKILLS:-}" ]; then
     PROMPTS_JSON="$LOGDIR/skill-prompts-latest.json"
-    /Users/aetherclaude/bin/skills-to-prompts-json.py > "$PROMPTS_JSON" 2>/dev/null
+    if [ "$EVENT_SKILLS" = "all" ]; then
+        /Users/aetherclaude/bin/skills-to-prompts-json.py > "$PROMPTS_JSON" 2>/dev/null
+    else
+        /Users/aetherclaude/bin/skills-to-prompts-json.py | \
+            jq --arg names "$EVENT_SKILLS" \
+               '.prompts |= map(select(.name as $n | $names | split(",") | index($n)))' \
+               > "$PROMPTS_JSON" 2>/dev/null
+    fi
     if [ -s "$PROMPTS_JSON" ]; then
         # Use the Python wrapper instead of `mcp-scanner static --prompts` —
         # the upstream CLI silently drops the prompt_defense analyzer from
@@ -1377,9 +1479,9 @@ try: print(sum(1 for r in json.load(sys.stdin).get('scan_results', []) if not r.
 except: print(0)
 " 2>/dev/null)
         if [ "${PROMPT_UNSAFE:-0}" -gt 0 ]; then
-            log "Prompt Scanner: ${PROMPT_TOTAL:-0} prompts scanned, ${PROMPT_UNSAFE} flagged"
+            log "Prompt Scanner: ${PROMPT_TOTAL:-0} prompts scanned (scope=${EVENT_SKILLS}), ${PROMPT_UNSAFE} flagged"
         else
-            log "Prompt Scanner: ${PROMPT_TOTAL:-0} prompts scanned, clean"
+            log "Prompt Scanner: ${PROMPT_TOTAL:-0} prompts scanned (scope=${EVENT_SKILLS}), clean"
         fi
     fi
 fi
@@ -1446,24 +1548,10 @@ Working directory: ${WORKSPACE}" "$mention_log" || {
 fi
 
 # --- Event-type routing ---
-# The dashboard /webhook handler writes ~/state/trigger-event with the form
-# "<event_type>:<action>" — or "<event_type>:<action>:<label>" specifically
-# for issues:labeled events (so we can distinguish aetherclaude-eligible
-# from other label changes). Calendar-interval / manual runs leave the
-# file absent → full sweep.
-TRIGGER_EVENT=""
-TRIGGER_ACTION=""
-TRIGGER_LABEL=""
-if [ -f /Users/aetherclaude/state/trigger-event ]; then
-    raw=$(cat /Users/aetherclaude/state/trigger-event 2>/dev/null)
-    rm -f /Users/aetherclaude/state/trigger-event
-    IFS=':' read -r TRIGGER_EVENT TRIGGER_ACTION TRIGGER_LABEL <<< "$raw"
-fi
-log "Trigger: ${TRIGGER_EVENT:-interval/manual}${TRIGGER_ACTION:+ ($TRIGGER_ACTION)}${TRIGGER_LABEL:+ label=$TRIGGER_LABEL}"
-
-# Default: nothing runs. Each event type below opts in only the skills it
-# could plausibly affect. Interval/manual runs (no trigger file) opt into
-# everything via the catch-all branch.
+# TRIGGER_EVENT/ACTION/LABEL were already read at the top (before scanners).
+# This case statement just translates the trigger into which skill functions
+# to dispatch. Default: nothing runs. Interval/manual (TRIGGER_EVENT="")
+# opts into everything via the catch-all branch.
 run_first_timers=0
 run_bug_reports=0
 run_process_issues=0
