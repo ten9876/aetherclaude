@@ -427,12 +427,8 @@ def scan_rings():
                         results = mcp_scan.get('scan_results', [])
                         ring_stats['r6_mcp_tools_scanned'] = len(results)
                         ring_stats['r6_mcp_threats'] = sum(1 for r in results if not r.get('is_safe', True))
-                    else:
-                        # Fall back to DB counts (scanners not available on macOS)
-                        dbc = sqlite3.connect(EVENTS_DB)
-                        ring_stats['r6_mcp_tools_scanned'] = dbc.execute('SELECT COUNT(DISTINCT tool_name) FROM mcp_scan_results').fetchone()[0]
-                        ring_stats['r6_mcp_threats'] = dbc.execute("SELECT COUNT(DISTINCT tool_name) FROM mcp_scan_results WHERE is_safe=0").fetchone()[0]
-                        dbc.close()
+
+                        # Build the per-tool detail list shown in the modal.
                         mcp_details = []
                         for r in results:
                             detail = {'name': r.get('tool_name', '?'), 'safe': r.get('is_safe', True)}
@@ -444,7 +440,9 @@ def scan_rings():
                                         detail['threat'] = threats[0].get('technique_name', 'Unknown threat')
                             mcp_details.append(detail)
                         ring_stats['r6_mcp_details'] = mcp_details
-                        # Persist to DB if file changed
+
+                        # Persist + emit only when the JSON file's mtime changed
+                        # (i.e. the orchestrator just produced a fresh scan).
                         global _last_mcp_mtime
                         mcp_mtime = os.path.getmtime(MCP_SCAN_FILE)
                         if mcp_mtime != _last_mcp_mtime:
@@ -467,23 +465,32 @@ def scan_rings():
                                          sev, threat, r.get('findings',{}).get(analyzer,{}).get('threat_summary',''), analyzer))
                                 dbc.commit(); dbc.close()
                             except: pass
-                        # Inject scan events into event stream
-                        for detail in mcp_details:
-                            sev = 'SAFE' if detail.get('safe') else detail.get('severity', 'HIGH')
-                            entry = {
-                                'time': time.strftime('%Y-%m-%dT%H:%M:%S'),
-                                'type': 'SCAN',
-                                'uid': 965,
-                                'binary': 'mcp-scanner',
-                                'args': f"{detail['name']}: {sev}" + (f" — {detail.get('threat','')}" if not detail.get('safe') else ''),
-                                'policy': 'mcp-scanner' if not detail.get('safe') else '',
-                                'is_agent': True,
-                                'source': 'mcp-scan'
-                            }
-                            # Only inject once per scan (check if already in events)
-                            # Only inject once per scan cycle
-                            if not any(e.get('source') == 'mcp-scan' and e.get('args','').startswith(detail['name']) for e in list(memory_buffer)[-50:]):
-                                append_event(entry)
+                            # Inject one SCAN event per tool into the event stream
+                            for detail in mcp_details:
+                                sev = 'SAFE' if detail.get('safe') else detail.get('severity', 'HIGH')
+                                entry = {
+                                    'time': time.strftime('%Y-%m-%dT%H:%M:%S'),
+                                    'type': 'SCAN',
+                                    'uid': 965,
+                                    'binary': 'mcp-scanner',
+                                    'args': f"{detail['name']}: {sev}" + (f" — {detail.get('threat','')}" if not detail.get('safe') else ''),
+                                    'policy': 'mcp-scanner' if not detail.get('safe') else '',
+                                    'is_agent': True,
+                                    'source': 'mcp-scan'
+                                }
+                                # Dedup against the last 50 buffered events to avoid
+                                # spamming the stream when the watcher re-reads the
+                                # same file before mtime changes again.
+                                if not any(e.get('source') == 'mcp-scan' and e.get('args','').startswith(detail['name']) for e in list(memory_buffer)[-50:]):
+                                    append_event(entry)
+                    else:
+                        # Scanner JSON missing — fall back to whatever's already
+                        # in the DB so the ring counter stays accurate. No new
+                        # SCAN events emitted in this branch (nothing to emit).
+                        dbc = sqlite3.connect(EVENTS_DB)
+                        ring_stats['r6_mcp_tools_scanned'] = dbc.execute('SELECT COUNT(DISTINCT tool_name) FROM mcp_scan_results').fetchone()[0]
+                        ring_stats['r6_mcp_threats'] = dbc.execute("SELECT COUNT(DISTINCT tool_name) FROM mcp_scan_results WHERE is_safe=0").fetchone()[0]
+                        dbc.close()
                 except: pass
 
                 try:

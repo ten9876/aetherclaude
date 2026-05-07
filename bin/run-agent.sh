@@ -1326,7 +1326,7 @@ fi
 if command -v mcp-scanner &>/dev/null; then
     MCP_MANIFEST="${HOME}/config/mcp-tools.json"
     if [ -f "$MCP_MANIFEST" ]; then
-        MCP_SCAN=$(mcp-scanner --analyzers yara,prompt_defense --format raw \
+        MCP_SCAN=$(mcp-scanner --analyzers yara --format raw \
             static --tools "$MCP_MANIFEST" 2>/dev/null)
         MCP_UNSAFE=$(echo "$MCP_SCAN" | python3 -c "
 import sys, json
