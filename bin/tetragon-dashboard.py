@@ -21,12 +21,41 @@ import json, os, sys, time, re, sqlite3, threading, argparse, subprocess, glob
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from collections import deque, defaultdict
 
-# Canonical event timestamp format: ISO-8601 UTC with explicit Z marker
-# (e.g. 2025-05-07T21:23:45Z). Mixing local-naive and UTC-with-Z timestamps
-# made the event stream display times that disagreed by the local UTC offset,
-# so every producer should funnel through this helper.
+# Canonical event timestamp format: ISO-8601 UTC, millisecond precision,
+# explicit Z marker (e.g. 2025-05-07T21:23:45.123Z). Every producer that
+# stamps "now" goes through now_utc_iso(); producers that pass through an
+# upstream timestamp go through coerce_ms_iso() so they all converge on the
+# same shape before reaching the frontend.
 def now_utc_iso():
-    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    t = time.time()
+    ms = int((t - int(t)) * 1000)
+    return time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(t)) + f'.{ms:03d}Z'
+
+_iso_re = re.compile(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:?\d{2})?$')
+
+def coerce_ms_iso(s):
+    """Coerce an ISO-8601 string to YYYY-MM-DDTHH:MM:SS.mmmZ. Accepts inputs
+    with no fractional seconds, with arbitrary fractional precision (millis,
+    micros, nanos), and with Z or +HH:MM zone markers. Non-UTC zones are
+    converted to UTC. Naive inputs (no zone) are treated as UTC. Returns
+    the input unchanged if it doesn't parse as ISO-8601."""
+    if not s:
+        return ''
+    m = _iso_re.match(s.strip())
+    if not m:
+        return s
+    base, frac, zone = m.group(1), m.group(2) or '', m.group(3) or ''
+    # fromisoformat caps fractional precision at microseconds
+    frac6 = (frac + '000000')[:6] if frac else '000000'
+    iso_zone = '+00:00' if (zone == 'Z' or not zone) else zone
+    if len(iso_zone) == 5:  # +HHMM -> +HH:MM
+        iso_zone = iso_zone[:3] + ':' + iso_zone[3:]
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(f'{base}.{frac6}{iso_zone}').astimezone(timezone.utc)
+    except ValueError:
+        return s
+    return dt.strftime('%Y-%m-%dT%H:%M:%S') + f'.{dt.microsecond // 1000:03d}Z'
 
 AETHERCLAUDE_UID = 965
 MAX_EVENTS = 5000
@@ -826,7 +855,7 @@ def scan_rings():
                 try:
                     dbc = sqlite3.connect(ISSUE_ACTIONS_DB)
                     rows = dbc.execute("""
-                        SELECT ia.issue_number, ia.state, ia.outcome, ia.action, ia.detail, ia.created_at || 'Z'
+                        SELECT ia.issue_number, ia.state, ia.outcome, ia.action, ia.detail, ia.created_at || '.000Z'
                         FROM issue_actions ia
                         INNER JOIN (
                             SELECT issue_number, MAX(id) as max_id
@@ -898,9 +927,8 @@ def scan_rings():
                                         num = str(args_data.get('issue_number', args_data.get('pr_number', args_data.get('discussion_number', num or ''))))
                                 write_ops = ('comment_on_issue', 'create_pull_request', 'create_pr_review', 'comment_on_discussion')
                                 if (url or num) and op in write_ops:
-                                    # GitHub returns UTC ISO-8601 with Z; keep the zone.
                                     recent.append({'op': label, 'url': url, 'num': str(num),
-                                                   'time': (ts[:19] + 'Z') if ts else ''})
+                                                   'time': coerce_ms_iso(ts)})
                             except:
                                 pass
                     ring_stats['recent_activity'] = recent[-20:]
@@ -1020,11 +1048,7 @@ def tail_mcp_audit(logfile):
                     op = d.get('operation', '?')
                     result_preview = d.get('result', '')[:80]
                     result_preview = re.sub(r"Authorization: (token|Bearer) [A-Za-z0-9_-]+", "Authorization: \\1 ***", result_preview)
-                    # MCP server emits new Date().toISOString() — RFC3339
-                    # with milliseconds and Z. Trim to seconds for visual
-                    # parity with other sources.
-                    raw_mcp_ts = d.get('timestamp', '')
-                    mcp_ts = (raw_mcp_ts[:19] + 'Z') if raw_mcp_ts else ''
+                    mcp_ts = coerce_ms_iso(d.get('timestamp', ''))
                     entry = {'time': mcp_ts, 'type': 'MCP', 'uid': 965, 'binary': 'mcp-server', 'args': f"{op} → {result_preview}", 'policy': '', 'is_agent': True, 'source': 'mcp'}
                     if 'BLOCKED' in result_preview or 'RATE LIMITED' in result_preview:
                         entry['policy'] = 'mcp-blocked'
@@ -1204,10 +1228,7 @@ def tail_defenseclaw_audit(logfile):
             except json.JSONDecodeError:
                 continue
 
-            # DefenseClaw writes RFC3339 UTC; keep the zone marker so the
-            # frontend renders it in the viewer's local time correctly.
-            raw_ts = rec.get('ts', '')
-            ts = (raw_ts[:19] + 'Z') if raw_ts else ''
+            ts = coerce_ms_iso(rec.get('ts', ''))
             etype = rec.get('event_type', 'unknown')
             sev = (rec.get('severity', 'INFO') or 'INFO').upper()
 
@@ -1353,11 +1374,9 @@ def tail_log(logfile):
 def process_event(event):
     with lock:
         stats['total_events'] += 1
-        # eslogger emits RFC3339 with nanoseconds and a zone (e.g.
-        # 2025-05-07T21:23:45.123456789Z). Truncate to second precision and
-        # force a Z so it lines up with the rest of the event stream.
-        raw_ts = event.get('time', '')
-        ts = (raw_ts[:19] + 'Z') if raw_ts else ''
+        # eslogger emits RFC3339 with nanoseconds (e.g.
+        # 2025-05-07T21:23:45.123456789Z); coerce to millisecond precision.
+        ts = coerce_ms_iso(event.get('time', ''))
         entry = {'time': ts, 'type': '', 'uid': '', 'binary': '', 'args': '', 'policy': '', 'is_agent': False, 'source': 'tetragon'}
         if 'process_exec' in event:
             p = event['process_exec']['process']
@@ -1463,7 +1482,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 .ev .bin{width:150px;color:#e0e0e0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ev .args{flex:1;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ev .pol{color:#ffaa00;font-size:10px}
-.ev .tm{width:70px;color:#505060;font-size:10px}
+.ev .tm{width:96px;color:#505060;font-size:10px}
 .stag{font-size:8px;padding:1px 3px;border-radius:2px;margin-left:3px}
 .stag.tetragon{background:#203040;color:#00b4d8}
 .stag.codeguard{background:#301020;color:#ff6688}
@@ -1603,14 +1622,16 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 let _refreshTimer=null;
 function debouncedRefresh(){clearTimeout(_refreshTimer);_refreshTimer=setTimeout(refresh,300)}
-// Server emits all event timestamps as ISO-8601 UTC with Z. Render via
-// toLocaleTimeString so the user sees their local wall-clock time. Falls
-// back to a substring slice only if Date parsing produces NaN.
+// Server emits all event timestamps as ISO-8601 UTC with Z and millisecond
+// precision. Render in local wall-clock time as HH:MM:SS.mmm — toLocale-
+// TimeString doesn't expose millis, so we append them from getMilliseconds().
 function fmtTime(s){
   if(!s) return '';
   const dt=new Date(s);
-  if(!isNaN(dt.getTime())) return dt.toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
-  return s.substring(11,19);
+  if(isNaN(dt.getTime())) return s.substring(11,23);
+  const hms=dt.toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const ms=String(dt.getMilliseconds()).padStart(3,'0');
+  return `${hms}.${ms}`;
 }
 // Multi-select filter: clicking a button toggles its active state. "All" is
 // implicit — it lights up only when no other buttons are active. Multiple
@@ -2581,7 +2602,7 @@ a{{color:#0a6aba}}
             try:
                 conn = sqlite3.connect(ISSUE_ACTIONS_DB)
                 rows = conn.execute("""
-                    SELECT ia.issue_number, ia.action, ia.state, ia.outcome, ia.detail, ia.created_at || 'Z'
+                    SELECT ia.issue_number, ia.action, ia.state, ia.outcome, ia.detail, ia.created_at || '.000Z'
                     FROM issue_actions ia
                     INNER JOIN (
                         SELECT issue_number, MAX(id) as max_id
