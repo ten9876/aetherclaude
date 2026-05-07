@@ -43,6 +43,10 @@ _last_webhook_trigger = 0
 # Track last-persisted scan file mtimes to avoid duplicate DB inserts
 _last_mcp_mtime = 0.0
 _last_prompt_scan_mtime = 0.0
+# Mtime of newest .md file in ~/skills/ at the time of last skill-scanner
+# invocation. Used to skip the (slow, ~1s startup) scan unless a skill file
+# has actually changed. Triggers on first dashboard cycle (when this is 0).
+_last_skills_mtime = 0.0
 _last_aibom_mtime = 0.0
 
 # 2-tier ring buffer: memory_buffer is the single source of truth
@@ -603,68 +607,95 @@ def scan_rings():
                 except: pass
 
                 try:
-                    # Scan the actual skills directory with skill-scanner
+                    # Skill scanner — event-driven (file-mtime gated). Only
+                    # invokes skill-scanner when a .md file in ~/skills/ has
+                    # actually changed since last scan; ring counters and
+                    # persisted rows survive between events. First dashboard
+                    # cycle still triggers a scan because _last_skills_mtime=0.
+                    # Cuts ~5,760 unnecessary scanner exec/day.
                     skills_dir = '/Users/aetherclaude/skills'
-                    skill_results = []
-                    total_findings = 0
+                    workspace_cmds = '/Users/aetherclaude/workspace/AetherSDR/.claude/commands'
+                    global _last_skills_mtime
+
                     if os.path.isdir(skills_dir):
-                        scan_out = sh(f"skill-scanner scan {skills_dir} --lenient --format json 2>/dev/null")
-                        if scan_out:
-                            try:
-                                parsed = json.loads(scan_out)
-                                # Detect stub response from macOS no-op scanner
-                                if isinstance(parsed, dict) and parsed.get('status') == 'skipped':
-                                    skill_results = []
-                                else:
-                                    skill_results = parsed if isinstance(parsed, list) else [parsed]
-                            except: skill_results = []
-                        skills_scanned = len([f for f in os.listdir(skills_dir) if f.endswith('.md')])
-                        total_findings = sum(r.get('findings_count', 0) for r in skill_results if isinstance(r, dict))
-                        ring_stats['r6_skill_status'] = f'{skills_scanned} skills scanned' if total_findings == 0 else f'{total_findings} findings in {skills_scanned} skills'
-                        ring_stats['r6_skills_scanned'] = skills_scanned
-                        ring_stats['r6_skill_findings'] = total_findings
-                        # Persist to DB (once per cycle, check mtime-like dedup via event stream)
-                        if skill_results and not any(e.get('source') == 'skill-scan' for e in list(memory_buffer)[-20:]):
-                            try:
-                                dbc = sqlite3.connect(EVENTS_DB)
-                                for r in skill_results:
-                                    for f in r.get('findings', []):
-                                        dbc.execute('INSERT INTO skill_scan_results (skill_name, is_safe, max_severity, findings_count, finding_id, finding_severity, finding_title, finding_description, finding_remediation, analyzers) VALUES (?,?,?,?,?,?,?,?,?,?)',
-                                            (r.get('skill_name',''), r.get('is_safe',True), r.get('max_severity',''),
-                                             r.get('findings_count',0), f.get('rule_id',''), f.get('severity',''),
-                                             f.get('title',''), f.get('description',''), f.get('remediation',''),
-                                             ','.join(r.get('analyzers_used',[]))))
-                                    if not r.get('findings'):
-                                        dbc.execute('INSERT INTO skill_scan_results (skill_name, is_safe, max_severity, findings_count, finding_id, finding_severity, finding_title, analyzers) VALUES (?,?,?,?,?,?,?,?)',
-                                            (r.get('skill_name',''), r.get('is_safe',True), r.get('max_severity','SAFE'),
-                                             0, '', 'SAFE', 'No findings', ','.join(r.get('analyzers_used',[]))))
-                                dbc.commit(); dbc.close()
-                            except: pass
+                        files = [f for f in os.listdir(skills_dir) if f.endswith('.md')]
+                        skills_scanned = len(files)
+                        max_file_mtime = max(
+                            (os.path.getmtime(os.path.join(skills_dir, f)) for f in files),
+                            default=0,
+                        )
+                        # Catch additions/removals via dir mtime
+                        current_mtime = max(max_file_mtime, os.path.getmtime(skills_dir))
+
+                        if current_mtime > _last_skills_mtime:
+                            _last_skills_mtime = current_mtime
+                            scan_out = sh(f"skill-scanner scan {skills_dir} --lenient --format json 2>/dev/null")
+                            skill_results = []
+                            if scan_out:
+                                try:
+                                    parsed = json.loads(scan_out)
+                                    if isinstance(parsed, dict) and parsed.get('status') == 'skipped':
+                                        skill_results = []
+                                    else:
+                                        skill_results = parsed if isinstance(parsed, list) else [parsed]
+                                except: skill_results = []
+                            total_findings = sum(
+                                r.get('findings_count', 0)
+                                for r in skill_results if isinstance(r, dict)
+                            )
+                            ring_stats['r6_skills_scanned'] = skills_scanned
+                            ring_stats['r6_skill_findings'] = total_findings
+                            ring_stats['r6_skill_status'] = (
+                                f'{skills_scanned} skills scanned' if total_findings == 0
+                                else f'{total_findings} findings in {skills_scanned} skills'
+                            )
+                            # Persist this scan-run's rows
+                            if skill_results:
+                                try:
+                                    dbc = sqlite3.connect(EVENTS_DB)
+                                    for r in skill_results:
+                                        for f in r.get('findings', []):
+                                            dbc.execute(
+                                                'INSERT INTO skill_scan_results (skill_name, is_safe, max_severity, findings_count, finding_id, finding_severity, finding_title, finding_description, finding_remediation, analyzers) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                                                (r.get('skill_name',''), r.get('is_safe',True), r.get('max_severity',''),
+                                                 r.get('findings_count',0), f.get('rule_id',''), f.get('severity',''),
+                                                 f.get('title',''), f.get('description',''), f.get('remediation',''),
+                                                 ','.join(r.get('analyzers_used',[]))))
+                                        if not r.get('findings'):
+                                            dbc.execute(
+                                                'INSERT INTO skill_scan_results (skill_name, is_safe, max_severity, findings_count, finding_id, finding_severity, finding_title, analyzers) VALUES (?,?,?,?,?,?,?,?)',
+                                                (r.get('skill_name',''), r.get('is_safe',True), r.get('max_severity','SAFE'),
+                                                 0, '', 'SAFE', 'No findings', ','.join(r.get('analyzers_used',[]))))
+                                    dbc.commit(); dbc.close()
+                                except: pass
+                            # Emit one SCAN event per real scan event
+                            sev = 'SAFE' if total_findings == 0 else 'HIGH'
+                            entry = {
+                                'time': time.strftime('%Y-%m-%dT%H:%M:%S'),
+                                'type': 'SCAN', 'uid': 965, 'binary': 'skill-scanner',
+                                'args': ring_stats['r6_skill_status'],
+                                'policy': '' if sev == 'SAFE' else 'skill-scanner',
+                                'is_agent': True, 'source': 'skill-scan',
+                            }
+                            append_event(entry)
+                        else:
+                            # No file change — keep counters from last real scan
+                            ring_stats.setdefault('r6_skills_scanned', skills_scanned)
+                            ring_stats.setdefault('r6_skill_findings', 0)
+                            ring_stats.setdefault('r6_skill_status', f'{skills_scanned} skills scanned')
                     else:
                         ring_stats['r6_skill_status'] = 'no skills dir'
-                    # Also check workspace .claude/commands/ for injected skills
-                    workspace_cmds = '/Users/aetherclaude/workspace/AetherSDR/.claude/commands'
+
+                    # Cheap directory listing — keep running every cycle so an
+                    # injected skill is caught immediately.
                     injected_files = []
                     if os.path.isdir(workspace_cmds):
                         injected_files = [f for f in os.listdir(workspace_cmds) if f.endswith('.md')]
                     ring_stats['r6_skill_injected'] = len(injected_files) > 0
                     ring_stats['r6_skill_injected_count'] = len(injected_files)
                     ring_stats['r6_skill_injected_files'] = injected_files
-                    # Inject scan event
-                    has_injected = len(injected_files) > 0
-                    sev = 'SAFE' if total_findings == 0 and not has_injected else 'HIGH'
-                    status_msg = ring_stats.get('r6_skill_status', 'unknown')
-                    if has_injected: status_msg += f' — {len(injected_files)} command(s) in .claude/commands/'
-                    entry = {
-                        'time': time.strftime('%Y-%m-%dT%H:%M:%S'),
-                        'type': 'SCAN', 'uid': 965, 'binary': 'skill-scanner',
-                        'args': status_msg,
-                        'policy': '' if sev == 'SAFE' else 'skill-scanner',
-                        'is_agent': True, 'source': 'skill-scan'
-                    }
-                    if not any(e.get('source') == 'skill-scan' for e in list(memory_buffer)[-20:]):
-                        append_event(entry)
-                except Exception as _e: ring_stats['r6_skill_status'] = f'error: {_e}'
+                except Exception as _e:
+                    ring_stats['r6_skill_status'] = f'error: {_e}'
 
                 # AIBOM: read C++ AI Bill of Materials
                 try:
