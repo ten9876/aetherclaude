@@ -123,9 +123,18 @@ if [ "$TOTAL_LINES" -gt 1000 ]; then
 fi
 
 # --- Check 7: Cisco DefenseClaw CodeGuard static analysis ---
+# `defenseclaw-gateway scan code` is a fully standalone CLI — it doesn't
+# delegate to the running daemon, it opens its own audit-store SQLite. With
+# the supervised daemon already holding ~/.defenseclaw/audit.db in WAL mode,
+# the CLI fails with `unable to open database file (14)` (SQLITE_CANTOPEN).
+# Isolate each scan into its own HOME so the CLI gets a fresh audit DB.
 CODEGUARD="/Users/aetherclaude/.local/bin/defenseclaw-gateway"
 if [ -x "$CODEGUARD" ]; then
     log "Running CodeGuard static analysis..."
+
+    CODEGUARD_HOME=$(mktemp -d -t codeguard-scan.XXXXXX)
+    mkdir -p "$CODEGUARD_HOME/.defenseclaw"
+    trap 'rm -rf "$CODEGUARD_HOME"' EXIT
 
     for file in $CHANGED_FILES; do
         # Only scan files that exist and have supported extensions
@@ -138,7 +147,7 @@ if [ -x "$CODEGUARD" ]; then
                 ;;
         esac
 
-        SCAN_RESULT=$("$CODEGUARD" scan code "$WORKSPACE/$file" --json 2>/dev/null || echo '{"findings":[]}')
+        SCAN_RESULT=$(env HOME="$CODEGUARD_HOME" "$CODEGUARD" scan code "$WORKSPACE/$file" --json 2>/dev/null || echo '{"findings":[]}')
 
         # Save findings to SQLite + JSON for dashboard
         echo "$SCAN_RESULT" | SCAN_FILE="$file" python3 -c "

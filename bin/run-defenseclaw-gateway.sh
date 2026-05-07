@@ -21,6 +21,16 @@ export HTTPS_PROXY="http://127.0.0.1:8888"
 export HTTP_PROXY="http://127.0.0.1:8888"
 export NO_PROXY="localhost,127.0.0.1"
 
+# Load the bearer token (and any other DefenseClaw secrets) from the env
+# file the rotation script maintains. Without this the gateway daemon's
+# audit_sink HTTP push to /defenseclaw-webhook fails 401 — the dashboard
+# expects DEFENSECLAW_DASHBOARD_BEARER, which is rotated weekly.
+if [ -f "$HOME/.defenseclaw/.env" ]; then
+    set -a
+    . "$HOME/.defenseclaw/.env"
+    set +a
+fi
+
 GATEWAY="/Users/aetherclaude/.local/bin/defenseclaw-gateway"
 LOG="$HOME/logs/dc-gateway.log"
 mkdir -p "$(dirname "$LOG")"
