@@ -42,6 +42,7 @@ _last_webhook_trigger = 0
 
 # Track last-persisted scan file mtimes to avoid duplicate DB inserts
 _last_mcp_mtime = 0.0
+_last_prompt_scan_mtime = 0.0
 _last_aibom_mtime = 0.0
 
 # 2-tier ring buffer: memory_buffer is the single source of truth
@@ -250,6 +251,16 @@ def init_db():
         analyzer TEXT
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_mcp_scan_time ON mcp_scan_results(scan_time)')
+    conn.execute('''CREATE TABLE IF NOT EXISTS prompt_scan_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scan_time TEXT DEFAULT CURRENT_TIMESTAMP,
+        prompt_name TEXT,
+        is_safe BOOLEAN,
+        advisory_findings INTEGER,
+        analyzers TEXT,
+        threat_summary TEXT
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_prompt_scan_time ON prompt_scan_results(scan_time)')
     conn.execute('''CREATE TABLE IF NOT EXISTS aibom_components (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         scan_time TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -491,6 +502,73 @@ def scan_rings():
                         ring_stats['r6_mcp_tools_scanned'] = dbc.execute('SELECT COUNT(DISTINCT tool_name) FROM mcp_scan_results').fetchone()[0]
                         ring_stats['r6_mcp_threats'] = dbc.execute("SELECT COUNT(DISTINCT tool_name) FROM mcp_scan_results WHERE is_safe=0").fetchone()[0]
                         dbc.close()
+                except: pass
+
+                # ── Prompt scan ingestion (parallel to MCP scan above) ──
+                # Reads /Users/aetherclaude/logs/prompt-scan-latest.json (written
+                # by the orchestrator's Prompt Scanner pre-flight via
+                # scan-prompts-pd.py). On mtime change: persist per-prompt rows
+                # to prompt_scan_results and emit one SCAN event per prompt
+                # (source=prompt-scan) so the dashboard's [Scan] filter shows
+                # them alongside MCP findings.
+                try:
+                    prompt_scan_file = os.path.join(
+                        os.path.dirname(MCP_SCAN_FILE), 'prompt-scan-latest.json')
+                    if os.path.exists(prompt_scan_file):
+                        with open(prompt_scan_file) as psf:
+                            prompt_scan = json.load(psf)
+                        prompt_results = prompt_scan.get('scan_results', [])
+                        ring_stats['r6_prompts_scanned'] = len(prompt_results)
+                        ring_stats['r6_prompt_threats'] = sum(
+                            1 for r in prompt_results if not r.get('is_safe', True))
+                        ring_stats['r6_prompt_advisory'] = sum(
+                            r.get('advisory_hardening_findings', 0) for r in prompt_results)
+
+                        global _last_prompt_scan_mtime
+                        psm = os.path.getmtime(prompt_scan_file)
+                        if psm != _last_prompt_scan_mtime:
+                            _last_prompt_scan_mtime = psm
+                            try:
+                                dbc = sqlite3.connect(EVENTS_DB)
+                                for r in prompt_results:
+                                    findings = r.get('findings', {}) or {}
+                                    analyzers = ','.join(sorted(findings.keys())) or ''
+                                    summary = next(
+                                        (v.get('threat_summary', '') for v in findings.values()),
+                                        '')
+                                    dbc.execute(
+                                        'INSERT INTO prompt_scan_results '
+                                        '(prompt_name, is_safe, advisory_findings, analyzers, threat_summary) '
+                                        'VALUES (?,?,?,?,?)',
+                                        (r.get('prompt_name', ''), r.get('is_safe', True),
+                                         r.get('advisory_hardening_findings', 0),
+                                         analyzers, summary))
+                                dbc.commit(); dbc.close()
+                            except: pass
+                            for r in prompt_results:
+                                pname = r.get('prompt_name', '?')
+                                safe = r.get('is_safe', True)
+                                advisory = r.get('advisory_hardening_findings', 0)
+                                args = (f"{pname}: SAFE" if safe
+                                        else f"{pname}: UNSAFE — {next((v.get('threat_summary','') for v in (r.get('findings') or {}).values()), '')}")
+                                if advisory:
+                                    args += f"  ({advisory} advisory)"
+                                entry = {
+                                    'time': time.strftime('%Y-%m-%dT%H:%M:%S'),
+                                    'type': 'SCAN',
+                                    'uid': 965,
+                                    'binary': 'prompt-scanner',
+                                    'args': args,
+                                    'policy': '' if safe else 'prompt-scanner',
+                                    'is_agent': True,
+                                    'source': 'prompt-scan',
+                                }
+                                if not any(
+                                    e.get('source') == 'prompt-scan'
+                                    and e.get('args', '').startswith(pname)
+                                    for e in list(memory_buffer)[-50:]
+                                ):
+                                    append_event(entry)
                 except: pass
 
                 try:
@@ -1089,6 +1167,9 @@ def tail_orchestrator_skills(logfile):
 
             m = re.search(r'VT Scan: (.+)', line)
             if m: skill = 'vt-scan'; detail = m.group(1)
+
+            m = re.search(r'Prompt Scanner: (.+)', line)
+            if m: skill = 'prompt-scanner'; detail = m.group(1)
 
             if skill:
                 ts = line[:19] if len(line) > 19 else ''

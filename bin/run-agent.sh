@@ -1350,6 +1350,40 @@ except: print(0)
     fi
 fi
 
+# Prompt Scanner: scan AetherClaude skill templates with YARA (and
+# prompt_defense once the upstream cli static-subcommand bug is patched).
+# Findings are logged but do NOT abort — the analyzer can produce false
+# positives on legitimate phrasings, and we want surface-level visibility
+# without breaking agent runs.
+if command -v mcp-scanner &>/dev/null && [ -x /Users/aetherclaude/bin/skills-to-prompts-json.py ]; then
+    PROMPTS_JSON="$LOGDIR/skill-prompts-latest.json"
+    /Users/aetherclaude/bin/skills-to-prompts-json.py > "$PROMPTS_JSON" 2>/dev/null
+    if [ -s "$PROMPTS_JSON" ]; then
+        # Use the Python wrapper instead of `mcp-scanner static --prompts` —
+        # the upstream CLI silently drops the prompt_defense analyzer from
+        # the static analyzer-list builder. The wrapper bypasses that bug
+        # by calling Scanner._analyze_prompt directly, so we get YARA threat
+        # detection AND prompt_defense advisory hardening findings.
+        PROMPT_SCAN=$(/Users/aetherclaude/bin/scan-prompts-pd.py "$PROMPTS_JSON" 2>/dev/null)
+        echo "$PROMPT_SCAN" > "$LOGDIR/prompt-scan-latest.json"
+        PROMPT_TOTAL=$(echo "$PROMPT_SCAN" | python3 -c "
+import sys, json
+try: print(len(json.load(sys.stdin).get('scan_results', [])))
+except: print(0)
+" 2>/dev/null)
+        PROMPT_UNSAFE=$(echo "$PROMPT_SCAN" | python3 -c "
+import sys, json
+try: print(sum(1 for r in json.load(sys.stdin).get('scan_results', []) if not r.get('is_safe', True)))
+except: print(0)
+" 2>/dev/null)
+        if [ "${PROMPT_UNSAFE:-0}" -gt 0 ]; then
+            log "Prompt Scanner: ${PROMPT_TOTAL:-0} prompts scanned, ${PROMPT_UNSAFE} flagged"
+        else
+            log "Prompt Scanner: ${PROMPT_TOTAL:-0} prompts scanned, clean"
+        fi
+    fi
+fi
+
 # Skill Scanner: check for injected .claude/ commands
 if command -v skill-scanner &>/dev/null; then
     if [ -d "$WORKSPACE/.claude" ]; then

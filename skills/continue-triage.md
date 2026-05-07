@@ -39,7 +39,7 @@ If so, do BOTH of:
 Choose this if you still need specific information to proceed.
 Ask **at most 3 questions** in one comment — bundle questions that make sense
 together so we don't drag this out over many round-trips. Be specific:
-- "Can you share `~/.config/AetherSDR/aethersdr.log`? What OS/version are you on? Did this work in 0.8.x?" — good
+- "Can you attach your AetherSDR log file (Help → Support → Show Log)? What OS/version are you on? Did this work in 0.8.x?" — good
 - "Tell me more about what's happening" — bad (vague)
 - More than 3 questions, or open-ended ones — bad (overwhelming)
 
