@@ -84,10 +84,33 @@ def _redact(text):
         text = pattern.sub(replacement, text)
     return text
 
+# Scrubber noise — orchestrator's per-issue secret-redaction sed pass produces
+# 6–8 events per issue (EXEC sed with the redaction regex, sed's atomic-write
+# RENAME of a hidden temp file in .claude/projects/, plus wrapping FORK/EXIT).
+# The args column shows the literal regex source `ghs_[A-Za-z0-9]\{30,\}/...`
+# which is unique to that scrubber — not something legitimate text would
+# contain — so it's a safe filter. Bumps the existing `suppressed` counter.
+_SCRUBBER_NOISE_PATTERNS = [
+    _re.compile(r'ghs_\[A-Za-z0-9\]'),
+    _re.compile(r'ghp_\[A-Za-z0-9\]'),
+    _re.compile(r'github_pat_\[A-Za-z0-9'),
+    _re.compile(r'sk-ant-\[A-Za-z0-9'),
+    # sed atomic-write temp file: .claude/projects/.../.!<pid>!<orig>.jsonl
+    _re.compile(r'\.claude/projects/.*/\.!\d+!.+\.jsonl'),
+]
+
+def _is_scrubber_noise(entry):
+    args = entry.get('args', '')
+    return any(p.search(args) for p in _SCRUBBER_NOISE_PATTERNS)
+
+
 def append_event(entry):
     """Append to memory ring buffer + DB queue. Redacts secrets. Generates alerts."""
     entry = dict(entry)
     entry['args'] = _redact(entry.get('args', ''))
+    if _is_scrubber_noise(entry):
+        stats['suppressed'] += 1
+        return
     with memory_lock:
         memory_buffer.append(entry)
         if len(memory_buffer) > MEMORY_BUFFER_MAX:
@@ -126,6 +149,42 @@ lock = threading.Lock()
 # --- SQLite event store ---
 db_write_queue = []
 db_write_lock = threading.Lock()
+
+DB_MAX_BYTES = 1024 * 1024 * 1024   # 1 GiB FIFO cap on events.db
+DB_PRUNE_INTERVAL_SECS = 300         # check every 5 min
+DB_PRUNE_FRACTION = 0.10             # drop oldest 10% when over cap
+
+def db_pruner():
+    """Enforce a 1 GiB FIFO cap on events.db. When the file exceeds the cap,
+    drop the oldest 10% of rows from `events` and VACUUM to reclaim disk
+    space. Sister tables (codeguard_findings, mcp_scan_results, etc.) are
+    tiny and untouched. VACUUM acquires an exclusive lock briefly; writes
+    during that window will queue or be lost (acceptable — the loss is
+    bounded by the 5-second flush cadence)."""
+    import os
+    while True:
+        time.sleep(DB_PRUNE_INTERVAL_SECS)
+        try:
+            sz = os.path.getsize(EVENTS_DB)
+            if sz < DB_MAX_BYTES:
+                continue
+            conn = sqlite3.connect(EVENTS_DB)
+            try:
+                total = conn.execute('SELECT COUNT(*) FROM events').fetchone()[0]
+                drop_n = max(int(total * DB_PRUNE_FRACTION), 1000)
+                conn.execute(
+                    'DELETE FROM events WHERE id IN '
+                    '(SELECT id FROM events ORDER BY id LIMIT ?)',
+                    (drop_n,)
+                )
+                conn.commit()
+                conn.execute('VACUUM')
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            pass
+
 
 def db_batch_writer():
     """Flush pending events to SQLite every 5 seconds."""
@@ -2324,6 +2383,8 @@ def main():
         threading.Thread(target=fn,args=(target,),daemon=True).start()
     threading.Thread(target=scan_tokens,daemon=True).start()
     threading.Thread(target=scan_rings,daemon=True).start()
+    threading.Thread(target=db_batch_writer,daemon=True).start()
+    threading.Thread(target=db_pruner,daemon=True).start()
     s=HTTPServer((a.bind,a.port),H);print(f"Dashboard at http://{a.bind}:{a.port}")
     try:s.serve_forever()
     except KeyboardInterrupt:print("\nShutdown")
