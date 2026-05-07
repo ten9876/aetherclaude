@@ -4,6 +4,8 @@ credentials-file: /Users/aetherclaude/.cloudflared/6c4cfcc1-f51d-4843-bd19-b1895
 ingress:
   - hostname: dashboard.aethersdr.com
     service: http://localhost:8080
+  - hostname: tui.aethersdr.com
+    service: http://localhost:7681
   - hostname: ssh.aethersdr.com
     service: ssh://localhost:22
   - service: http_status:404

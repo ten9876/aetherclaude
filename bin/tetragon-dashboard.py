@@ -1537,7 +1537,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 <div style="flex:1"><h1>AetherClaude Defense-in-Depth Dashboard</h1>
 <div class="sub">Cisco Isovalent (Tetragon) &middot; Cisco DefenseClaw CodeGuard &middot; Cisco AI Defense &middot; MCP Token Isolation</div></div>
 <a href="#" onclick="showWhitepaper();return false" style="color:#607080;font-size:11px;text-decoration:none;margin-right:8px;border:1px solid #304050;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#00b4d8';this.style.borderColor='#00b4d8'" onmouseout="this.style.color='#607080';this.style.borderColor='#304050'">Agent Defense-in-Depth Whitepaper</a>
-<a href="javascript:void(0)" onclick="window.open('http://'+location.hostname+':7681','dctui','width=1200,height=720')" style="color:#6688ff;font-size:11px;text-decoration:none;margin-right:16px;border:1px solid #303860;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#88aaff';this.style.borderColor='#88aaff'" onmouseout="this.style.color='#6688ff';this.style.borderColor='#303860'">Operator TUI &#x2197;</a>
+<a href="#" onclick="openOperatorTui();return false" style="color:#6688ff;font-size:11px;text-decoration:none;margin-right:16px;border:1px solid #303860;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#88aaff';this.style.borderColor='#88aaff'" onmouseout="this.style.color='#6688ff';this.style.borderColor='#303860'">Operator TUI &#x2197;</a>
 <div class="live" id="agent-status">&#9679; LIVE</div>
 </div>
 
@@ -2054,6 +2054,17 @@ document.getElementById('val-list').innerHTML=fh;
 }).catch(()=>{document.getElementById('val-list').innerHTML='<p style="color:#604040">Failed to load validation data.</p>'})}
 function showWhitepaper(){document.getElementById('wp-modal').classList.add('show')}
 function closeWp(){document.getElementById('wp-modal').classList.remove('show')}
+// Pick the right TUI URL based on how the dashboard itself was reached:
+// when accessed via the cloudflared tunnel the dashboard is on HTTPS but
+// :7681 isn't tunneled at the same hostname, so route to a sibling
+// tui.<domain> route. On LAN the TUI is just the same hostname on :7681.
+function openOperatorTui(){
+  const host=location.hostname;
+  const url=host.endsWith('.aethersdr.com')
+    ? 'https://tui.aethersdr.com/'
+    : `${location.protocol}//${host}:7681/`;
+  window.open(url,'_blank');
+}
 setInterval(refresh,REFRESH_MS);refresh();
 </script><div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
 <div class="modal">
