@@ -978,6 +978,22 @@ def tail_orchestrator_skills(logfile):
             skill = None
             detail = None
 
+            # Run-level boundaries (lowest specificity — overridden below if a
+            # later pattern matches the same line, which won't happen for these).
+            m = re.search(r'=== Agent run starting ===', line)
+            if m: skill = 'agent-run'; detail = 'starting'
+
+            m = re.search(r'=== Agent run complete ===', line)
+            if m: skill = 'agent-run'; detail = 'complete'
+
+            # Generic skill-section header. Matches "--- Skill: NAME ---" for
+            # every section the orchestrator enters (Welcome, Bug Report
+            # Quality, Issue Pipeline, PR Review, Duplicate Detection, CI
+            # Failure Explainer, Discussion Responder, @Mention Response).
+            # Specific per-issue patterns below override this for richer detail.
+            m = re.search(r'--- Skill: (.+?) ---', line)
+            if m: skill = 'skill-section'; detail = m.group(1)
+
             m = re.search(r'TRIAGE: Analyzing issue #(\d+)', line)
             if m: skill = 'triage-issue'; detail = f'Issue #{m.group(1)}'
 
@@ -1223,18 +1239,18 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 </div>
 
 <div class="filter-bar">
-<button class="fbtn active" onclick="setFilter('')">All</button>
-<button class="fbtn" onclick="setFilter('is_agent')">Agent</button>
-<button class="fbtn" onclick="setFilter('EXEC')">EXEC</button>
-<button class="fbtn" onclick="setFilter('KPROBE')">KPROBE</button>
-<button class="fbtn" onclick="setFilter('tetragon')">Tetragon</button>
-<button class="fbtn" onclick="setFilter('nftables')" style="border-color:#ff4444">Firewall</button>
-<button class="fbtn" onclick="setFilter('tinyproxy')" style="border-color:#44ddaa">Proxy</button>
-<button class="fbtn" onclick="setFilter('codeguard')" style="border-color:#ff6688">CodeGuard</button>
-<button class="fbtn" onclick="setFilter('mcp')" style="border-color:#aa88ff">MCP</button>
-<button class="fbtn" onclick="setFilter('skill')" style="border-color:#ffdd44">Skills</button>
-<button class="fbtn" onclick="setFilter('claude-code')" style="border-color:#ff88cc">Claude</button>
-<button class="fbtn" onclick="setFilter('webhook')" style="border-color:#44aaff">Webhook</button>
+<button class="fbtn active" data-types="" onclick="toggleFilter(this)">All</button>
+<button class="fbtn" data-types="is_agent" onclick="toggleFilter(this)">Agent</button>
+<button class="fbtn" data-types="EXEC,FORK,EXIT,SIGNAL" onclick="toggleFilter(this)">Tetragon</button>
+<button class="fbtn" data-types="RENAME,UNLINK" onclick="toggleFilter(this)">Files</button>
+<button class="fbtn" data-types="BLOCK" style="border-color:#ff4444" onclick="toggleFilter(this)">Firewall</button>
+<button class="fbtn" data-types="PROXY" style="border-color:#44ddaa" onclick="toggleFilter(this)">Proxy</button>
+<button class="fbtn" data-types="SCAN" style="border-color:#00ddff" onclick="toggleFilter(this)">Scan</button>
+<button class="fbtn" data-types="GUARD" style="border-color:#ff6688" onclick="toggleFilter(this)">CodeGuard</button>
+<button class="fbtn" data-types="TOOL" style="border-color:#ff88cc" onclick="toggleFilter(this)">Claude</button>
+<button class="fbtn" data-types="MCP" style="border-color:#aa88ff" onclick="toggleFilter(this)">MCP</button>
+<button class="fbtn" data-types="SKILL" style="border-color:#ffdd44" onclick="toggleFilter(this)">Skills</button>
+<button class="fbtn" data-types="WEBHOOK" style="border-color:#44aaff" onclick="toggleFilter(this)">Webhook</button>
 <label style="margin-left:8px">Search:</label>
 <input class="finput" id="search" placeholder="grep pattern..." oninput="debouncedRefresh()" style="width:250px">
 <span class="muted" id="sc"></span>
@@ -1273,11 +1289,21 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 let _refreshTimer=null;
 function debouncedRefresh(){clearTimeout(_refreshTimer);_refreshTimer=setTimeout(refresh,300)}
-function setFilter(q){
-document.getElementById('search').value=q;
-document.querySelectorAll('.filter-bar .fbtn').forEach(b=>b.classList.remove('active'));
-event.target.classList.add('active');
-refresh()}
+// Multi-select filter: clicking a button toggles its active state. "All" is
+// implicit — it lights up only when no other buttons are active. Multiple
+// buttons combine OR-style; the search box is additive (AND) on top.
+function toggleFilter(btn){
+const all=document.querySelector('.filter-bar .fbtn[data-types=""]');
+if(btn===all){
+  document.querySelectorAll('.filter-bar .fbtn').forEach(b=>b.classList.remove('active'));
+  all.classList.add('active');
+}else{
+  all.classList.remove('active');
+  btn.classList.toggle('active');
+  if(document.querySelectorAll('.filter-bar .fbtn.active').length===0)all.classList.add('active');
+}
+refresh();
+}
 function renderEvents(events,total,filtered){
 let h='';
 for(const e of events){
@@ -1291,7 +1317,15 @@ document.getElementById('evts').innerHTML=h;
 document.getElementById('sc').textContent=filtered<total?`${events.length} shown · ${filtered} matched · ${total} total`:`${events.length} / ${total}`}
 function refresh(){
 const q=document.getElementById('search').value;
-const url='/api/events'+(q?'?q='+encodeURIComponent(q):'');
+const types=new Set();
+document.querySelectorAll('.filter-bar .fbtn.active').forEach(b=>{
+  const t=b.dataset.types;
+  if(t)t.split(',').forEach(x=>types.add(x));
+});
+const params=new URLSearchParams();
+if(types.size)params.set('types',Array.from(types).join(','));
+if(q)params.set('q',q);
+const url='/api/events'+(params.toString()?'?'+params.toString():'');
 fetch(url).then(r=>r.json()).then(d=>{
 const s=d.stats,r=d.rings,t=d.stats.tokens||{};
 // Rings
@@ -2081,14 +2115,29 @@ a{{color:#0a6aba}}
             from urllib.parse import urlparse, parse_qs
             params = parse_qs(urlparse(self.path).query)
             search = params.get('q', [''])[0].lower().strip()
+            # Multi-select type filter: ?types=EXEC,FORK,is_agent — OR semantics
+            # within types; AND with `q`. The pseudo-type `is_agent` matches
+            # events flagged is_agent=True. Empty `types` = no type filter.
+            types_raw = params.get('types', [''])[0].strip()
+            selected_types = {t.strip() for t in types_raw.split(',') if t.strip()}
+            agent_filter = 'is_agent' in selected_types
+            real_types = selected_types - {'is_agent'}
+
+            def _matches(e):
+                if selected_types:
+                    if not ((agent_filter and e.get('is_agent'))
+                            or (e.get('type') in real_types)):
+                        return False
+                if search:
+                    haystack = (e.get('args','') + ' ' + e.get('binary','') + ' '
+                                + e.get('source','') + ' ' + e.get('type','') + ' '
+                                + e.get('policy','')).lower()
+                    if search not in haystack:
+                        return False
+                return True
+
             with memory_lock:
-                if search == 'is_agent':
-                    filtered = [e for e in memory_buffer if e.get('is_agent')]
-                elif search:
-                    filtered = [e for e in memory_buffer
-                               if search in (e.get('args','') + ' ' + e.get('binary','') + ' ' + e.get('source','') + ' ' + e.get('type','') + ' ' + e.get('policy','')).lower()]
-                else:
-                    filtered = list(memory_buffer)
+                filtered = [e for e in memory_buffer if _matches(e)]
                 buf_total = len(memory_buffer)
             # Last 1000, newest first
             display = filtered[-1000:]
