@@ -1301,6 +1301,9 @@ def tail_orchestrator_skills(logfile):
             m = re.search(r'Prompt Scanner: (.+)', line)
             if m: skill = 'prompt-scanner'; detail = m.group(1)
 
+            m = re.search(r'Token Rotated: (.+)', line)
+            if m: skill = 'dc-rotate'; detail = m.group(1)
+
             if skill:
                 ts = line[:19] if len(line) > 19 else ''
                 with lock:
