@@ -261,6 +261,22 @@ def init_db():
         threat_summary TEXT
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_prompt_scan_time ON prompt_scan_results(scan_time)')
+    # One row per (scan-run × prompt × analyzer × technique). prompt_defense
+    # findings get is_advisory=1 (12-vector hardening audit, not threats).
+    # yara findings get is_advisory=0 (real threat patterns).
+    conn.execute('''CREATE TABLE IF NOT EXISTS prompt_findings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scan_time TEXT DEFAULT CURRENT_TIMESTAMP,
+        prompt_name TEXT NOT NULL,
+        analyzer TEXT NOT NULL,
+        technique_name TEXT,
+        severity TEXT,
+        summary TEXT,
+        is_advisory BOOLEAN
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_pf_scan_time ON prompt_findings(scan_time)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_pf_prompt ON prompt_findings(prompt_name)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_pf_analyzer ON prompt_findings(analyzer)')
     conn.execute('''CREATE TABLE IF NOT EXISTS aibom_components (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         scan_time TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -536,13 +552,28 @@ def scan_rings():
                                     summary = next(
                                         (v.get('threat_summary', '') for v in findings.values()),
                                         '')
+                                    pname = r.get('prompt_name', '')
                                     dbc.execute(
                                         'INSERT INTO prompt_scan_results '
                                         '(prompt_name, is_safe, advisory_findings, analyzers, threat_summary) '
                                         'VALUES (?,?,?,?,?)',
-                                        (r.get('prompt_name', ''), r.get('is_safe', True),
+                                        (pname, r.get('is_safe', True),
                                          r.get('advisory_hardening_findings', 0),
                                          analyzers, summary))
+                                    # Flatten each analyzer's threats.items[] into prompt_findings rows
+                                    for analyzer_key, analyzer_data in findings.items():
+                                        is_advisory = (analyzer_key == 'promptdefense_analyzer')
+                                        items = ((analyzer_data or {}).get('threats') or {}).get('items') or []
+                                        for item in items:
+                                            dbc.execute(
+                                                'INSERT INTO prompt_findings '
+                                                '(prompt_name, analyzer, technique_name, severity, summary, is_advisory) '
+                                                'VALUES (?,?,?,?,?,?)',
+                                                (pname, analyzer_key,
+                                                 item.get('technique_name', '') or '',
+                                                 item.get('severity', '') or '',
+                                                 item.get('summary', '') or '',
+                                                 is_advisory))
                                 dbc.commit(); dbc.close()
                             except: pass
                             for r in prompt_results:
