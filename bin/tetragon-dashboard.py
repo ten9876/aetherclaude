@@ -1589,6 +1589,7 @@ document.getElementById('github-activity').innerHTML=gh||'<div class="si"><span 
 // Cisco AI Defense Scanners panel
 let cs='';
 cs+=`<div class="si clickable" onclick="showMcpScan()"><span class="n"><span class="stag codeguard">scan</span> MCP Scanner</span><span class="c">${r.r6_mcp_tools_scanned||0} tools · ${r.r6_mcp_threats||0} threats</span></div>`;
+cs+=`<div class="si clickable" onclick="showPromptScan()"><span class="n"><span class="stag codeguard">scan</span> Prompt Scanner</span><span class="c">${r.r6_prompts_scanned||0} prompts · ${r.r6_prompt_threats||0} threats · ${r.r6_prompt_advisory||0} advisory</span></div>`;
 cs+=`<div class="si clickable" onclick="showSkillScan()"><span class="n"><span class="stag codeguard">scan</span> Skill Scanner</span><span class="c">${r.r6_skill_status||'unknown'}</span></div>`;
 cs+=`<div class="si clickable" onclick="showCodeGuard()"><span class="n"><span class="stag codeguard">scan</span> CodeGuard</span><span class="c">${r.r6_files_scanned||0} files · ${r.r6_findings||0} findings</span></div>`;
 cs+=`<div class="si clickable" onclick="showTetragon()"><span class="n"><span class="stag tetragon">ebpf</span> Tetragon</span><span class="c" style="color:#00ff88">active</span></div>`;
@@ -1654,6 +1655,44 @@ if(t.analyzer)fh+=`<div class="detail" style="margin-top:2px;color:#405060;font-
 fh+=`</div>`}
 document.getElementById('mcp-findings-list').innerHTML=fh;
 }).catch(()=>{document.getElementById('mcp-findings-list').innerHTML='<p style="color:#604040">Failed to load scan data.</p>'})}
+function showPromptScan(){
+const r=lastData.rings||{};
+let h='<p style="color:#607080;margin-bottom:12px">YARA threat-pattern detection + 12-vector prompt-defense hardening audit on AetherClaude skill templates</p>';
+const threats=r.r6_prompt_threats||0;
+const adv=r.r6_prompt_advisory||0;
+h+=`<div class="modal-finding ${threats>0?'HIGH':'SAFE'}"><span class="sev ${threats>0?'HIGH':'SAFE'}">${threats>0?threats+' THREAT':'SAFE'}</span> ${r.r6_prompts_scanned||0} prompts scanned, ${threats} real threats</div>`;
+if(adv>0)h+=`<div class="modal-finding MEDIUM"><span class="sev MEDIUM">${adv}</span> advisory hardening findings (12-vector audit, not threats)</div>`;
+h+=`<div id="prompt-findings-list" style="margin-top:12px"><p style="color:#607080">Loading findings...</p></div>`;
+document.getElementById('modal-title').textContent='Prompt Scanner Results';
+document.getElementById('modal-body').innerHTML=h;
+document.getElementById('modal').classList.add('show');
+fetch('/api/prompt-scan').then(r=>r.json()).then(d=>{
+let fh='';
+if(d.total>0)fh+=`<p style="color:#607080;margin-bottom:8px">${d.total} findings persisted</p>`;
+if(!d.findings || d.findings.length===0){fh+='<p style="color:#607080">No findings yet.</p>';document.getElementById('prompt-findings-list').innerHTML=fh;return}
+// Group by prompt_name (most recent scan_time per prompt)
+const byPrompt={};
+for(const f of d.findings){
+  if(!byPrompt[f.prompt_name])byPrompt[f.prompt_name]={threats:[],advisory:[]};
+  if(f.is_advisory)byPrompt[f.prompt_name].advisory.push(f);
+  else byPrompt[f.prompt_name].threats.push(f);
+}
+for(const name of Object.keys(byPrompt).sort()){
+  const g=byPrompt[name];
+  const headSev=g.threats.length>0?'HIGH':'SAFE';
+  fh+=`<div class="modal-finding ${headSev}" style="margin-bottom:8px">`;
+  fh+=`<span class="sev ${headSev}">${headSev}</span> <strong>${esc(name)}</strong>`;
+  fh+=` <span style="color:#607080;font-size:10px;margin-left:6px">${g.threats.length} threats · ${g.advisory.length} advisory</span>`;
+  for(const f of g.threats){
+    fh+=`<div class="detail" style="margin-top:4px;color:#ff6688">⚠ ${esc(f.severity||'')} ${esc(f.technique_name||'')}: ${esc(f.summary||'')}</div>`;
+  }
+  for(const f of g.advisory){
+    fh+=`<div class="detail" style="margin-top:2px;color:#888a98">${esc(f.severity||'')} · ${esc(f.summary||'')}</div>`;
+  }
+  fh+=`</div>`;
+}
+document.getElementById('prompt-findings-list').innerHTML=fh;
+}).catch(()=>{document.getElementById('prompt-findings-list').innerHTML='<p style="color:#604040">Failed to load prompt scan data.</p>'})}
 function showSkillScan(){
 const r=lastData.rings||{};
 const injected=r.r6_skill_injected||false;
@@ -2242,6 +2281,44 @@ a{{color:#0a6aba}}
             except Exception as ex:
                 self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
                 self._send_json({'results': [], 'total': 0, 'error': str(ex)})
+        elif self.path.startswith('/api/prompt-scan'):
+            # Return findings from the most recent scan_time per prompt only,
+            # so the modal doesn't accumulate stale rows from earlier runs.
+            try:
+                conn = sqlite3.connect(EVENTS_DB)
+                latest_ts = conn.execute(
+                    'SELECT MAX(scan_time) FROM prompt_findings'
+                ).fetchone()[0]
+                if latest_ts is None:
+                    rows = []
+                else:
+                    # Take rows whose scan_time is within ~10s of the latest
+                    # (one orchestrator run inserts all rows in one
+                    # transaction with CURRENT_TIMESTAMP, but small clock
+                    # differences across rows in the same batch are possible).
+                    rows = conn.execute(
+                        'SELECT scan_time, prompt_name, analyzer, technique_name, severity, summary, is_advisory '
+                        'FROM prompt_findings '
+                        "WHERE scan_time >= datetime(?, '-10 seconds') "
+                        'ORDER BY prompt_name, is_advisory ASC, severity DESC',
+                        (latest_ts,)
+                    ).fetchall()
+                total = conn.execute('SELECT COUNT(*) FROM prompt_findings').fetchone()[0]
+                conn.close()
+                findings = [
+                    {'scan_time': r[0], 'prompt_name': r[1], 'analyzer': r[2],
+                     'technique_name': r[3], 'severity': r[4], 'summary': r[5],
+                     'is_advisory': bool(r[6])}
+                    for r in rows
+                ]
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self._send_json({'findings': findings, 'total': total, 'latest_scan': latest_ts})
+            except Exception as ex:
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+                self._send_json({'findings': [], 'total': 0, 'error': str(ex)})
         elif self.path.startswith('/api/skill-scan'):
             try:
                 conn = sqlite3.connect(EVENTS_DB)
