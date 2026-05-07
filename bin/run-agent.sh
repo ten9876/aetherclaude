@@ -716,29 +716,21 @@ skill_process_issues() {
     assigned=$(github_api GET "/repos/${REPO}/issues?assignee=AetherClaude&state=open&per_page=10" "$token")
 
     # Merge all, deduplicate, filter
-    # NOTE: maintainer-review is normally an exclude, BUT we keep issues that
-    # ALSO have aetherclaude-eligible — those are the maintainer's authorization
-    # to implement, and the state-override at the top of skill_process_issues
-    # transitions them from maintainer-review → implement. Without this carve-out
-    # the override never fires (every eligible issue also has maintainer-review,
-    # since that's how it earned eligibility).
+    #
+    # Single rule: skip issues currently in maintainer-review UNLESS the
+    # maintainer has authorized implementation by adding aetherclaude-eligible.
+    # No other label-based excludes — the maintainer's `aetherclaude-eligible`
+    # is the only authoritative go/no-go signal.
     local all_issues
     all_issues=$(echo "$recent_issues $labeled $assigned" | jq -s '
         add
         | unique_by(.number)
         | [.[] | select(.pull_request == null)]
         | [.[] | select(
-            (
-                ([.labels[].name] | any(. == "maintainer-review") | not)
-                or ([.labels[].name] | any(. == "aetherclaude-eligible"))
-            ) and
-            ([.labels[].name] | any(. == "security") | not) and
-            ([.labels[].name] | any(. == "breaking-change") | not) and
-            ([.labels[].name] | any(. == "protocol") | not) and
-            ([.labels[].name] | any(. == "no-claude") | not)
+            ([.labels[].name] | any(. == "maintainer-review") | not)
+            or ([.labels[].name] | any(. == "aetherclaude-eligible"))
         )]
         | sort_by(.created_at)
-
     ')
 
     local total
