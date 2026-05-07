@@ -1087,6 +1087,9 @@ def tail_orchestrator_skills(logfile):
             m = re.search(r'Skill Scanner: (.+)', line)
             if m: skill = 'skill-scanner'; detail = m.group(1)
 
+            m = re.search(r'VT Scan: (.+)', line)
+            if m: skill = 'vt-scan'; detail = m.group(1)
+
             if skill:
                 ts = line[:19] if len(line) > 19 else ''
                 with lock:
