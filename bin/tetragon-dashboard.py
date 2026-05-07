@@ -1167,6 +1167,72 @@ def tail_sessions():
             pass
         time.sleep(2)
 
+DEFENSECLAW_AUDIT_LOG = '/Users/aetherclaude/.defenseclaw/gateway.jsonl'
+
+def tail_defenseclaw_audit(logfile):
+    """Tail the DefenseClaw v7 OTel-schema gateway audit log and surface
+    each entry as a DEFENSE event in the stream. Schema reference:
+    docs/OBSERVABILITY-CONTRACT.md in the upstream repo."""
+    while not os.path.exists(logfile):
+        time.sleep(5)
+    with open(logfile, 'r') as f:
+        f.seek(0, 2)
+        while True:
+            line = f.readline()
+            if not line:
+                time.sleep(1)
+                continue
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            ts = rec.get('ts', '')[:19]
+            etype = rec.get('event_type', 'unknown')
+            sev = (rec.get('severity', 'INFO') or 'INFO').upper()
+
+            # Build a short human summary for the args column
+            args_text = ''
+            policy = ''
+            if etype == 'lifecycle':
+                lc = rec.get('lifecycle', {}) or {}
+                args_text = f"{lc.get('subsystem','?')} {lc.get('transition','?')}"
+                detail = (lc.get('details') or {}).get('details') or ''
+                if detail and not detail.startswith('<redacted'):
+                    args_text += f" — {detail[:80]}"
+            elif etype == 'error':
+                err = rec.get('error', {}) or {}
+                args_text = f"{err.get('code','ERROR')}: {err.get('subsystem','?')}"
+                policy = err.get('code', '')
+            elif etype == 'verdict':
+                v = rec.get('verdict', {}) or {}
+                args_text = f"{v.get('decision','?')} {v.get('rule_pack','?')} — {v.get('reason','')[:80]}"
+                policy = v.get('rule_pack', '')
+            elif etype == 'scan':
+                s = rec.get('scan', {}) or {}
+                args_text = f"{s.get('scanner','?')} → {s.get('result','?')}"
+                policy = s.get('scanner', '')
+            else:
+                # Generic fallback — just show the event_type
+                args_text = etype
+
+            entry = {
+                'time': ts,
+                'type': 'DEFENSE',
+                'uid': 965,
+                'binary': 'defenseclaw-gateway',
+                'args': args_text,
+                'policy': policy,
+                'is_agent': True,
+                'source': 'defenseclaw',
+            }
+            with lock:
+                append_event(entry)
+
+
 def tail_orchestrator_skills(logfile):
     """Watch orchestrator log for skill dispatch events."""
     import re
@@ -1357,6 +1423,9 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 .tp.SKILL{color:#ffdd44}
 .ev.skill-dispatch{background:#181808;border-left:3px solid #ffdd44}
 .ev.webhook{background:#081018;border-left:3px solid #44aaff}
+.ev.defenseclaw{background:#0c0c20;border-left:3px solid #6688ff}
+.stag.defenseclaw{background:#181830;color:#6688ff}
+.tp.DEFENSE{color:#6688ff}
 .stag.skill-dispatch{background:#202010;color:#ffdd44}
 .ev.claude-code{background:#180818;border-left:3px solid #ff88cc}
 .stag.claude-code{background:#201020;color:#ff88cc}
@@ -1465,6 +1534,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 <button class="fbtn" data-types="MCP" style="border-color:#aa88ff" onclick="toggleFilter(this)">MCP</button>
 <button class="fbtn" data-types="SKILL" style="border-color:#ffdd44" onclick="toggleFilter(this)">Skills</button>
 <button class="fbtn" data-types="WEBHOOK" style="border-color:#44aaff" onclick="toggleFilter(this)">Webhook</button>
+<button class="fbtn" data-types="DEFENSE" style="border-color:#6688ff" onclick="toggleFilter(this)">DefenseClaw</button>
 <label style="margin-left:8px">Search:</label>
 <input class="finput" id="search" placeholder="grep pattern..." oninput="debouncedRefresh()" style="width:250px">
 <span class="muted" id="sc"></span>
@@ -1523,7 +1593,7 @@ let h='';
 for(const e of events){
 let t='';
 if(e.time){try{const dt=new Date(e.time);t=dt.toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'})}catch{t=e.time.substring(11,19)}}
-let c='ev';if(e.source==='skill-dispatch')c='ev skill-dispatch';else if(e.source==='claude-code')c='ev claude-code';else if(e.source==='nftables')c='ev nftables';else if(e.source==='mcp-scan')c='ev mcp-scan';else if(e.source==='skill-scan')c='ev skill-scan';else if(e.source==='tinyproxy')c='ev tinyproxy';else if(e.source==='codeguard')c='ev guard';else if(e.source==='mcp')c='ev mcp';else if(e.source==='webhook')c='ev webhook';else if(e.is_agent)c='ev agent';
+let c='ev';if(e.source==='skill-dispatch')c='ev skill-dispatch';else if(e.source==='claude-code')c='ev claude-code';else if(e.source==='nftables')c='ev nftables';else if(e.source==='mcp-scan')c='ev mcp-scan';else if(e.source==='skill-scan')c='ev skill-scan';else if(e.source==='tinyproxy')c='ev tinyproxy';else if(e.source==='codeguard')c='ev guard';else if(e.source==='mcp')c='ev mcp';else if(e.source==='webhook')c='ev webhook';else if(e.source==='defenseclaw')c='ev defenseclaw';else if(e.is_agent)c='ev agent';
 const p=e.policy?`<span class="pol">[${e.policy}]</span>`:'';
 const st=e.source||'tetragon';
 h+=`<div class="${c}"><span class="tm">${t}</span><span class="tp ${e.type}">${e.type}</span><span class="uid">${e.uid}</span><span class="bin">${e.binary.split('/').pop()}</span><span class="args">${esc(e.args)} ${p} <span class="stag ${st}">${st}</span></span></div>`}
@@ -2646,6 +2716,7 @@ def main():
     threading.Thread(target=tail_nftables_log,daemon=True).start()
     threading.Thread(target=tail_sessions,daemon=True).start()
     threading.Thread(target=tail_orchestrator_skills,args=(ORCHESTRATOR_LOG,),daemon=True).start()
+    threading.Thread(target=tail_defenseclaw_audit,args=(DEFENSECLAW_AUDIT_LOG,),daemon=True).start()
     threading.Thread(target=tail_tinyproxy_log,daemon=True).start()
     for target,fn in [(a.log,tail_log),(VALIDATION_LOG,tail_validation_log),(MCP_AUDIT_LOG,tail_mcp_audit)]:
         threading.Thread(target=fn,args=(target,),daemon=True).start()
