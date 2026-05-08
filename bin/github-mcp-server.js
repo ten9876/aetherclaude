@@ -51,7 +51,7 @@ function audit(op, args, result) {
             if (args[k] !== undefined) nums[k] = args[k];
         }
     }
-    try { fs.appendFileSync(AUDIT_LOG, JSON.stringify({timestamp:new Date().toISOString(),operation:op,args:typeof args==='object'?Object.keys(args):[],args_data:nums,result:safe})+'\n'); } catch{}
+    try { fs.appendFileSync(AUDIT_LOG, JSON.stringify({timestamp:new Date().toISOString(),operation:op,args:typeof args==='object'?Object.keys(args):[],args_data:nums,result:safe,trace_id:process.env.AETHER_TRACE_ID||null})+'\n'); } catch{}
 }
 
 // --- JWT + App Token ---

@@ -78,6 +78,19 @@ WEBHOOK_EVENTS = {'issues', 'issue_comment', 'pull_request', 'pull_request_revie
                   'check_run', 'workflow_run', 'release'}
 _last_webhook_trigger = 0
 
+# Active trace_id for the Agent Walk view. Set by /webhook when a delivery
+# arrives; events that don't carry their own trace_id (orchestrator-driven
+# scans, eslogger process events, hook fan-out arriving slightly after the
+# webhook) fall back to this if it's recent. Times out after 1 hour so
+# stale traces don't bleed into idle-period activity.
+_active_trace_id = None
+_active_trace_started_ts = 0
+_TRACE_FALLBACK_WINDOW_SECS = 3600
+# Map first-8-chars-of-trace_id → full trace_id, populated when /webhook
+# mints. tail_orchestrator_skills uses this to expand the [xxxxxxxx] prefix
+# embedded in orchestrator.log lines back into a full UUID.
+_trace_prefix_to_full = {}
+
 # Track last-persisted scan file mtimes to avoid duplicate DB inserts
 _last_mcp_mtime = 0.0
 _last_prompt_scan_mtime = 0.0
@@ -151,6 +164,12 @@ def append_event(entry):
     """Append to memory ring buffer + DB queue. Redacts secrets. Generates alerts."""
     entry = dict(entry)
     entry['args'] = _redact(entry.get('args', ''))
+    # Backfill trace_id from the active trace if the producer didn't supply
+    # one. Skips when no recent webhook (>1h) — keeps idle-time activity
+    # NULL rather than tagging it onto a long-stale delivery.
+    if not entry.get('trace_id') and _active_trace_id:
+        if time.time() - _active_trace_started_ts < _TRACE_FALLBACK_WINDOW_SECS:
+            entry['trace_id'] = _active_trace_id
     if _is_scrubber_noise(entry):
         stats['suppressed'] += 1
         return
@@ -1061,7 +1080,7 @@ def tail_mcp_audit(logfile):
                     result_preview = d.get('result', '')[:80]
                     result_preview = re.sub(r"Authorization: (token|Bearer) [A-Za-z0-9_-]+", "Authorization: \\1 ***", result_preview)
                     mcp_ts = coerce_ms_iso(d.get('timestamp', ''))
-                    entry = {'time': mcp_ts, 'type': 'MCP', 'uid': 965, 'binary': 'mcp-server', 'args': f"{op} → {result_preview}", 'policy': '', 'is_agent': True, 'source': 'mcp'}
+                    entry = {'time': mcp_ts, 'type': 'MCP', 'uid': 965, 'binary': 'mcp-server', 'args': f"{op} → {result_preview}", 'policy': '', 'is_agent': True, 'source': 'mcp', 'trace_id': d.get('trace_id')}
                     if 'BLOCKED' in result_preview or 'RATE LIMITED' in result_preview:
                         entry['policy'] = 'mcp-blocked'
                         stats['alerts'].append({'time': mcp_ts, 'msg': f"MCP: {op} — {result_preview}", 'severity': 'high'})
@@ -1360,6 +1379,15 @@ def tail_orchestrator_skills(logfile):
                 # accident. We're tailing in real time, so just stamp "now" in
                 # canonical UTC.
                 ts = now_utc_iso()
+                # Pull the [xxxxxxxx] trace_id prefix that run-agent.sh's
+                # log() function stamps. Resolve to full UUID via the dict
+                # populated by /webhook; fall back to the prefix itself so
+                # Stage 5's PID-tree correlator can expand it later.
+                m_prefix = re.search(r'\[([0-9a-f]{8})\]', line)
+                trace_for_entry = None
+                if m_prefix:
+                    short = m_prefix.group(1)
+                    trace_for_entry = _trace_prefix_to_full.get(short, short)
                 with lock:
                     entry = {
                         'time': ts,
@@ -1369,7 +1397,8 @@ def tail_orchestrator_skills(logfile):
                         'args': detail,
                         'policy': '',
                         'is_agent': True,
-                        'source': 'skill-dispatch'
+                        'source': 'skill-dispatch',
+                        'trace_id': trace_for_entry,
                     }
                     append_event(entry)
 
@@ -2717,6 +2746,14 @@ a{{color:#0a6aba}}
                         policy = s.get('scanner', '')
                     else:
                         args_text = etype
+                    # DefenseClaw v7 stores trace_id natively in its audit DB
+                    # (set from DEFENSECLAW_RUN_ID env we exported in
+                    # run-agent.sh). The audit_sink HTTP push surfaces it
+                    # under one of these keys depending on event type.
+                    dc_trace = (rec.get('run_id')
+                                or rec.get('trace_id')
+                                or rec.get('correlation_id')
+                                or (rec.get('context') or {}).get('run_id'))
                     entry = {
                         'time': ts,
                         'type': 'DEFENSE',
@@ -2726,6 +2763,7 @@ a{{color:#0a6aba}}
                         'policy': policy,
                         'is_agent': True,
                         'source': 'defenseclaw',
+                        'trace_id': dc_trace,
                     }
                     append_event(entry)
                     count += 1
@@ -2754,6 +2792,12 @@ a{{color:#0a6aba}}
             # every event from this webhook through orchestrator → Claude →
             # tools → MCP → GitHub publish.
             trace_id = self.headers.get('X-GitHub-Delivery') or str(uuid.uuid4())
+            # Mark this trace active so events that lack an explicit trace_id
+            # but arrive while the orchestrator run is in flight get tagged.
+            global _active_trace_id, _active_trace_started_ts
+            _active_trace_id = trace_id
+            _active_trace_started_ts = time.time()
+            _trace_prefix_to_full[trace_id[:8]] = trace_id
             # Parse event
             event_type = self.headers.get('X-GitHub-Event', 'unknown')
             try:
