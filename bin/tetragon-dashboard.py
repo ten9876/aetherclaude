@@ -3811,7 +3811,19 @@ a{{color:#0a6aba}}
             if sender in ('AetherClaude', 'aethersdr-agent[bot]'):
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (own event)'); return
             # Allow maintainer events through if they @mention the bot
-            if sender == 'ten9876' and not is_mention:
+            # Maintainer-skip filter — the maintainer's everyday GitHub
+            # activity (closing issues, comments without @mention)
+            # shouldn't bounce the bot. Two exceptions: @mentions in
+            # comments (handled by is_mention), and the
+            # `aetherclaude-eligible` label add — that's the explicit
+            # authorization signal for implement-fix and we must NOT
+            # filter it out.
+            maint_label = (payload.get('label') or {}).get('name', '')
+            maint_eligibility_signal = (
+                event_type == 'issues' and action == 'labeled'
+                and maint_label == 'aetherclaude-eligible'
+            )
+            if sender == 'ten9876' and not is_mention and not maint_eligibility_signal:
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (maintainer)'); return
             # Skip irrelevant actions
             if event_type == 'issues' and action not in ('opened', 'edited', 'labeled', 'reopened', 'closed'):
