@@ -2755,7 +2755,7 @@ const STAGES=[
   {n:3,name:'Skill'},
   {n:4,name:'Scanning (skill / MCP)'},
   {n:5,name:'Claude Code'},
-  {n:6,name:'Tool calls'},
+  {n:6,name:'AI-Defense'},
   {n:7,name:'MCP'},
   {n:8,name:'Response'},
   {n:9,name:'GitHub publish'},
