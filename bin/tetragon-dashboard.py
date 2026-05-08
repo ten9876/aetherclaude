@@ -3452,12 +3452,31 @@ a{{color:#0a6aba}}
                 if (src == 'defenseclaw' and 'llm_response' in args) \
                         or (src == 'claude-transcript' and typ == 'RESPONSE'):
                     return 8
-                # 5. Claude Code prompt submit / session start, or actual
-                # prompt text from claude-transcript.
+                # 5. Claude Code — every action Claude takes, whether it's
+                # the initial prompt or a downstream tool call. Includes:
+                #   - Initial llm_prompt + UserPromptSubmit (DC view)
+                #   - Actual prompt text (claude-transcript PROMPT)
+                #   - Every tool call Claude invokes: Bash, Read, Edit,
+                #     Write, Grep, Glob, WebFetch, ToolSearch, TodoWrite,
+                #     Task, Agent, Skill, AskUserQuestion, TaskStop
+                #   - claude:MCP READ operations (the Claude side of the
+                #     call — the MCP server's response lands on stage 7)
+                # AI-Defense verdicts ON these actions live on stage 6.
                 if (src == 'defenseclaw' and (
                         'llm_prompt' in args or 'userpromptsubmit' in args
                         or 'sessionstart' in args or 'session_start' in args)) \
                         or (src == 'claude-transcript' and typ == 'PROMPT'):
+                    return 5
+                if src == 'claude-code' and typ == 'TOOL' and binary.startswith('claude:'):
+                    # claude:MCP write ops are a publish moment (stage 9);
+                    # everything else (including claude:MCP reads) is a
+                    # Claude action.
+                    if binary == 'claude:mcp' and any(t in args for t in (
+                            'comment_on_', 'create_pr', 'close_issue',
+                            'create_pull_request', 'create_pr_review',
+                            'comment_on_discussion', 'create_release',
+                            'add_labels', 'remove_label')):
+                        return 9
                     return 5
                 # 10. Cleanup / audit fan-out — DC lifecycle stop events
                 # only (the daemon emits 'gateway completed' for every
@@ -3476,27 +3495,12 @@ a{{color:#0a6aba}}
                         'post /repos', 'put /repos', 'patch /repos',
                         'delete /repos')):
                     return 9
-                # 9. GitHub publish via Claude's MCP tool (write ops).
-                # claude-code emits source=claude-code, type=TOOL,
-                # binary=claude:MCP for every MCP invocation, with args
-                # = the operation name (comment_on_issue, create_pr_*,
-                # close_issue, etc.).
-                if src == 'claude-code' and typ == 'TOOL' \
-                        and binary == 'claude:mcp' \
-                        and any(t in args for t in (
-                            'comment_on_', 'create_pr', 'close_issue',
-                            'create_pull_request', 'create_pr_review',
-                            'comment_on_discussion', 'create_release',
-                            'add_labels', 'remove_label')):
-                    return 9
-                # 7. MCP — all other MCP server activity (read ops, list
-                # operations, generic queries). Distinct from stage 6
-                # which now holds only non-MCP tool-call verdicts.
+                # 7. MCP — server-side MCP activity (the MCP server itself
+                # writing to its audit log when handling a request).
+                # Distinct from claude:MCP which is the Claude-side
+                # invocation (handled in stage 5 above for reads, stage
+                # 9 for writes).
                 if typ == 'MCP':
-                    return 7
-                # 7. MCP read ops via Claude's MCP tool (e.g.
-                # get_pr_diff, list_open_prs, read_issue, search_issues)
-                if src == 'claude-code' and typ == 'TOOL' and binary == 'claude:mcp':
                     return 7
                 # 4. Scanning — skill-scanner + mcp-scanner specifically.
                 # These are Cisco AI Defense's pre-flight scanners that
@@ -3538,16 +3542,6 @@ a{{color:#0a6aba}}
                         or 'tool' in args
                         or 'action=' in args or 'verdict' in args
                         or 'gateway completed' in args):
-                    return 6
-                # 6. Claude's actual tool invocations (Bash, Read, Edit,
-                # Write, Grep, Glob, WebFetch, ToolSearch, TodoWrite,
-                # Task, Agent, Skill, AskUserQuestion, TaskStop).
-                # Source = claude-code, type = TOOL, binary like
-                # 'claude:Bash'. claude:MCP is handled above (stage 7
-                # / 9), so this catches everything else that runs via
-                # the Claude tool-call dispatch.
-                if src == 'claude-code' and typ == 'TOOL' \
-                        and binary.startswith('claude:'):
                     return 6
                 # 2. Orchestrator dispatch — skill-dispatch events whose
                 # binary indicates the run-boundary skill (binary is
