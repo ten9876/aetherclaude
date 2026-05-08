@@ -2752,12 +2752,25 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
 .color-PROMPT{fill:#ff88dd}
 .color-RESPONSE{fill:#88ddff}
 .color-OTHER{fill:#404060}
-#detail{padding:12px 20px;background:#0e0e22;border-top:1px solid #20304a;font-size:11px;line-height:1.5}
-#detail h3{margin:0 0 8px 0;font-size:12px;color:#00bceb;font-weight:normal;letter-spacing:1px}
+/* Bottom row: split into two panes — log stream (B) on the left,
+ * event detail (C) on the right. Both fill the remaining vertical
+ * space so the swimlane (A) above keeps its natural height. */
+#bottom-pane{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#20304a;border-top:1px solid #20304a;min-height:340px;height:42vh}
+#log-stream,#detail{padding:12px 20px;background:#0e0e22;font-size:11px;line-height:1.5;overflow-y:auto}
+#log-stream h3,#detail h3{margin:0 0 8px 0;font-size:12px;color:#00bceb;font-weight:normal;letter-spacing:1px;position:sticky;top:0;background:#0e0e22;padding-bottom:6px;border-bottom:1px solid #20304a;z-index:1}
 #detail .row{display:flex;margin-bottom:4px}
 #detail .k{color:#607080;width:120px;flex-shrink:0}
 #detail .v{color:#c8d8e8;font-family:'SF Mono',monospace;word-break:break-all}
 #detail .stage-pill{display:inline-block;background:#203040;color:#00bceb;padding:1px 8px;border-radius:10px;font-size:10px;margin-left:6px}
+/* Log stream rows. Compact monospace so dense traces stay readable. */
+#log-stream .lrow{display:flex;gap:8px;padding:2px 4px;font-family:'SF Mono',monospace;font-size:10px;border-radius:2px;cursor:pointer;align-items:baseline}
+#log-stream .lrow:hover{background:#101020}
+#log-stream .lrow.cur{background:#1a2a4a;color:#fff}
+#log-stream .lrow .lt{color:#505060;width:80px;flex-shrink:0}
+#log-stream .lrow .lstage{color:#607080;width:30px;flex-shrink:0;text-align:right}
+#log-stream .lrow .ltype{width:80px;flex-shrink:0;text-overflow:ellipsis;overflow:hidden;white-space:nowrap}
+#log-stream .lrow .larg{flex:1;color:#8090a0;text-overflow:ellipsis;overflow:hidden;white-space:nowrap}
+#log-stream .empty-state{color:#607080;padding:30px 0;text-align:center}
 .empty{padding:60px 20px;text-align:center;color:#607080}
 .legend{display:flex;gap:16px;font-size:10px;color:#607080;padding:6px 20px;background:#0a0a1a;border-bottom:1px solid #20304a}
 .legend .swatch{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle}
@@ -2812,7 +2825,10 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
   <span class="ts-label" id="progress-ts">—</span>
 </div>
 <div id="swim"></div>
-<div id="detail"><h3>Event detail</h3><p style="color:#607080">Click an event in the swimlane above.</p></div>
+<div id="bottom-pane">
+  <div id="log-stream"><h3>Log stream</h3><div id="log-stream-body"><p class="empty-state">Press ▶ Play or step with Next ▶ — events will appear here in time-order.</p></div></div>
+  <div id="detail"><h3>Event detail</h3><p style="color:#607080">Click an event in the swimlane above (or in the log stream on the left).</p></div>
+</div>
 
 <script>
 const STAGES=[
@@ -2870,6 +2886,7 @@ function loadTrace(traceId){
     document.getElementById('player').style.display='flex';
     stopReplay();
     _stepIdx=-1;
+    logStreamClear();
     const t0=new Date(_events[0].time),tN=new Date(_events[_events.length-1].time);
     const dur=tN-t0;
     const bg=d.background_dropped||0;
@@ -2929,13 +2946,18 @@ function renderSwimlane(){
   }
   svg+='</svg>';
   container.innerHTML=svg;
-  // Wire click
+  // Wire click — selects detail + highlights matching log-stream row
   container.querySelectorAll('.event-dot').forEach(el=>{
     el.addEventListener('click',()=>{
-      _selectedIdx=parseInt(el.getAttribute('data-i'),10);
+      const idx=parseInt(el.getAttribute('data-i'),10);
+      _selectedIdx=idx;
       container.querySelectorAll('.event-dot.sel').forEach(d=>d.classList.remove('sel'));
       el.classList.add('sel');
       renderDetail();
+      // Mirror the highlight in the log stream if a row exists for this idx.
+      document.querySelectorAll('#log-stream .lrow.cur').forEach(r=>r.classList.remove('cur'));
+      const row=document.querySelector('#log-stream .lrow[data-i="'+idx+'"]');
+      if(row){row.classList.add('cur');row.scrollIntoView({block:'nearest',behavior:'smooth'})}
     });
   });
 }
@@ -2957,6 +2979,73 @@ function renderDetail(){
     '<div class="row"><div class="k">trace_id</div><div class="v">'+esc(e.trace_id)+'</div></div>';
 }
 
+// --- Log stream pane (B) ---
+// Mirrors the swimlane: each visible-now event gets one row in time order.
+// Clicking a row selects that event (highlights its dot in the swimlane and
+// populates the detail pane on the right).
+function logStreamClear(){
+  const body=document.getElementById('log-stream-body');
+  body.innerHTML='<p class="empty-state">Press ▶ Play or step with Next ▶ — events will appear here in time-order.</p>';
+}
+function logStreamRenderUpTo(idx){
+  // Show all events 0..idx in the log; highlight idx.
+  const body=document.getElementById('log-stream-body');
+  if(_events.length===0||idx<0){logStreamClear();return}
+  let h='';
+  for(let i=0;i<=idx&&i<_events.length;i++){
+    const e=_events[i];
+    const cur=(i===idx)?' cur':'';
+    const stage=e.stage||0;
+    const colorCls='color-'+(e.type||'OTHER');
+    h+=`<div class="lrow${cur}" data-i="${i}" onclick="logStreamSelect(${i})">`+
+       `<span class="lt">${fmtTime(e.time)}</span>`+
+       `<span class="lstage" style="color:#00bceb">${stage||'·'}</span>`+
+       `<span class="ltype ${colorCls}" style="font-weight:bold">${esc(e.type||'')}</span>`+
+       `<span class="larg">${esc((e.binary||'').replace(/^claude:/,'')+' '+(e.args||''))}</span>`+
+       `</div>`;
+  }
+  body.innerHTML=h;
+  // Auto-scroll the current row into view.
+  const cur=body.querySelector('.lrow.cur');
+  if(cur)cur.scrollIntoView({block:'nearest',behavior:'smooth'});
+}
+function logStreamAppend(idx){
+  // Append-only variant for live replay — avoids re-rendering the full
+  // list for every event during fast playback. If the log is empty
+  // (still showing the empty-state), bootstrap it.
+  const body=document.getElementById('log-stream-body');
+  if(idx<0||idx>=_events.length)return;
+  if(body.querySelector('.empty-state'))body.innerHTML='';
+  // Demote any prior 'cur' to plain row.
+  body.querySelectorAll('.lrow.cur').forEach(el=>el.classList.remove('cur'));
+  const e=_events[idx];
+  const stage=e.stage||0;
+  const colorCls='color-'+(e.type||'OTHER');
+  const div=document.createElement('div');
+  div.className='lrow cur';
+  div.setAttribute('data-i',String(idx));
+  div.setAttribute('onclick',`logStreamSelect(${idx})`);
+  div.innerHTML=
+    `<span class="lt">${fmtTime(e.time)}</span>`+
+    `<span class="lstage" style="color:#00bceb">${stage||'·'}</span>`+
+    `<span class="ltype ${colorCls}" style="font-weight:bold">${esc(e.type||'')}</span>`+
+    `<span class="larg">${esc((e.binary||'').replace(/^claude:/,'')+' '+(e.args||''))}</span>`;
+  body.appendChild(div);
+  div.scrollIntoView({block:'nearest',behavior:'smooth'});
+}
+function logStreamSelect(idx){
+  // User clicked a log row — select that event in detail + highlight in
+  // both panes. Mirrors a swimlane dot click.
+  _selectedIdx=idx;
+  document.querySelectorAll('.event-dot.sel').forEach(el=>el.classList.remove('sel'));
+  const dot=document.querySelector('.event-dot[data-i="'+idx+'"]');
+  if(dot)dot.classList.add('sel');
+  document.querySelectorAll('#log-stream .lrow.cur').forEach(el=>el.classList.remove('cur'));
+  const row=document.querySelector('#log-stream .lrow[data-i="'+idx+'"]');
+  if(row){row.classList.add('cur');row.scrollIntoView({block:'nearest',behavior:'smooth'})}
+  renderDetail();
+}
+
 // --- Replay player ---
 function startReplay(){
   if(_isPlaying||_events.length===0)return;
@@ -2975,6 +3064,8 @@ function startReplay(){
   // Build an idx→dot lookup by data-i (renderSwimlane only emits dots
   // for stage>0 events, so not every _events index has a corresponding
   // dot — handled by the optional-chain on querySelector).
+  // Reset the log stream so it starts empty and gets appended live.
+  document.getElementById('log-stream-body').innerHTML='';
   for(let i=0;i<_events.length;i++){
     const e=_events[i];
     const offsetMs=new Date(e.time).getTime()-t0;
@@ -2982,6 +3073,8 @@ function startReplay(){
     _playTimers.push(setTimeout(()=>{
       const dot=document.querySelector('.event-dot[data-i="'+i+'"]');
       if(dot)dot.classList.remove('hidden');
+      // Append the row to the log stream as the dot lights up.
+      logStreamAppend(i);
     },scaledMs));
   }
   // Auto-stop at end + reset UI
@@ -3020,9 +3113,10 @@ function resetReplay(){
   document.querySelectorAll('.event-dot').forEach(d=>{d.classList.remove('hidden');d.classList.remove('sel')});
   document.getElementById('progress-bar').style.width='0%';
   document.getElementById('progress-ts').textContent='—';
-  // Detail panel back to default
+  // Detail panel + log stream back to default
   _selectedIdx=-1;
   renderDetail();
+  logStreamClear();
 }
 
 // Step to a specific event index. Hides dots after it, shows dots up to
@@ -3044,9 +3138,10 @@ function stepTo(idx){
   // Highlight the current step's dot
   const cur=document.querySelector('.event-dot[data-i="'+idx+'"]');
   if(cur)cur.classList.add('sel');
-  // Populate detail panel
+  // Populate detail panel + redraw log stream up to current step
   _selectedIdx=idx;
   renderDetail();
+  logStreamRenderUpTo(idx);
   // Progress indicator
   const t0=new Date(_events[0].time).getTime();
   const tN=new Date(_events[_events.length-1].time).getTime();
