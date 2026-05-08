@@ -165,11 +165,30 @@ def append_event(entry):
     entry = dict(entry)
     entry['args'] = _redact(entry.get('args', ''))
     # Backfill trace_id from the active trace if the producer didn't supply
-    # one. Skips when no recent webhook (>1h) — keeps idle-time activity
-    # NULL rather than tagging it onto a long-stale delivery.
+    # one. TWO gates:
+    #   - wall-clock window: don't keep stamping forever after a webhook
+    #     (1h cutoff)
+    #   - event-time gate: the EVENT's own timestamp must be at-or-after
+    #     the webhook arrival (with 5s grace for clock skew). Tail
+    #     readers can be backlogged — an MCP audit line with
+    #     timestamp=02:27 can arrive in append_event at wall-clock 02:31
+    #     just after a webhook fired. Without this gate, that pre-webhook
+    #     event would get the new trace_id and cascade into the
+    #     time-window correlator's MIN(ts), pulling in more pre-webhook
+    #     rows.
     if not entry.get('trace_id') and _active_trace_id:
-        if time.time() - _active_trace_started_ts < _TRACE_FALLBACK_WINDOW_SECS:
-            entry['trace_id'] = _active_trace_id
+        now = time.time()
+        if now - _active_trace_started_ts < _TRACE_FALLBACK_WINDOW_SECS:
+            ev_ts_str = (entry.get('time', '') or '')[:19]
+            try:
+                ev_ts = datetime.strptime(ev_ts_str, '%Y-%m-%dT%H:%M:%S').replace(
+                    tzinfo=timezone.utc).timestamp()
+                if ev_ts >= _active_trace_started_ts - 5:
+                    entry['trace_id'] = _active_trace_id
+            except (ValueError, TypeError):
+                # Unparseable timestamp — skip fallback rather than risk
+                # mis-attribution.
+                pass
     if _is_scrubber_noise(entry):
         stats['suppressed'] += 1
         return
@@ -473,6 +492,27 @@ def db_trace_backfill_correlator():
             conn = sqlite3.connect(EVENTS_DB)
             cutoff = (datetime.utcnow() - timedelta(seconds=_TRACE_BACKFILL_LOOKBACK_SECS)
                       ).strftime('%Y-%m-%dT%H:%M:%S')
+
+            # Pass 0: un-attribute pre-webhook events. For any trace
+            # anchored by a WEBHOOK row (the canonical demo case), no
+            # event with a timestamp BEFORE the webhook's timestamp can
+            # belong to that trace — webhook arrival starts the trace.
+            # Self-heals corruption from before the timestamp-aware
+            # fallback gate landed in append_event.
+            conn.execute(
+                "UPDATE events SET trace_id = NULL "
+                "WHERE id IN ( "
+                "    SELECT e.id FROM events e "
+                "    JOIN ( "
+                "        SELECT trace_id, MIN(timestamp) AS hook_ts "
+                "        FROM events "
+                "        WHERE type='WEBHOOK' AND trace_id IS NOT NULL "
+                "          AND LENGTH(trace_id) > 8 "
+                "        GROUP BY trace_id "
+                "    ) w ON e.trace_id = w.trace_id "
+                "    WHERE e.timestamp < w.hook_ts "
+                ")"
+            )
 
             # Pass 1: expand 8-char prefix trace_ids to full UUIDs. The
             # tail_orchestrator_skills handler stores the prefix when the
