@@ -2570,12 +2570,14 @@ function loadTrace(traceId){
     stopReplay();
     const t0=new Date(_events[0].time),tN=new Date(_events[_events.length-1].time);
     const dur=tN-t0;
+    const bg=d.background_dropped||0;
     meta.innerHTML=
       `<span class="label">trace:</span><span class="val">${esc(traceId.substring(0,8))}…</span>`+
       `<span class="label">start:</span><span class="val">${fmtTime(_events[0].time)}</span>`+
       `<span class="label">end:</span><span class="val">${fmtTime(_events[_events.length-1].time)}</span>`+
       `<span class="label">duration:</span><span class="val">${fmtDuration(dur)}</span>`+
-      `<span class="label">events:</span><span class="val">${d.event_count}</span>`;
+      `<span class="label">classified:</span><span class="val">${d.event_count}</span>`+
+      (bg>0?`<span class="label">background:</span><span class="val">${bg} (filtered)</span>`:'');
     renderSwimlane();
   })
 }
@@ -3081,48 +3083,66 @@ a{{color:#0a6aba}}
 
             def classify_stage(typ, src, args, binary):
                 """Return 1..9 for the 9 walk stages; 0 if uncategorized.
-                Order matters — first match wins (publish before generic
-                tool, etc.)."""
+                Order matters — first match wins. The classifier is keyed
+                off observed real-trace shapes (see project_agent_walk_demo
+                memory for sample rows). Stage 0 events are filtered out
+                of the response below."""
                 args = (args or '').lower()
                 src = (src or '').lower()
                 binary = (binary or '').lower()
-                # 1. Webhook
+                # 1. Webhook arrival
                 if typ == 'WEBHOOK':
                     return 1
-                # 8. GitHub publish via MCP — must come before generic tool
-                if typ == 'MCP' and any(op in args for op in (
+                # 7. Model response — Stop hook event captured by DC's
+                # claudecode connector (args is literal 'llm_response').
+                if src == 'defenseclaw' and 'llm_response' in args:
+                    return 7
+                # 5. Claude Code prompt submit / session start
+                if src == 'defenseclaw' and (
+                        'llm_prompt' in args or 'userpromptsubmit' in args
+                        or 'sessionstart' in args or 'session_start' in args):
+                    return 5
+                # 9. Cleanup / audit fan-out — DC lifecycle stop events
+                # only (the daemon emits 'gateway completed' for every
+                # verdict, which is NOT cleanup; restrict to explicit
+                # stop/end markers).
+                if src == 'defenseclaw' and any(t in args for t in (
+                        'sessionend', 'session_end', 'sidecar stop',
+                        'gateway stop', 'sink_health stop')):
+                    return 9
+                # 8. GitHub publish via MCP — write ops only
+                if typ == 'MCP' and any(t in args for t in (
                         'comment_on_', 'create_pr', 'close_issue',
                         'create_pull_request', 'create_pr_review',
-                        'comment_on_discussion', 'create_release')):
+                        'comment_on_discussion', 'create_release',
+                        ' post ', ' put ', ' patch ', ' delete ',
+                        'post /repos', 'put /repos', 'patch /repos',
+                        'delete /repos')):
                     return 8
-                # 9. Cleanup / audit fan-out
-                if src == 'defenseclaw' and any(t in args for t in (
-                        'session_end', 'sessionend', 'completed',
-                        'sidecar stop', 'gateway stop')):
-                    return 9
-                # 7. Model response
-                if src == 'defenseclaw' and ('llm_response' in args or 'stop hook' in args):
-                    return 7
-                # 5. Claude Code invocation
-                if src == 'defenseclaw' and ('llm_prompt' in args or 'userpromptsubmit' in args
-                                              or 'sessionstart' in args or 'connector' in args):
-                    return 5
-                # 6. Tool calls (generic)
-                if typ == 'MCP' or (src == 'defenseclaw' and ('tool' in args or 'pretooluse' in args
-                                                              or 'posttooluse' in args)):
+                # 6. Tool calls — generic MCP read ops, plus all DC
+                # verdict/tool events (the `gateway completed — action=…`
+                # rows that land per PreToolUse/PostToolUse hook).
+                if typ == 'MCP':
+                    return 6
+                if src == 'defenseclaw' and (
+                        'pretooluse' in args or 'posttooluse' in args
+                        or 'tool' in args
+                        or 'action=' in args or 'verdict' in args
+                        or 'gateway completed' in args):
                     return 6
                 # 4. Pre-flight scans
                 if typ == 'SCAN' or src in ('codeguard', 'mcp-scan', 'skill-scan', 'prompt-scan'):
                     return 4
-                # 3. Skill selection
-                if src == 'skill-dispatch' and 'agent-run' not in args:
-                    return 3
-                # 2. Orchestrator dispatch
-                if src == 'skill-dispatch' and 'agent-run' in args:
+                # 2. Orchestrator dispatch — skill-dispatch events whose
+                # binary indicates the run-boundary skill (binary is
+                # 'skill:agent-run', NOT in args).
+                if src == 'skill-dispatch' and 'agent-run' in binary:
                     return 2
-                # eslogger raw process events: place on the orchestrator
-                # lane if early in the trace, tool lane otherwise (left
-                # as 0 here; frontend can promote based on time-window)
+                # 3. Skill selection — every other skill-dispatch event
+                if src == 'skill-dispatch':
+                    return 3
+                # Uncategorized — eslogger process events, tinyproxy
+                # connections, etc. Filtered out of the swimlane below.
                 return 0
 
             try:
@@ -3134,16 +3154,23 @@ a{{color:#0a6aba}}
                     (trace_id,)
                 ).fetchall()
                 conn.close()
-                events = []
+                # Build the list, then filter to classified-only. Per
+                # design: the swimlane shows the canonical 9-stage flow,
+                # not raw process noise. Dropped count reported back so
+                # the UI can show "filtered N background events" if
+                # needed.
+                all_events = []
                 for r in rows:
                     ts, typ, uid, binary, args, policy, is_agent, source, tid = r
-                    events.append({
+                    all_events.append({
                         'time': ts, 'type': typ, 'uid': uid, 'binary': binary,
                         'args': args, 'policy': policy,
                         'is_agent': bool(is_agent), 'source': source,
                         'trace_id': tid,
                         'stage': classify_stage(typ, source, args, binary),
                     })
+                events = [e for e in all_events if e['stage'] > 0]
+                dropped = len(all_events) - len(events)
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
@@ -3154,6 +3181,7 @@ a{{color:#0a6aba}}
                     'first_ts': events[0]['time'] if events else None,
                     'last_ts': events[-1]['time'] if events else None,
                     'event_count': len(events),
+                    'background_dropped': dropped,
                 })
             except Exception as ex:
                 self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
