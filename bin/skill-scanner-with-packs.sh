@@ -1,8 +1,10 @@
 #!/opt/homebrew/bin/bash
-# Wraps `skill-scanner` to always activate the new ATR + PromptGuard rule packs
-# alongside the default `core` pack on every scan invocation. Without explicit
-# --rule-packs, only `core` rules fire — the new packs (added in 2.0.8 / 2.0.9
-# and expanded to ~314 rules in 2.0.10) ship installed but inactive.
+# Wraps `skill-scanner` to always activate the optional ATR + PromptGuard rule
+# packs on every scan invocation. The `core` pack is loaded implicitly by the
+# scanner; --rule-packs only takes the optional packs to add on top. Without
+# explicit --rule-packs, only `core` rules fire — the optional packs (added
+# in 2.0.8 / 2.0.9 and expanded to ~314 rules in 2.0.10) ship installed but
+# inactive.
 #
 # Used by the DefenseClaw gateway watcher via the binary: line in
 # ~/.defenseclaw/config.yaml under scanners.skill_scanner. Other subcommands
@@ -20,7 +22,7 @@ case "${1:-}" in
         # Append at the end so the user's positional skill_directory can't get
         # absorbed by --rule-packs' nargs='+' consumer — there's nothing after
         # the rule-pack list to be confused for a path.
-        exec "$SCANNER" "$sub" "$@" --rule-packs core atr promptguard
+        exec "$SCANNER" "$sub" "$@" --rule-packs atr promptguard
         ;;
     *)
         exec "$SCANNER" "$@"
