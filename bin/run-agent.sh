@@ -10,23 +10,23 @@ export HOME="/Users/aetherclaude"
 
 source /Users/aetherclaude/.env
 
-# Trace ID for the Agent Walk dashboard view. The /webhook handler in the
-# dashboard writes /Users/aetherclaude/state/trace-id (seeded from the GitHub
-# X-GitHub-Delivery header) before launchctl-kickstarting us. launchctl
-# doesn't propagate env vars, so the state file is the channel. Calendar-
-# interval and manual invocations leave the file absent; we mint a fresh
-# UUID so every run still gets a trace_id (just one not back-referencable
-# to a GitHub delivery).
-TRACE_FILE="/Users/aetherclaude/state/trace-id"
+# Lock key — passed as argv[1] by the dashboard's /webhook handler. The
+# webhook computes "issue-N" / "pr-N" / "disc-N" / "global" from the
+# payload and uses it to scope every per-orch resource (lockfile, state
+# files, active-trace marker). Webhooks for different keys spawn parallel
+# orchestrators; webhooks for the same key serialize via the per-key
+# lockfile.
+LOCK_KEY="${1:-}"
+if [ -z "$LOCK_KEY" ]; then
+    echo "$(date "+%Y-%m-%dT%H:%M:%S") No lock_key argv — webhook-only policy, exiting" >> "/Users/aetherclaude/logs/orchestrator.log" 2>/dev/null
+    exit 0
+fi
+
+# Per-key state files. The dashboard /webhook handler writes trace-id
+# and trigger-event before spawning us; we read+delete them.
+TRACE_FILE="/Users/aetherclaude/state/trace-id.${LOCK_KEY}"
 if [ ! -f "$TRACE_FILE" ]; then
-    # Webhook-only policy: every orchestrator run must originate from a
-    # GitHub webhook (the dashboard's /webhook handler writes this state
-    # file before kickstarting us). Calendar / manual / kickstart-without-
-    # webhook invocations have no business here — they used to mint a
-    # fresh uuidgen trace_id and run a full sweep, which muddied the
-    # agent-walk demo and caused trace-attribution headaches when their
-    # activity bled into webhook traces. Exit silently.
-    echo "$(date "+%Y-%m-%dT%H:%M:%S") No trace-id state file — webhook-only policy, exiting" >> "/Users/aetherclaude/logs/orchestrator.log" 2>/dev/null
+    echo "$(date "+%Y-%m-%dT%H:%M:%S") No trace-id state file for ${LOCK_KEY}, exiting" >> "/Users/aetherclaude/logs/orchestrator.log" 2>/dev/null
     exit 0
 fi
 AETHER_TRACE_ID="$(cat "$TRACE_FILE")"
@@ -41,7 +41,7 @@ WORKSPACE="/Users/aetherclaude/workspace/AetherSDR"
 LOGDIR="/Users/aetherclaude/logs"
 PROMPTDIR="/Users/aetherclaude/prompts"
 STATE_FILE="/Users/aetherclaude/state/last-poll.json"
-LOCKFILE="/tmp/aetherclaude.lock"
+LOCKFILE="/tmp/aetherclaude-${LOCK_KEY}.lock"
 REPO="ten9876/AetherSDR"
 MAX_ISSUES_PER_RUN=4
 MAX_PRS_PER_RUN=2
@@ -63,7 +63,7 @@ echo $$ > "$LOCKFILE"
 # (otherwise each webhook of a burst would mint its own trace_id, but only
 # the FIRST one's orchestrator instance actually runs — the others bounce
 # off this lockfile, leaving their traces empty of orchestrator activity).
-ACTIVE_TRACE_FILE="/Users/aetherclaude/state/active-trace-id"
+ACTIVE_TRACE_FILE="/Users/aetherclaude/state/active-trace-id.${LOCK_KEY}"
 echo "$AETHER_TRACE_ID" > "$ACTIVE_TRACE_FILE"
 trap 'rm -f "$LOCKFILE" "$ACTIVE_TRACE_FILE"' EXIT
 
@@ -1364,9 +1364,10 @@ fi
 TRIGGER_EVENT=""
 TRIGGER_ACTION=""
 TRIGGER_LABEL=""
-if [ -f /Users/aetherclaude/state/trigger-event ]; then
-    raw=$(cat /Users/aetherclaude/state/trigger-event 2>/dev/null)
-    rm -f /Users/aetherclaude/state/trigger-event
+TRIGGER_FILE="/Users/aetherclaude/state/trigger-event.${LOCK_KEY}"
+if [ -f "$TRIGGER_FILE" ]; then
+    raw=$(cat "$TRIGGER_FILE" 2>/dev/null)
+    rm -f "$TRIGGER_FILE"
     IFS=':' read -r TRIGGER_EVENT TRIGGER_ACTION TRIGGER_LABEL <<< "$raw"
 fi
 log "Trigger: ${TRIGGER_EVENT:-interval/manual}${TRIGGER_ACTION:+ ($TRIGGER_ACTION)}${TRIGGER_LABEL:+ label=$TRIGGER_LABEL}"
@@ -1547,9 +1548,10 @@ except: print(0)
 fi
 
 # --- @Mention handler (priority — runs before all other skills) ---
-if [ -f /Users/aetherclaude/state/mention ]; then
-    MENTION_NUMBER=$(cat /Users/aetherclaude/state/mention)
-    rm -f /Users/aetherclaude/state/mention
+MENTION_FILE="/Users/aetherclaude/state/mention.${LOCK_KEY}"
+if [ -f "$MENTION_FILE" ]; then
+    MENTION_NUMBER=$(cat "$MENTION_FILE")
+    rm -f "$MENTION_FILE"
     if [ -n "$MENTION_NUMBER" ]; then
         log "--- Skill: @Mention Response (Issue #${MENTION_NUMBER}) ---"
 

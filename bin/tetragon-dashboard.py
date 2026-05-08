@@ -83,6 +83,9 @@ WEBHOOK_EVENTS = {'issues', 'issue_comment', 'pull_request', 'pull_request_revie
                   'discussion', 'discussion_comment',
                   'check_run', 'workflow_run', 'release'}
 _last_webhook_trigger = 0
+# Per-lock-key debounce: webhooks for issue-X don't debounce webhooks
+# for pr-Y. Each key tracked independently.
+_last_webhook_trigger_per_key = {}
 
 # Active trace_id for the Agent Walk view. Mirrored from
 # /Users/aetherclaude/state/active-trace-id, which run-agent.sh writes
@@ -628,43 +631,56 @@ def db_trace_backfill_correlator():
                 pass
 
 def track_active_trace():
-    """Mirror /Users/aetherclaude/state/active-trace-id into _active_trace_id.
-    The file appears when run-agent.sh starts and is removed by its EXIT
-    trap. When it disappears we clear _active_trace_id so the fallback
-    stamping in append_event() stops applying — preventing the cross-run
-    bleed where events from a later unrelated agent run got tagged with
-    a stale webhook's trace_id.
+    """Mirror /Users/aetherclaude/state/active-trace-id.<lock_key> files
+    into _trace_prefix_to_full + _active_trace_id. Each running
+    orchestrator writes its own per-key file; multiple may exist
+    concurrently when parallel webhooks for different issues are running.
 
-    Runs every 2s. Cheap stat()/read() on a tiny file.
+    For _active_trace_id (single-valued global, used as a best-effort
+    fallback in append_event for events lacking explicit trace_id):
+    pick the most-recently-modified file. Under heavy parallel load
+    this fallback gets noisier, but the explicit per-source stamping
+    (DC via active-trace, claude-transcript via issue-number lookup,
+    MCP via process env) carries most of the load.
+
+    Runs every 2s.
     """
     global _active_trace_id, _active_trace_started_ts
-    last_seen = None
+    import glob
+    last_seen_set = set()
     while True:
         time.sleep(2)
         try:
-            with open(ACTIVE_TRACE_FILE) as f:
-                content = f.read().strip()
-            if content and content != last_seen:
-                # Orchestrator just started (or the file was rewritten with
-                # a new trace_id). Pick it up.
-                _active_trace_id = content
+            paths = glob.glob('/Users/aetherclaude/state/active-trace-id.*')
+            current_set = set()
+            best_mtime = 0
+            best_content = None
+            for p in paths:
+                try:
+                    with open(p) as f:
+                        content = f.read().strip()
+                    if not content:
+                        continue
+                    current_set.add(content)
+                    # Register the prefix→full mapping for every active
+                    # orch so tail_orchestrator_skills can resolve any
+                    # [xxxxxxxx] from any concurrent run.
+                    if len(content) >= 8:
+                        _trace_prefix_to_full[content[:8]] = content
+                    mt = os.path.getmtime(p)
+                    if mt > best_mtime:
+                        best_mtime = mt
+                        best_content = content
+                except (FileNotFoundError, OSError):
+                    continue
+            if best_content and best_content != _active_trace_id:
+                _active_trace_id = best_content
                 _active_trace_started_ts = time.time()
-                # Also register the prefix → full mapping so
-                # tail_orchestrator_skills can resolve [xxxxxxxx] log
-                # prefixes to the full UUID without needing a separate
-                # /webhook event to seed the dict. Required for
-                # calendar-triggered runs where /webhook never fires.
-                if len(content) >= 8:
-                    _trace_prefix_to_full[content[:8]] = content
-                last_seen = content
-        except FileNotFoundError:
-            # File gone — orchestrator exited. Clear active trace so
-            # subsequent events without their own trace_id stay NULL
-            # rather than getting stuck on the just-finished trace.
-            if last_seen is not None:
+            elif not current_set and last_seen_set:
+                # All orchs gone. Clear fallback.
                 _active_trace_id = None
                 _active_trace_started_ts = 0
-                last_seen = None
+            last_seen_set = current_set
         except Exception:
             pass
 
@@ -3939,36 +3955,50 @@ a{{color:#0a6aba}}
             expected = 'sha256=' + hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
             if not hmac.compare_digest(sig_header, expected):
                 self.send_response(401); self.end_headers(); self.wfile.write(b'Invalid signature'); return
-            # Mint trace_id from GitHub's X-GitHub-Delivery (UUID per webhook,
-            # already unique in their audit) — falls back to a fresh UUID for
-            # synthetic deliveries (gh webhook-redeliver, manual replay). The
-            # trace_id is the join key for the Agent Walk view that links
-            # every event from this webhook through orchestrator → Claude →
-            # tools → MCP → GitHub publish.
-            # Burst handling: if an orchestrator is already running, reuse
-            # ITS trace_id rather than minting a fresh one. Otherwise we'd
-            # leave each burst-webhook as a sibling trace with no
-            # orchestrator activity (its kickstart bounces off the
-            # orchestrator's lockfile). Detect by the active-trace-id
-            # state file run-agent.sh writes alongside its lockfile, plus
-            # liveness check on the lockfile's PID.
+            # Parse event payload first — we need the issue/PR number to
+            # derive the per-issue lock_key before deciding whether to
+            # burst-adopt or mint a fresh trace_id.
+            event_type = self.headers.get('X-GitHub-Event', 'unknown')
+            try:
+                payload = json.loads(body)
+            except:
+                self.send_response(400); self.end_headers(); self.wfile.write(b'Bad JSON'); return
+            action = payload.get('action', '')
+            # Compute lock_key — 'issue-N' / 'pr-N' / 'disc-N' / 'global'.
+            # Webhooks for the same lock_key serialize via per-issue
+            # lockfile in run-agent.sh; webhooks for different keys run
+            # in parallel orchestrators. The key is also used to scope
+            # per-key state files so parallel orchs don't fight over a
+            # single global trace-id / trigger-event / active-trace file.
+            lock_key = 'global'
+            if event_type in ('issues', 'issue_comment'):
+                num = (payload.get('issue') or {}).get('number')
+                if num: lock_key = f'issue-{num}'
+            elif event_type in ('pull_request', 'pull_request_review'):
+                num = (payload.get('pull_request') or {}).get('number')
+                if num: lock_key = f'pr-{num}'
+            elif event_type in ('discussion', 'discussion_comment'):
+                num = (payload.get('discussion') or {}).get('number')
+                if num: lock_key = f'disc-{num}'
+            # Burst-adopt: if an orchestrator is already running for THIS
+            # lock_key, reuse its trace_id rather than minting fresh.
+            # Different-key webhooks proceed normally and spawn their own
+            # parallel orchestrator (no burst, no adopt).
             trace_id = None
             adopted_running = False
+            lockfile = f'/tmp/aetherclaude-{lock_key}.lock'
+            active_trace_path = f'/Users/aetherclaude/state/active-trace-id.{lock_key}'
             try:
-                with open('/tmp/aetherclaude.lock') as _lf:
+                with open(lockfile) as _lf:
                     pid = int(_lf.read().strip())
-                # liveness: kill -0
                 os.kill(pid, 0)
-                # PID is alive — orchestrator running. Use its trace_id.
-                with open('/Users/aetherclaude/state/active-trace-id') as _tf:
+                with open(active_trace_path) as _tf:
                     running = _tf.read().strip()
                 if running and len(running) > 8:
                     trace_id = running
                     adopted_running = True
             except (FileNotFoundError, ProcessLookupError, ValueError, PermissionError):
                 pass
-            # Fresh delivery (no orchestrator running) — seed from
-            # X-GitHub-Delivery as before.
             if not trace_id:
                 trace_id = self.headers.get('X-GitHub-Delivery') or str(uuid.uuid4())
             # Mark this trace active so events that lack an explicit trace_id
@@ -3977,13 +4007,6 @@ a{{color:#0a6aba}}
             _active_trace_id = trace_id
             _active_trace_started_ts = time.time()
             _trace_prefix_to_full[trace_id[:8]] = trace_id
-            # Parse event
-            event_type = self.headers.get('X-GitHub-Event', 'unknown')
-            try:
-                payload = json.loads(body)
-            except:
-                self.send_response(400); self.end_headers(); self.wfile.write(b'Bad JSON'); return
-            action = payload.get('action', '')
             # Log the webhook event
             summary = ''
             if event_type == 'issues':
@@ -4053,72 +4076,73 @@ a{{color:#0a6aba}}
             # Releases: only react when a release is actually published.
             if event_type == 'release' and action != 'published':
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (action)'); return
-            # Debounce — don't trigger more than once per 60 seconds (unless @mention)
+            # Debounce — per lock_key so issue-X webhooks don't debounce
+            # pr-Y or disc-Z. 60s window per key.
             now = time.time()
-            if not is_mention and now - _last_webhook_trigger < 60:
+            last_for_key = _last_webhook_trigger_per_key.get(lock_key, 0)
+            if not is_mention and now - last_for_key < 60:
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Debounced'); return
-            _last_webhook_trigger = now
+            _last_webhook_trigger_per_key[lock_key] = now
+            # All state files are now scoped per lock_key so parallel
+            # orchestrators (one per issue/PR) can each read their own
+            # without racing on a shared global.
             # Write mention flag for orchestrator
             if is_mention:
                 try:
                     mention_issue = payload.get('issue', payload.get('pull_request', {})).get('number', '')
-                    with open('/Users/aetherclaude/state/mention', 'w') as mf:
+                    with open(f'/Users/aetherclaude/state/mention.{lock_key}', 'w') as mf:
                         mf.write(str(mention_issue))
                 except: pass
             # Stash the trigger event type so run-agent.sh can route to only
-            # the relevant skills (instead of running all 7 every webhook).
-            # Calendar-interval and manual kickstarts leave this file absent
-            # → orchestrator runs everything (sweep mode).
+            # the relevant skills.
             # Format: "<event_type>:<action>" or "<event_type>:<action>:<label>"
-            # for issues:labeled events, where the label name distinguishes
-            # `aetherclaude-eligible` (implement-authorize) from other labels.
+            # for issues:labeled events.
             try:
                 trigger_str = f"{event_type}:{action}"
                 if event_type == 'issues' and action == 'labeled':
                     label_name = (payload.get('label') or {}).get('name', '')
                     if label_name:
                         trigger_str += f":{label_name}"
-                with open('/Users/aetherclaude/state/trigger-event', 'w') as tf:
+                with open(f'/Users/aetherclaude/state/trigger-event.{lock_key}', 'w') as tf:
                     tf.write(trigger_str)
             except: pass
-            # Hand the trace_id off to the orchestrator. launchctl kickstart
-            # doesn't propagate env vars, so we drop the trace_id in a state
-            # file that run-agent.sh sources at startup. Same pattern as
-            # trigger-event above. The orchestrator exports it as
-            # AETHER_TRACE_ID + DEFENSECLAW_RUN_ID so the Agent Walk view can
-            # correlate every downstream event back to this webhook.
-            # Skip when adopted_running — the running orchestrator already
-            # has its trace_id, no need to write or kickstart again.
+            # Skip when adopted_running — the running orchestrator for
+            # this same lock_key already has its trace_id, no need to
+            # write or spawn again.
             if not adopted_running:
                 try:
-                    with open('/Users/aetherclaude/state/trace-id', 'w') as tf:
+                    with open(f'/Users/aetherclaude/state/trace-id.{lock_key}', 'w') as tf:
                         tf.write(trace_id)
                 except: pass
-            # Trigger agent run locally via launchctl. Skip when an
-            # orchestrator is already running (adopted_running) — the
-            # kickstart would just spawn an instance that immediately
-            # exits at the lockfile check, and we already adopted its
-            # trace_id above.
+            # Trigger the orchestrator. Direct subprocess.Popen instead of
+            # `launchctl kickstart` because launchd enforces one-instance-
+            # per-service, which would block parallelism. Forking
+            # run-agent.sh directly lets multiple per-issue orchestrators
+            # run concurrently. lock_key is passed as argv so run-agent.sh
+            # knows which scoped state files to read.
             if not adopted_running:
                 try:
                     import subprocess
-                    subprocess.Popen(['/bin/launchctl', 'kickstart', 'system/com.aetherclaude.agent'],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.Popen(
+                        ['/Users/aetherclaude/bin/run-agent.sh', lock_key],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
                     with lock:
                         entry = {'time': now_utc_iso(), 'type': 'WEBHOOK', 'uid': 0,
-                                 'binary': 'trigger', 'args': f'Agent triggered by {event_type}: {summary[:80]}',
+                                 'binary': 'trigger', 'args': f'Agent triggered ({lock_key}) by {event_type}: {summary[:60]}',
                                  'policy': '', 'is_agent': True, 'source': 'webhook',
                                  'trace_id': trace_id}
                         append_event(entry)
                 except: pass
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Triggered')
             else:
-                # Burst-adopted: log a small marker for the dashboard so
-                # the SE can see "this webhook folded into trace X" on
-                # the swimlane.
+                # Burst-adopted into the same-key orch already running.
                 with lock:
                     entry = {'time': now_utc_iso(), 'type': 'WEBHOOK', 'uid': 0,
-                             'binary': 'trigger', 'args': f'Burst-adopted into running trace ({event_type}: {summary[:60]})',
+                             'binary': 'trigger', 'args': f'Burst-adopted into running {lock_key} trace ({event_type}: {summary[:50]})',
                              'policy': '', 'is_agent': True, 'source': 'webhook',
                              'trace_id': trace_id}
                     append_event(entry)
