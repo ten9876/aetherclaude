@@ -508,24 +508,40 @@ def db_trace_backfill_correlator():
             cutoff = (datetime.utcnow() - timedelta(seconds=_TRACE_BACKFILL_LOOKBACK_SECS)
                       ).strftime('%Y-%m-%dT%H:%M:%S')
 
-            # Pass 0: un-attribute pre-webhook events. For any trace
-            # anchored by a WEBHOOK row (the canonical demo case), no
-            # event with a timestamp BEFORE the webhook's timestamp can
-            # belong to that trace — webhook arrival starts the trace.
-            # Self-heals corruption from before the timestamp-aware
-            # fallback gate landed in append_event.
+            # Pass 0: un-attribute pre-trace events. The trace's "true
+            # start" is whichever happened first — the WEBHOOK arrival
+            # OR the orchestrator's `agent-run starting` boundary. Both
+            # matter because:
+            #   - Webhook-triggered traces have WEBHOOK first, then orch
+            #     starts a few hundred ms later.
+            #   - Calendar-triggered traces have orch start first, and a
+            #     later webhook can BURST-ADOPT into the running trace.
+            #     The orchestrator activity that predates that webhook
+            #     legitimately belongs to the trace.
+            # Using MIN(webhook_ts, agent_run_starting_ts) as the floor
+            # preserves the orch-pre-webhook activity in burst-adopted
+            # cases, while still cleaning genuinely cross-trace bleed.
             conn.execute(
                 "UPDATE events SET trace_id = NULL "
                 "WHERE id IN ( "
                 "    SELECT e.id FROM events e "
                 "    JOIN ( "
-                "        SELECT trace_id, MIN(timestamp) AS hook_ts "
-                "        FROM events "
-                "        WHERE type='WEBHOOK' AND trace_id IS NOT NULL "
-                "          AND LENGTH(trace_id) > 8 "
+                "        SELECT trace_id, "
+                "               MIN(CASE WHEN starts_trace THEN timestamp END) AS true_start "
+                "        FROM ( "
+                "            SELECT trace_id, timestamp, "
+                "                   ( type='WEBHOOK' "
+                "                     OR (source='skill-dispatch' "
+                "                         AND binary_name='skill:agent-run' "
+                "                         AND args='starting') "
+                "                   ) AS starts_trace "
+                "            FROM events "
+                "            WHERE trace_id IS NOT NULL AND LENGTH(trace_id) > 8 "
+                "        ) "
                 "        GROUP BY trace_id "
+                "        HAVING true_start IS NOT NULL "
                 "    ) w ON e.trace_id = w.trace_id "
-                "    WHERE e.timestamp < w.hook_ts "
+                "    WHERE e.timestamp < w.true_start "
                 ")"
             )
 
@@ -553,33 +569,43 @@ def db_trace_backfill_correlator():
                         (full_row[0], prefix)
                     )
 
-            # Pass 2: time-window claim NULL rows. Critical: each trace's
-            # left-edge floor is its WEBHOOK row's timestamp (when one
-            # exists). Without that floor, the 5s back-padding would
-            # re-claim pre-webhook NULLs that Pass 0 just cleaned, and
-            # the cascade would never converge.
+            # Pass 2: time-window claim NULL rows. Each trace's left-
+            # edge floor is the EARLIER of its WEBHOOK row and its
+            # `agent-run starting` row — same reasoning as Pass 0
+            # (burst-adopted webhooks arrive after the orch already
+            # started). Right edge is MAX(timestamp) + 5s for trailing
+            # audit_sink lag.
             traces = conn.execute(
                 "SELECT e.trace_id, MIN(e.timestamp), MAX(e.timestamp), "
                 "       (SELECT MIN(w.timestamp) FROM events w "
-                "        WHERE w.trace_id = e.trace_id AND w.type='WEBHOOK') "
+                "        WHERE w.trace_id = e.trace_id AND w.type='WEBHOOK'), "
+                "       (SELECT MIN(s.timestamp) FROM events s "
+                "        WHERE s.trace_id = e.trace_id "
+                "          AND s.source='skill-dispatch' "
+                "          AND s.binary_name='skill:agent-run' "
+                "          AND s.args='starting') "
                 "FROM events e "
                 "WHERE e.trace_id IS NOT NULL AND LENGTH(e.trace_id) > 8 "
                 "  AND e.timestamp > ? "
                 "GROUP BY e.trace_id",
                 (cutoff,)
             ).fetchall()
-            for trace_id, t_min, t_max, hook_ts in traces:
+            for trace_id, t_min, t_max, hook_ts, run_start_ts in traces:
                 try:
-                    t_min_dt = datetime.strptime(t_min[:19], '%Y-%m-%dT%H:%M:%S')
                     t_max_dt = datetime.strptime(t_max[:19], '%Y-%m-%dT%H:%M:%S')
                 except ValueError:
                     continue
-                # Default: 5s pre-padding for clock skew. If the trace has
-                # a WEBHOOK row, use its timestamp as the hard floor —
-                # nothing before the webhook can belong to the trace.
-                if hook_ts:
-                    start = hook_ts[:19]
+                # Floor = earlier of (webhook, run-start). If neither
+                # exists (legacy / non-canonical traces), fall back to
+                # MIN(t) - 5s padding.
+                candidates = [t for t in (hook_ts, run_start_ts) if t]
+                if candidates:
+                    start = min(candidates)[:19]
                 else:
+                    try:
+                        t_min_dt = datetime.strptime(t_min[:19], '%Y-%m-%dT%H:%M:%S')
+                    except ValueError:
+                        continue
                     start = (t_min_dt - timedelta(seconds=_TRACE_BACKFILL_PADDING_SECS)
                              ).strftime('%Y-%m-%dT%H:%M:%S')
                 end = (t_max_dt + timedelta(seconds=_TRACE_BACKFILL_PADDING_SECS)
