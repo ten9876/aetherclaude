@@ -15,6 +15,14 @@ pass out quick proto tcp from any to 160.79.104.0/24 port 443 user 965
 # Anthropic telemetry — statsig (34.36.57.0/24), sentry (35.186.247.0/24)
 pass out quick proto tcp from any to { 34.36.57.0/24 35.186.247.0/24 } port 443 user 965
 
+# Cisco AI Defense (us.api.inspect.aidefense.security.cisco.com — AWS us-west-2 ELB)
+# Used by skill-scanner / mcp-scanner --use-aidefense for remote inspection
+pass out quick proto tcp from any to { 184.34.79.0/24 52.25.192.0/24 52.38.114.0/24 } port 443 user 965
+
+# VirusTotal (www.virustotal.com / virustotal.com — Google Cloud, owned by Mandiant)
+# Used by skill-scanner / mcp-scanner --use-virustotal for hash lookups
+pass out quick proto tcp from any to { 216.239.32.0/19 34.54.88.0/24 } port 443 user 965
+
 # Claude OAuth login (AWS Cognito — dynamic IPs)
 pass out quick proto tcp from any to <anthropic_auth> port 443 user 965
 
