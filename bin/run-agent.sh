@@ -51,7 +51,14 @@ if [ -f "$LOCKFILE" ]; then
     fi
 fi
 echo $$ > "$LOCKFILE"
-trap 'rm -f $LOCKFILE' EXIT
+# Publish the running orchestrator's trace_id alongside the lockfile so the
+# dashboard's /webhook handler can fold burst-webhooks into this trace
+# (otherwise each webhook of a burst would mint its own trace_id, but only
+# the FIRST one's orchestrator instance actually runs — the others bounce
+# off this lockfile, leaving their traces empty of orchestrator activity).
+ACTIVE_TRACE_FILE="/Users/aetherclaude/state/active-trace-id"
+echo "$AETHER_TRACE_ID" > "$ACTIVE_TRACE_FILE"
+trap 'rm -f "$LOCKFILE" "$ACTIVE_TRACE_FILE"' EXIT
 
 log() { echo "$(date "+%Y-%m-%dT%H:%M:%S") [${AETHER_TRACE_ID:0:8}] $1" >> "$LOGDIR/orchestrator.log"; }
 

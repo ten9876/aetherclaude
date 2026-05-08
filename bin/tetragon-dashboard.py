@@ -3646,7 +3646,32 @@ a{{color:#0a6aba}}
             # trace_id is the join key for the Agent Walk view that links
             # every event from this webhook through orchestrator → Claude →
             # tools → MCP → GitHub publish.
-            trace_id = self.headers.get('X-GitHub-Delivery') or str(uuid.uuid4())
+            # Burst handling: if an orchestrator is already running, reuse
+            # ITS trace_id rather than minting a fresh one. Otherwise we'd
+            # leave each burst-webhook as a sibling trace with no
+            # orchestrator activity (its kickstart bounces off the
+            # orchestrator's lockfile). Detect by the active-trace-id
+            # state file run-agent.sh writes alongside its lockfile, plus
+            # liveness check on the lockfile's PID.
+            trace_id = None
+            adopted_running = False
+            try:
+                with open('/tmp/aetherclaude.lock') as _lf:
+                    pid = int(_lf.read().strip())
+                # liveness: kill -0
+                os.kill(pid, 0)
+                # PID is alive — orchestrator running. Use its trace_id.
+                with open('/Users/aetherclaude/state/active-trace-id') as _tf:
+                    running = _tf.read().strip()
+                if running and len(running) > 8:
+                    trace_id = running
+                    adopted_running = True
+            except (FileNotFoundError, ProcessLookupError, ValueError, PermissionError):
+                pass
+            # Fresh delivery (no orchestrator running) — seed from
+            # X-GitHub-Delivery as before.
+            if not trace_id:
+                trace_id = self.headers.get('X-GitHub-Delivery') or str(uuid.uuid4())
             # Mark this trace active so events that lack an explicit trace_id
             # but arrive while the orchestrator run is in flight get tagged.
             global _active_trace_id, _active_trace_started_ts
@@ -3751,22 +3776,42 @@ a{{color:#0a6aba}}
             # trigger-event above. The orchestrator exports it as
             # AETHER_TRACE_ID + DEFENSECLAW_RUN_ID so the Agent Walk view can
             # correlate every downstream event back to this webhook.
-            try:
-                with open('/Users/aetherclaude/state/trace-id', 'w') as tf:
-                    tf.write(trace_id)
-            except: pass
-            # Trigger agent run locally via launchctl
-            try:
-                import subprocess
-                subprocess.Popen(['/bin/launchctl', 'kickstart', 'system/com.aetherclaude.agent'],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Skip when adopted_running — the running orchestrator already
+            # has its trace_id, no need to write or kickstart again.
+            if not adopted_running:
+                try:
+                    with open('/Users/aetherclaude/state/trace-id', 'w') as tf:
+                        tf.write(trace_id)
+                except: pass
+            # Trigger agent run locally via launchctl. Skip when an
+            # orchestrator is already running (adopted_running) — the
+            # kickstart would just spawn an instance that immediately
+            # exits at the lockfile check, and we already adopted its
+            # trace_id above.
+            if not adopted_running:
+                try:
+                    import subprocess
+                    subprocess.Popen(['/bin/launchctl', 'kickstart', 'system/com.aetherclaude.agent'],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    with lock:
+                        entry = {'time': now_utc_iso(), 'type': 'WEBHOOK', 'uid': 0,
+                                 'binary': 'trigger', 'args': f'Agent triggered by {event_type}: {summary[:80]}',
+                                 'policy': '', 'is_agent': True, 'source': 'webhook',
+                                 'trace_id': trace_id}
+                        append_event(entry)
+                except: pass
+                self.send_response(200); self.end_headers(); self.wfile.write(b'Triggered')
+            else:
+                # Burst-adopted: log a small marker for the dashboard so
+                # the SE can see "this webhook folded into trace X" on
+                # the swimlane.
                 with lock:
                     entry = {'time': now_utc_iso(), 'type': 'WEBHOOK', 'uid': 0,
-                             'binary': 'trigger', 'args': f'Agent triggered by {event_type}: {summary[:80]}',
-                             'policy': '', 'is_agent': True, 'source': 'webhook'}
+                             'binary': 'trigger', 'args': f'Burst-adopted into running trace ({event_type}: {summary[:60]})',
+                             'policy': '', 'is_agent': True, 'source': 'webhook',
+                             'trace_id': trace_id}
                     append_event(entry)
-            except: pass
-            self.send_response(200); self.end_headers(); self.wfile.write(b'Triggered')
+                self.send_response(200); self.end_headers(); self.wfile.write(b'Adopted')
         else:
             self.send_response(404); self.end_headers()
     def _send_json(self, data):
