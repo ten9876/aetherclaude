@@ -553,27 +553,35 @@ def db_trace_backfill_correlator():
                         (full_row[0], prefix)
                     )
 
-            # Pass 2: time-window claim NULL rows.
+            # Pass 2: time-window claim NULL rows. Critical: each trace's
+            # left-edge floor is its WEBHOOK row's timestamp (when one
+            # exists). Without that floor, the 5s back-padding would
+            # re-claim pre-webhook NULLs that Pass 0 just cleaned, and
+            # the cascade would never converge.
             traces = conn.execute(
-                "SELECT trace_id, MIN(timestamp), MAX(timestamp) "
-                "FROM events "
-                "WHERE trace_id IS NOT NULL AND LENGTH(trace_id) > 8 "
-                "  AND timestamp > ? "
-                "GROUP BY trace_id",
+                "SELECT e.trace_id, MIN(e.timestamp), MAX(e.timestamp), "
+                "       (SELECT MIN(w.timestamp) FROM events w "
+                "        WHERE w.trace_id = e.trace_id AND w.type='WEBHOOK') "
+                "FROM events e "
+                "WHERE e.trace_id IS NOT NULL AND LENGTH(e.trace_id) > 8 "
+                "  AND e.timestamp > ? "
+                "GROUP BY e.trace_id",
                 (cutoff,)
             ).fetchall()
-            for trace_id, t_min, t_max in traces:
-                # Pad the window. timestamp column is ISO-8601 UTC strings,
-                # which sort lexicographically, so we can use string math
-                # without parsing — but we need to be careful with the
-                # padding (5s). Simplest: parse + format.
+            for trace_id, t_min, t_max, hook_ts in traces:
                 try:
                     t_min_dt = datetime.strptime(t_min[:19], '%Y-%m-%dT%H:%M:%S')
                     t_max_dt = datetime.strptime(t_max[:19], '%Y-%m-%dT%H:%M:%S')
                 except ValueError:
                     continue
-                start = (t_min_dt - timedelta(seconds=_TRACE_BACKFILL_PADDING_SECS)
-                         ).strftime('%Y-%m-%dT%H:%M:%S')
+                # Default: 5s pre-padding for clock skew. If the trace has
+                # a WEBHOOK row, use its timestamp as the hard floor —
+                # nothing before the webhook can belong to the trace.
+                if hook_ts:
+                    start = hook_ts[:19]
+                else:
+                    start = (t_min_dt - timedelta(seconds=_TRACE_BACKFILL_PADDING_SECS)
+                             ).strftime('%Y-%m-%dT%H:%M:%S')
                 end = (t_max_dt + timedelta(seconds=_TRACE_BACKFILL_PADDING_SECS)
                        ).strftime('%Y-%m-%dT%H:%M:%S')
                 conn.execute(
