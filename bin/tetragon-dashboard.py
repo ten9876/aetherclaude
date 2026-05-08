@@ -2756,9 +2756,10 @@ const STAGES=[
   {n:4,name:'Pre-flight scans'},
   {n:5,name:'Claude Code'},
   {n:6,name:'Tool calls'},
-  {n:7,name:'Response'},
-  {n:8,name:'GitHub publish'},
-  {n:9,name:'Cleanup / audit'},
+  {n:7,name:'MCP'},
+  {n:8,name:'Response'},
+  {n:9,name:'GitHub publish'},
+  {n:10,name:'Cleanup / audit'},
 ];
 const SVG_NS='http://www.w3.org/2000/svg';
 const LANE_HEIGHT=40,LANE_LABEL_W=180,RIGHT_PAD=24,TOP_PAD=8,BOTTOM_PAD=28;
@@ -3367,7 +3368,7 @@ a{{color:#0a6aba}}
                 return
 
             def classify_stage(typ, src, args, binary):
-                """Return 1..9 for the 9 walk stages; 0 if uncategorized.
+                """Return 1..10 for the 10 walk stages; 0 if uncategorized.
                 Order matters — first match wins. The classifier is keyed
                 off observed real-trace shapes (see project_agent_walk_demo
                 memory for sample rows). Stage 0 events are filtered out
@@ -3378,12 +3379,12 @@ a{{color:#0a6aba}}
                 # 1. Webhook arrival
                 if typ == 'WEBHOOK':
                     return 1
-                # 7. Model response — Stop hook event captured by DC's
+                # 8. Model response — Stop hook event captured by DC's
                 # claudecode connector (args is literal 'llm_response')
                 # or actual response text from claude-transcript.
                 if (src == 'defenseclaw' and 'llm_response' in args) \
                         or (src == 'claude-transcript' and typ == 'RESPONSE'):
-                    return 7
+                    return 8
                 # 5. Claude Code prompt submit / session start, or actual
                 # prompt text from claude-transcript.
                 if (src == 'defenseclaw' and (
@@ -3391,15 +3392,15 @@ a{{color:#0a6aba}}
                         or 'sessionstart' in args or 'session_start' in args)) \
                         or (src == 'claude-transcript' and typ == 'PROMPT'):
                     return 5
-                # 9. Cleanup / audit fan-out — DC lifecycle stop events
+                # 10. Cleanup / audit fan-out — DC lifecycle stop events
                 # only (the daemon emits 'gateway completed' for every
                 # verdict, which is NOT cleanup; restrict to explicit
                 # stop/end markers).
                 if src == 'defenseclaw' and any(t in args for t in (
                         'sessionend', 'session_end', 'sidecar stop',
                         'gateway stop', 'sink_health stop')):
-                    return 9
-                # 8. GitHub publish via MCP — write ops only
+                    return 10
+                # 9. GitHub publish via MCP — write ops only
                 if typ == 'MCP' and any(t in args for t in (
                         'comment_on_', 'create_pr', 'close_issue',
                         'create_pull_request', 'create_pr_review',
@@ -3407,12 +3408,16 @@ a{{color:#0a6aba}}
                         ' post ', ' put ', ' patch ', ' delete ',
                         'post /repos', 'put /repos', 'patch /repos',
                         'delete /repos')):
-                    return 8
-                # 6. Tool calls — generic MCP read ops, plus all DC
-                # verdict/tool events (the `gateway completed — action=…`
-                # rows that land per PreToolUse/PostToolUse hook).
+                    return 9
+                # 7. MCP — all other MCP server activity (read ops, list
+                # operations, generic queries). Distinct from stage 6
+                # which now holds only non-MCP tool-call verdicts.
                 if typ == 'MCP':
-                    return 6
+                    return 7
+                # 6. Tool calls — DC verdict / tool-hook events for
+                # non-MCP tools (Bash, Read, Edit, Grep, …). The DC
+                # daemon emits 'gateway completed — action=…' per
+                # PreToolUse/PostToolUse hook.
                 if src == 'defenseclaw' and (
                         'pretooluse' in args or 'posttooluse' in args
                         or 'tool' in args
