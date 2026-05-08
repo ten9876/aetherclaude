@@ -18,12 +18,19 @@ source /Users/aetherclaude/.env
 # UUID so every run still gets a trace_id (just one not back-referencable
 # to a GitHub delivery).
 TRACE_FILE="/Users/aetherclaude/state/trace-id"
-if [ -f "$TRACE_FILE" ]; then
-    AETHER_TRACE_ID="$(cat "$TRACE_FILE")"
-    rm -f "$TRACE_FILE"  # one-shot: stale state file mustn't taint the next non-webhook run
-else
-    AETHER_TRACE_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+if [ ! -f "$TRACE_FILE" ]; then
+    # Webhook-only policy: every orchestrator run must originate from a
+    # GitHub webhook (the dashboard's /webhook handler writes this state
+    # file before kickstarting us). Calendar / manual / kickstart-without-
+    # webhook invocations have no business here — they used to mint a
+    # fresh uuidgen trace_id and run a full sweep, which muddied the
+    # agent-walk demo and caused trace-attribution headaches when their
+    # activity bled into webhook traces. Exit silently.
+    echo "$(date "+%Y-%m-%dT%H:%M:%S") No trace-id state file — webhook-only policy, exiting" >> "/Users/aetherclaude/logs/orchestrator.log" 2>/dev/null
+    exit 0
 fi
+AETHER_TRACE_ID="$(cat "$TRACE_FILE")"
+rm -f "$TRACE_FILE"  # one-shot
 export AETHER_TRACE_ID
 # DefenseClaw's audit DB has a native trace_id column (v7 schema migration 4).
 # Setting DEFENSECLAW_RUN_ID populates it automatically, so DC's audit_sink

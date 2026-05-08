@@ -18,11 +18,6 @@
         <key>HOME</key>
         <string>/Users/aetherclaude</string>
     </dict>
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
     <key>StandardOutPath</key>
     <string>/Users/aetherclaude/logs/agent-stdout.log</string>
     <key>StandardErrorPath</key>
