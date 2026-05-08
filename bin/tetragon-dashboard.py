@@ -2753,7 +2753,7 @@ const STAGES=[
   {n:1,name:'Webhook'},
   {n:2,name:'Orchestrator'},
   {n:3,name:'Skill'},
-  {n:4,name:'Pre-flight scans'},
+  {n:4,name:'Scanning (skill / MCP)'},
   {n:5,name:'Claude Code'},
   {n:6,name:'Tool calls'},
   {n:7,name:'MCP'},
@@ -3414,6 +3414,37 @@ a{{color:#0a6aba}}
                 # which now holds only non-MCP tool-call verdicts.
                 if typ == 'MCP':
                     return 7
+                # 4. Scanning — skill-scanner + mcp-scanner specifically.
+                # These are Cisco AI Defense's pre-flight scanners that
+                # examine skills and MCP catalogs for malicious patterns
+                # (prompt injection, tool poisoning) before any agent
+                # activity. Other scanners (codeguard, prompt-scanner)
+                # are conceptually different and go elsewhere — codeguard
+                # to stage 6 (it's tool-call code validation) and
+                # prompt-scanner to stage 5 (it scans the prompt about
+                # to be sent to the model). Must come BEFORE stage 6
+                # because DC's 'gateway completed' catch-all there
+                # would otherwise swallow scan_finding rows.
+                if src in ('skill-scan', 'mcp-scan'):
+                    return 4
+                if typ == 'SCAN' and binary in ('skill-scanner', 'mcp-scanner'):
+                    return 4
+                if src == 'defenseclaw' and (
+                        'skill-scanner' in args or 'mcp-scanner' in args
+                        or 'plugin-scanner' in args or 'scan_finding' in args):
+                    return 4
+                # 5b. Prompt-scanner verdicts — DC's prompt-defense judges
+                # scan the prompt content; these belong with stage 5
+                # (Claude Code) which is where the prompt itself sits.
+                if src == 'prompt-scan' or (typ == 'SCAN' and binary == 'prompt-scanner') \
+                        or (src == 'defenseclaw' and 'prompt-scanner' in args):
+                    return 5
+                # 6b. CodeGuard scan results — emitted by validate-diff.sh
+                # during tool-call code validation. Conceptually a tool
+                # call (it's the code-review step), so stage 6.
+                if src == 'codeguard' or (typ == 'SCAN' and binary == 'codeguard') \
+                        or (src == 'defenseclaw' and 'codeguard' in args):
+                    return 6
                 # 6. Tool calls — DC verdict / tool-hook events for
                 # non-MCP tools (Bash, Read, Edit, Grep, …). The DC
                 # daemon emits 'gateway completed — action=…' per
@@ -3424,9 +3455,6 @@ a{{color:#0a6aba}}
                         or 'action=' in args or 'verdict' in args
                         or 'gateway completed' in args):
                     return 6
-                # 4. Pre-flight scans
-                if typ == 'SCAN' or src in ('codeguard', 'mcp-scan', 'skill-scan', 'prompt-scan'):
-                    return 4
                 # 2. Orchestrator dispatch — skill-dispatch events whose
                 # binary indicates the run-boundary skill (binary is
                 # 'skill:agent-run', NOT in args).
