@@ -1559,7 +1559,45 @@ def tail_claude_transcripts():
     for new files.
     """
     file_offsets = {}  # absolute path → byte offset of last-read end
+    # Per-file trace_id snapshot. When we first see a new session file
+    # we resolve which webhook (issue number → most recent WEBHOOK row)
+    # triggered the orchestrator that created it. Using a snapshot
+    # protects us from multi-webhook bursts where _active_trace_id
+    # would get overwritten to a later (wrong) trace mid-session.
+    file_trace_id = {}
     startup_ts = time.time()
+
+    def _trace_for_session_path(p):
+        """Map a session JSONL path to a trace_id by parsing the issue
+        number from the project dir and joining against WEBHOOK rows.
+        Returns None if no match (calendar-triggered runs, weird paths)."""
+        try:
+            project_dir = os.path.basename(os.path.dirname(p))
+            # Project dirs look like '-private-tmp-aetherclaude-issue-1028'
+            # — pull the trailing -issue-NNNN if present.
+            m = re.search(r'issue-(\d+)$', project_dir) or \
+                re.search(r'pr-(\d+)$', project_dir) or \
+                re.search(r'-(\d+)$', project_dir)
+            if not m:
+                return None
+            issue_num = m.group(1)
+            conn = sqlite3.connect(EVENTS_DB)
+            # Webhook args look like 'Issue #1028 opened: …' or
+            # 'Comment on #1028 by …' or 'PR #1028 opened: …'.
+            # Anchor on '#NNNN ' (with trailing space) so '#1028' doesn't
+            # match '#10280' too.
+            row = conn.execute(
+                "SELECT trace_id FROM events "
+                "WHERE type='WEBHOOK' AND trace_id IS NOT NULL "
+                "  AND args LIKE ? "
+                "ORDER BY id DESC LIMIT 1",
+                (f'%#{issue_num} %',)
+            ).fetchone()
+            conn.close()
+            return row[0] if row else None
+        except Exception:
+            return None
+
     while True:
         try:
             # Enumerate every .jsonl under the projects tree.
@@ -1591,6 +1629,11 @@ def tail_claude_transcripts():
                 # from offset 0 so we capture its content.
                 if path not in file_offsets:
                     file_offsets[path] = 0 if mtime > startup_ts else size
+                    # Snapshot the trace_id at file-discovery time. For
+                    # post-startup files this is "right when the
+                    # orchestrator that created the file is running",
+                    # which is the right correlation moment.
+                    file_trace_id[path] = _trace_for_session_path(path)
                     if file_offsets[path] == size:
                         continue
                 # File shrank? Could be a rotation or rewrite. Reset.
@@ -1661,6 +1704,12 @@ def tail_claude_transcripts():
                         'policy': '',
                         'is_agent': True,
                         'source': 'claude-transcript',
+                        # If we resolved a trace_id for this file at
+                        # discovery time, use it. Otherwise leave None
+                        # and let append_event's active-trace fallback
+                        # try (best-effort for calendar-triggered runs
+                        # where there's no webhook to look up).
+                        'trace_id': file_trace_id.get(path),
                     }
                     with lock:
                         append_event(entry)
