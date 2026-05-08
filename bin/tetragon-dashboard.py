@@ -498,8 +498,13 @@ def db_trace_backfill_correlator():
     tagged row is a no-op."""
     while True:
         time.sleep(60)
+        # Coordinate with db_batch_writer so our writes don't race
+        # against its inserts. Without this, our UPDATEs were hitting
+        # SQLITE_BUSY and getting swallowed by the catch-all below,
+        # leaving Pass 0 a no-op for hours at a time.
         try:
-            conn = sqlite3.connect(EVENTS_DB)
+          with db_write_lock:
+            conn = sqlite3.connect(EVENTS_DB, timeout=30)
             cutoff = (datetime.utcnow() - timedelta(seconds=_TRACE_BACKFILL_LOOKBACK_SECS)
                       ).strftime('%Y-%m-%dT%H:%M:%S')
 
@@ -579,9 +584,14 @@ def db_trace_backfill_correlator():
                 )
             conn.commit()
             conn.close()
-        except Exception:
-            # Don't kill the thread on a transient DB lock — try again next pass.
-            pass
+        except Exception as e:
+            # Don't kill the thread on a transient DB lock. Surface the
+            # exception type to stderr so non-transient breakage (logic
+            # bugs, schema drift) is diagnosable in dashboard.log.
+            try:
+                print(f'[correlator] {type(e).__name__}: {e}', file=sys.stderr, flush=True)
+            except Exception:
+                pass
 
 def track_active_trace():
     """Mirror /Users/aetherclaude/state/active-trace-id into _active_trace_id.
