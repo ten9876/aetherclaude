@@ -649,6 +649,13 @@ def track_active_trace():
                 # a new trace_id). Pick it up.
                 _active_trace_id = content
                 _active_trace_started_ts = time.time()
+                # Also register the prefix → full mapping so
+                # tail_orchestrator_skills can resolve [xxxxxxxx] log
+                # prefixes to the full UUID without needing a separate
+                # /webhook event to seed the dict. Required for
+                # calendar-triggered runs where /webhook never fires.
+                if len(content) >= 8:
+                    _trace_prefix_to_full[content[:8]] = content
                 last_seen = content
         except FileNotFoundError:
             # File gone — orchestrator exited. Clear active trace so
@@ -1552,7 +1559,25 @@ def tail_orchestrator_skills(logfile):
             # Run-level boundaries (lowest specificity — overridden below if a
             # later pattern matches the same line, which won't happen for these).
             m = re.search(r'=== Agent run starting ===', line)
-            if m: skill = 'agent-run'; detail = 'starting'
+            if m:
+                skill = 'agent-run'; detail = 'starting'
+                # Race fix: when we see an Agent-run-starting line, the
+                # orchestrator has JUST written /Users/aetherclaude/state/
+                # active-trace-id with its full UUID. The tracker thread
+                # polls every 2s, so it might not have updated
+                # _trace_prefix_to_full yet. Read the file directly so
+                # the prefix→full lookup below resolves to the full UUID
+                # instead of falling back to the 8-char stub.
+                try:
+                    with open(ACTIVE_TRACE_FILE) as _f:
+                        _full = _f.read().strip()
+                    if _full and len(_full) > 8:
+                        _trace_prefix_to_full[_full[:8]] = _full
+                        global _active_trace_id, _active_trace_started_ts
+                        _active_trace_id = _full
+                        _active_trace_started_ts = time.time()
+                except (FileNotFoundError, OSError):
+                    pass
 
             m = re.search(r'=== Agent run complete ===', line)
             if m: skill = 'agent-run'; detail = 'complete'
