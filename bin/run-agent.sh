@@ -10,6 +10,26 @@ export HOME="/Users/aetherclaude"
 
 source /Users/aetherclaude/.env
 
+# Trace ID for the Agent Walk dashboard view. The /webhook handler in the
+# dashboard writes /Users/aetherclaude/state/trace-id (seeded from the GitHub
+# X-GitHub-Delivery header) before launchctl-kickstarting us. launchctl
+# doesn't propagate env vars, so the state file is the channel. Calendar-
+# interval and manual invocations leave the file absent; we mint a fresh
+# UUID so every run still gets a trace_id (just one not back-referencable
+# to a GitHub delivery).
+TRACE_FILE="/Users/aetherclaude/state/trace-id"
+if [ -f "$TRACE_FILE" ]; then
+    AETHER_TRACE_ID="$(cat "$TRACE_FILE")"
+    rm -f "$TRACE_FILE"  # one-shot: stale state file mustn't taint the next non-webhook run
+else
+    AETHER_TRACE_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+fi
+export AETHER_TRACE_ID
+# DefenseClaw's audit DB has a native trace_id column (v7 schema migration 4).
+# Setting DEFENSECLAW_RUN_ID populates it automatically, so DC's audit_sink
+# fan-out to /defenseclaw-webhook arrives already correlated.
+export DEFENSECLAW_RUN_ID="$AETHER_TRACE_ID"
+
 WORKSPACE="/Users/aetherclaude/workspace/AetherSDR"
 LOGDIR="/Users/aetherclaude/logs"
 PROMPTDIR="/Users/aetherclaude/prompts"
@@ -33,7 +53,7 @@ fi
 echo $$ > "$LOCKFILE"
 trap 'rm -f $LOCKFILE' EXIT
 
-log() { echo "$(date "+%Y-%m-%dT%H:%M:%S") $1" >> "$LOGDIR/orchestrator.log"; }
+log() { echo "$(date "+%Y-%m-%dT%H:%M:%S") [${AETHER_TRACE_ID:0:8}] $1" >> "$LOGDIR/orchestrator.log"; }
 
 # --- State management ---
 [ -f "$STATE_FILE" ] || echo '{}' > "$STATE_FILE"
