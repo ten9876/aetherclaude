@@ -2468,6 +2468,16 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
 .empty{padding:60px 20px;text-align:center;color:#607080}
 .legend{display:flex;gap:16px;font-size:10px;color:#607080;padding:6px 20px;background:#0a0a1a;border-bottom:1px solid #20304a}
 .legend .swatch{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle}
+.player{display:flex;align-items:center;gap:10px;padding:8px 20px;background:#0e0e22;border-bottom:1px solid #20304a;font-size:11px}
+.player button{background:#101025;color:#c8d8e8;border:1px solid #304050;padding:4px 12px;font-family:inherit;font-size:11px;border-radius:3px;cursor:pointer}
+.player button:hover{border-color:#00bceb;color:#00bceb}
+.player button.active{background:#203040;color:#00bceb;border-color:#00bceb}
+.player .speed-label{color:#607080}
+.player .progress{flex:1;height:4px;background:#101025;border-radius:2px;position:relative;overflow:hidden;margin:0 12px}
+.player .progress .bar{position:absolute;left:0;top:0;height:100%;background:#00ff88;width:0;transition:width 0.05s linear}
+.player .progress .ts-label{color:#607080;font-size:10px;min-width:90px;text-align:right;font-family:'SF Mono',monospace}
+.event-dot.hidden{opacity:0}
+.event-dot{transition:opacity 0.15s,r 0.1s}
 </style></head><body>
 <header>
   <h1>AGENT WALK</h1>
@@ -2492,6 +2502,18 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
   <span><span class="swatch color-OTHER"></span>Other</span>
 </div>
 <div class="meta" id="meta">No trace loaded.</div>
+<div class="player" id="player" style="display:none">
+  <button id="btn-play">▶ Play</button>
+  <button id="btn-pause" disabled>⏸ Pause</button>
+  <button id="btn-reset">⟲ Reset</button>
+  <span class="speed-label">speed:</span>
+  <button class="speed-btn" data-speed="1">1×</button>
+  <button class="speed-btn active" data-speed="4">4×</button>
+  <button class="speed-btn" data-speed="16">16×</button>
+  <button class="speed-btn" data-speed="64">64×</button>
+  <div class="progress"><div class="bar" id="progress-bar"></div></div>
+  <span class="ts-label" id="progress-ts">—</span>
+</div>
 <div id="swim"></div>
 <div id="detail"><h3>Event detail</h3><p style="color:#607080">Click an event in the swimlane above.</p></div>
 
@@ -2510,6 +2532,8 @@ const STAGES=[
 const SVG_NS='http://www.w3.org/2000/svg';
 const LANE_HEIGHT=40,LANE_LABEL_W=180,RIGHT_PAD=24,TOP_PAD=8,BOTTOM_PAD=28;
 let _events=[],_selectedIdx=-1;
+// Replay state
+let _playTimers=[],_progressInterval=null,_isPlaying=false,_speed=4,_replayStart=0,_replayDuration=0;
 
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function fmtTime(s){if(!s)return '';const dt=new Date(s);if(isNaN(dt))return s;const hms=dt.toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});const ms=String(dt.getMilliseconds()).padStart(3,'0');return `${hms}.${ms}`}
@@ -2541,7 +2565,9 @@ function loadTrace(traceId){
     if(d.error){document.getElementById('swim').innerHTML='<div class="empty">'+esc(d.error)+'</div>';return}
     _events=d.events||[];_selectedIdx=-1;
     const meta=document.getElementById('meta');
-    if(_events.length===0){meta.textContent='Trace has no events.';document.getElementById('swim').innerHTML='<div class="empty">No events for this trace.</div>';return}
+    if(_events.length===0){meta.textContent='Trace has no events.';document.getElementById('swim').innerHTML='<div class="empty">No events for this trace.</div>';document.getElementById('player').style.display='none';return}
+    document.getElementById('player').style.display='flex';
+    stopReplay();
     const t0=new Date(_events[0].time),tN=new Date(_events[_events.length-1].time);
     const dur=tN-t0;
     meta.innerHTML=
@@ -2626,6 +2652,80 @@ function renderDetail(){
     '<div class="row"><div class="k">args</div><div class="v">'+esc(e.args)+'</div></div>'+
     '<div class="row"><div class="k">trace_id</div><div class="v">'+esc(e.trace_id)+'</div></div>';
 }
+
+// --- Replay player ---
+function startReplay(){
+  if(_isPlaying||_events.length===0)return;
+  _isPlaying=true;
+  document.getElementById('btn-play').disabled=true;
+  document.getElementById('btn-pause').disabled=false;
+  // Hide all dots, schedule each to appear at scaled time. The scaling
+  // takes the wall-clock event offset and divides by speed, so a 60s
+  // real-time trace plays back in 15s at 4× or 1s at 64×.
+  const dots=document.querySelectorAll('.event-dot');
+  dots.forEach(d=>d.classList.add('hidden'));
+  const t0=new Date(_events[0].time).getTime();
+  const tN=new Date(_events[_events.length-1].time).getTime();
+  _replayDuration=Math.max(tN-t0,1);
+  _replayStart=performance.now();
+  // Build an idx→dot lookup by data-i (renderSwimlane only emits dots
+  // for stage>0 events, so not every _events index has a corresponding
+  // dot — handled by the optional-chain on querySelector).
+  for(let i=0;i<_events.length;i++){
+    const e=_events[i];
+    const offsetMs=new Date(e.time).getTime()-t0;
+    const scaledMs=offsetMs/_speed;
+    _playTimers.push(setTimeout(()=>{
+      const dot=document.querySelector('.event-dot[data-i="'+i+'"]');
+      if(dot)dot.classList.remove('hidden');
+    },scaledMs));
+  }
+  // Auto-stop at end + reset UI
+  _playTimers.push(setTimeout(()=>{
+    _isPlaying=false;
+    document.getElementById('btn-play').disabled=false;
+    document.getElementById('btn-pause').disabled=true;
+    if(_progressInterval){clearInterval(_progressInterval);_progressInterval=null}
+    document.getElementById('progress-bar').style.width='100%';
+  },_replayDuration/_speed+50));
+  // Progress bar tick
+  _progressInterval=setInterval(()=>{
+    const elapsed=performance.now()-_replayStart;
+    const pct=Math.min(100,(elapsed/(_replayDuration/_speed))*100);
+    document.getElementById('progress-bar').style.width=pct+'%';
+    const tCurrent=new Date(t0+elapsed*_speed);
+    document.getElementById('progress-ts').textContent=fmtTime(tCurrent.toISOString());
+  },50);
+}
+
+function stopReplay(){
+  for(const t of _playTimers)clearTimeout(t);
+  _playTimers=[];
+  if(_progressInterval){clearInterval(_progressInterval);_progressInterval=null}
+  _isPlaying=false;
+  document.getElementById('btn-play').disabled=false;
+  document.getElementById('btn-pause').disabled=true;
+  document.getElementById('progress-bar').style.width='0%';
+  document.getElementById('progress-ts').textContent='—';
+  // Don't unhide — pause keeps the current visible state. Reset does.
+}
+
+function resetReplay(){
+  stopReplay();
+  document.querySelectorAll('.event-dot').forEach(d=>d.classList.remove('hidden'));
+}
+
+document.getElementById('btn-play').addEventListener('click',startReplay);
+document.getElementById('btn-pause').addEventListener('click',stopReplay);
+document.getElementById('btn-reset').addEventListener('click',resetReplay);
+document.querySelectorAll('.speed-btn').forEach(b=>{
+  b.addEventListener('click',()=>{
+    _speed=parseInt(b.getAttribute('data-speed'),10);
+    document.querySelectorAll('.speed-btn').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    if(_isPlaying){stopReplay();startReplay()}  // restart at new speed
+  });
+});
 
 // Wire pickers
 document.getElementById('trace-select').addEventListener('change',ev=>{loadTrace(ev.target.value)});
