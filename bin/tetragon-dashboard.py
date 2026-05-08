@@ -1480,16 +1480,16 @@ def tail_defenseclaw_audit(logfile):
                 # Generic fallback — just show the event_type
                 args_text = etype
 
-            # DC v7 audit records carry run_id (populated from
-            # DEFENSECLAW_RUN_ID env which the orchestrator exports
-            # equal to AETHER_TRACE_ID). Extract it so we don't have
-            # to rely on the active-trace fallback. /defenseclaw-webhook
-            # already does this for the HTTP audit_sink path; this
-            # mirror keeps the file-tail path symmetric.
-            dc_trace = (rec.get('run_id')
-                        or rec.get('trace_id')
-                        or rec.get('correlation_id')
-                        or (rec.get('context') or {}).get('run_id'))
+            # NOTE: DC's `run_id` field is the DAEMON's lifetime process
+            # ID (set once when the gateway boots, identical across all
+            # subsequent agent runs). It is NOT the orchestrator's
+            # AETHER_TRACE_ID. We previously extracted it here and
+            # mistagged DC events into a single mega-trace spanning the
+            # daemon's lifetime. Leave trace_id off — append_event's
+            # active-trace fallback (mirrored from
+            # /Users/aetherclaude/state/active-trace-id by
+            # track_active_trace) gives the correct per-agent-run
+            # tagging.
             entry = {
                 'time': ts,
                 'type': 'DEFENSE',
@@ -1499,7 +1499,6 @@ def tail_defenseclaw_audit(logfile):
                 'policy': policy,
                 'is_agent': True,
                 'source': 'defenseclaw',
-                'trace_id': dc_trace,
             }
             with lock:
                 append_event(entry)
@@ -3722,14 +3721,9 @@ a{{color:#0a6aba}}
                         policy = s.get('scanner', '')
                     else:
                         args_text = etype
-                    # DefenseClaw v7 stores trace_id natively in its audit DB
-                    # (set from DEFENSECLAW_RUN_ID env we exported in
-                    # run-agent.sh). The audit_sink HTTP push surfaces it
-                    # under one of these keys depending on event type.
-                    dc_trace = (rec.get('run_id')
-                                or rec.get('trace_id')
-                                or rec.get('correlation_id')
-                                or (rec.get('context') or {}).get('run_id'))
+                    # See tail_defenseclaw_audit — DC's run_id is the
+                    # daemon's lifetime ID, not the orch's trace_id. Skip
+                    # extraction; let active-trace fallback handle it.
                     entry = {
                         'time': ts,
                         'type': 'DEFENSE',
@@ -3739,7 +3733,6 @@ a{{color:#0a6aba}}
                         'policy': policy,
                         'is_agent': True,
                         'source': 'defenseclaw',
-                        'trace_id': dc_trace,
                     }
                     append_event(entry)
                     count += 1
