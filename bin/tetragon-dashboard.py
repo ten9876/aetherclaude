@@ -20,6 +20,7 @@ Unified security observability across all 7 defense rings.
 import json, os, sys, time, re, sqlite3, threading, argparse, subprocess, glob
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from collections import deque, defaultdict
+from datetime import datetime, timedelta, timezone
 
 # Canonical event timestamp format: ISO-8601 UTC, millisecond precision,
 # explicit Z marker (e.g. 2025-05-07T21:23:45.123Z). Every producer that
@@ -51,7 +52,6 @@ def coerce_ms_iso(s):
     if len(iso_zone) == 5:  # +HHMM -> +HH:MM
         iso_zone = iso_zone[:3] + ':' + iso_zone[3:]
     try:
-        from datetime import datetime, timezone
         dt = datetime.fromisoformat(f'{base}.{frac6}{iso_zone}').astimezone(timezone.utc)
     except ValueError:
         return s
@@ -442,6 +442,96 @@ def db_query_events(limit=1000, source=None, event_type=None):
                 for r in reversed(rows)]
     except:
         return []
+
+# How long to look back when backfilling trace_ids. Older traces probably
+# already have everything they're going to get, and scanning further wastes
+# CPU + DB time on each correlator pass.
+_TRACE_BACKFILL_LOOKBACK_SECS = 6 * 3600  # 6 hours
+# Time window around a known-trace event window to claim NULL siblings.
+# 5 seconds covers eslogger lag and DefenseClaw audit_sink batch latency,
+# without bleeding across the gap between consecutive agent runs (they're
+# typically minutes apart due to the lockfile + 60s webhook debounce).
+_TRACE_BACKFILL_PADDING_SECS = 5
+
+def db_trace_backfill_correlator():
+    """Backfill NULL trace_ids on rows that fall inside a known trace's time
+    window. Also expands 8-char prefix trace_ids (left over from
+    tail_orchestrator_skills when the prefix→full lookup missed) into their
+    full UUID by matching against trace_ids the same row's neighbors carry.
+
+    Two passes per cycle:
+      1. Expand prefix-only IDs (where trace_id is exactly 8 hex chars)
+         into the full trace_id from any row whose trace_id LIKE prefix%.
+      2. Time-window claim: for each known trace_id, UPDATE all NULL-trace
+         rows between (min_ts - pad) and (max_ts + pad) for that trace.
+
+    Runs once per minute. Idempotent — re-claiming an already-correctly-
+    tagged row is a no-op."""
+    while True:
+        time.sleep(60)
+        try:
+            conn = sqlite3.connect(EVENTS_DB)
+            cutoff = (datetime.utcnow() - timedelta(seconds=_TRACE_BACKFILL_LOOKBACK_SECS)
+                      ).strftime('%Y-%m-%dT%H:%M:%S')
+
+            # Pass 1: expand 8-char prefix trace_ids to full UUIDs. The
+            # tail_orchestrator_skills handler stores the prefix when the
+            # /webhook prefix→full dict misses (e.g. calendar-triggered
+            # runs). Once any other event in the same window arrives with
+            # the full UUID, we can rewrite the prefix to match.
+            prefix_rows = conn.execute(
+                "SELECT DISTINCT trace_id FROM events "
+                "WHERE LENGTH(trace_id) = 8 AND timestamp > ? "
+                "LIMIT 100",
+                (cutoff,)
+            ).fetchall()
+            for (prefix,) in prefix_rows:
+                full_row = conn.execute(
+                    "SELECT trace_id FROM events "
+                    "WHERE trace_id LIKE ? AND LENGTH(trace_id) > 8 "
+                    "LIMIT 1",
+                    (prefix + '%',)
+                ).fetchone()
+                if full_row:
+                    conn.execute(
+                        "UPDATE events SET trace_id = ? WHERE trace_id = ?",
+                        (full_row[0], prefix)
+                    )
+
+            # Pass 2: time-window claim NULL rows.
+            traces = conn.execute(
+                "SELECT trace_id, MIN(timestamp), MAX(timestamp) "
+                "FROM events "
+                "WHERE trace_id IS NOT NULL AND LENGTH(trace_id) > 8 "
+                "  AND timestamp > ? "
+                "GROUP BY trace_id",
+                (cutoff,)
+            ).fetchall()
+            for trace_id, t_min, t_max in traces:
+                # Pad the window. timestamp column is ISO-8601 UTC strings,
+                # which sort lexicographically, so we can use string math
+                # without parsing — but we need to be careful with the
+                # padding (5s). Simplest: parse + format.
+                try:
+                    t_min_dt = datetime.strptime(t_min[:19], '%Y-%m-%dT%H:%M:%S')
+                    t_max_dt = datetime.strptime(t_max[:19], '%Y-%m-%dT%H:%M:%S')
+                except ValueError:
+                    continue
+                start = (t_min_dt - timedelta(seconds=_TRACE_BACKFILL_PADDING_SECS)
+                         ).strftime('%Y-%m-%dT%H:%M:%S')
+                end = (t_max_dt + timedelta(seconds=_TRACE_BACKFILL_PADDING_SECS)
+                       ).strftime('%Y-%m-%dT%H:%M:%S')
+                conn.execute(
+                    "UPDATE events SET trace_id = ? "
+                    "WHERE trace_id IS NULL "
+                    "  AND timestamp >= ? AND timestamp <= ?",
+                    (trace_id, start, end)
+                )
+            conn.commit()
+            conn.close()
+        except Exception:
+            # Don't kill the thread on a transient DB lock — try again next pass.
+            pass
 
 def db_purge_if_needed(max_gb=250):
     """Purge oldest 10% of events if DB exceeds max_gb."""
@@ -2936,6 +3026,7 @@ def main():
     threading.Thread(target=scan_rings,daemon=True).start()
     threading.Thread(target=db_batch_writer,daemon=True).start()
     threading.Thread(target=db_pruner,daemon=True).start()
+    threading.Thread(target=db_trace_backfill_correlator,daemon=True).start()
     s=HTTPServer((a.bind,a.port),H);print(f"Dashboard at http://{a.bind}:{a.port}")
     try:s.serve_forever()
     except KeyboardInterrupt:print("\nShutdown")
