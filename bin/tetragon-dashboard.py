@@ -84,14 +84,18 @@ WEBHOOK_EVENTS = {'issues', 'issue_comment', 'pull_request', 'pull_request_revie
                   'check_run', 'workflow_run', 'release'}
 _last_webhook_trigger = 0
 
-# Active trace_id for the Agent Walk view. Set by /webhook when a delivery
-# arrives; events that don't carry their own trace_id (orchestrator-driven
-# scans, eslogger process events, hook fan-out arriving slightly after the
-# webhook) fall back to this if it's recent. Times out after 1 hour so
-# stale traces don't bleed into idle-period activity.
+# Active trace_id for the Agent Walk view. Mirrored from
+# /Users/aetherclaude/state/active-trace-id, which run-agent.sh writes
+# at orchestrator start and removes (via EXIT trap) at orchestrator end.
+# Webhook handler also sets this directly during the brief window between
+# webhook arrival and orchestrator startup. Cleared when the file
+# disappears (orch finished) — without that, fallback stamping bled into
+# events from later unrelated agent runs and corrupted trace boundaries.
+# 10-minute wall-clock backstop in case the file disappears unexpectedly.
 _active_trace_id = None
 _active_trace_started_ts = 0
-_TRACE_FALLBACK_WINDOW_SECS = 3600
+_TRACE_FALLBACK_WINDOW_SECS = 600
+ACTIVE_TRACE_FILE = '/Users/aetherclaude/state/active-trace-id'
 # Map first-8-chars-of-trace_id → full trace_id, populated when /webhook
 # mints. tail_orchestrator_skills uses this to expand the [xxxxxxxx] prefix
 # embedded in orchestrator.log lines back into a full UUID.
@@ -577,6 +581,40 @@ def db_trace_backfill_correlator():
             conn.close()
         except Exception:
             # Don't kill the thread on a transient DB lock — try again next pass.
+            pass
+
+def track_active_trace():
+    """Mirror /Users/aetherclaude/state/active-trace-id into _active_trace_id.
+    The file appears when run-agent.sh starts and is removed by its EXIT
+    trap. When it disappears we clear _active_trace_id so the fallback
+    stamping in append_event() stops applying — preventing the cross-run
+    bleed where events from a later unrelated agent run got tagged with
+    a stale webhook's trace_id.
+
+    Runs every 2s. Cheap stat()/read() on a tiny file.
+    """
+    global _active_trace_id, _active_trace_started_ts
+    last_seen = None
+    while True:
+        time.sleep(2)
+        try:
+            with open(ACTIVE_TRACE_FILE) as f:
+                content = f.read().strip()
+            if content and content != last_seen:
+                # Orchestrator just started (or the file was rewritten with
+                # a new trace_id). Pick it up.
+                _active_trace_id = content
+                _active_trace_started_ts = time.time()
+                last_seen = content
+        except FileNotFoundError:
+            # File gone — orchestrator exited. Clear active trace so
+            # subsequent events without their own trace_id stay NULL
+            # rather than getting stuck on the just-finished trace.
+            if last_seen is not None:
+                _active_trace_id = None
+                _active_trace_started_ts = 0
+                last_seen = None
+        except Exception:
             pass
 
 def db_purge_if_needed(max_gb=250):
@@ -3871,6 +3909,7 @@ def main():
     threading.Thread(target=db_batch_writer,daemon=True).start()
     threading.Thread(target=db_pruner,daemon=True).start()
     threading.Thread(target=db_trace_backfill_correlator,daemon=True).start()
+    threading.Thread(target=track_active_trace,daemon=True).start()
     s=HTTPServer((a.bind,a.port),H);print(f"Dashboard at http://{a.bind}:{a.port}")
     try:s.serve_forever()
     except KeyboardInterrupt:print("\nShutdown")
