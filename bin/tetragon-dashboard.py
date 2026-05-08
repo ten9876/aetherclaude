@@ -68,6 +68,12 @@ SESSION_DIR = '/Users/aetherclaude/.claude/projects'
 VALIDATION_LOG = '/Users/aetherclaude/logs/validation.log'
 MCP_AUDIT_LOG = '/Users/aetherclaude/logs/mcp-audit.log'
 ORCHESTRATOR_LOG = '/Users/aetherclaude/logs/orchestrator.log'
+CLAUDE_PROJECTS_DIR = '/Users/aetherclaude/.claude/projects'
+# How many chars of prompt/response text to surface in the args column.
+# Long enough to be informative for the SE demo (the first paragraph of an
+# agent prompt with the meta-instructions is usually the interesting part),
+# short enough to keep the events.db rows reasonable.
+_TRANSCRIPT_PREVIEW_CHARS = 500
 SESSION_DIR = '/Users/aetherclaude/.claude/projects'
 MCP_SCAN_FILE = '/Users/aetherclaude/logs/mcp-scan-latest.json'
 SKILL_SCAN_FILE = '/Users/aetherclaude/logs/skill-scan-latest.json'
@@ -1532,6 +1538,127 @@ def tail_orchestrator_skills(logfile):
                     }
                     append_event(entry)
 
+def tail_claude_transcripts():
+    """Tail Claude Code's session JSONL transcripts under
+    /Users/aetherclaude/.claude/projects/*/. Surfaces the actual prompt
+    and response *content* — DefenseClaw's audit redacts these fields by
+    default (`<redacted len=N sha=…>`), so we read from Claude Code's
+    own stream instead. All output is _redact()-scrubbed for tokens
+    before storage and truncated to TRANSCRIPT_PREVIEW_CHARS.
+
+    Format observations (verified against a real session):
+      - User prompts: type=user, message.role=user, message.content is
+        a STRING. (Tool results are also type=user but content is a
+        list with type=tool_result; we skip those.)
+      - Assistant responses: type=assistant, message.content is a list
+        of blocks; we extract the text blocks (skipping tool_use).
+
+    Each project directory holds one JSONL per session. New files
+    appear as new sessions start; existing files are append-only.
+    Track per-file read offset; rescan the directory every few seconds
+    for new files.
+    """
+    file_offsets = {}  # absolute path → byte offset of last-read end
+    while True:
+        try:
+            # Enumerate every .jsonl under the projects tree.
+            paths = []
+            try:
+                for project in os.listdir(CLAUDE_PROJECTS_DIR):
+                    pdir = os.path.join(CLAUDE_PROJECTS_DIR, project)
+                    if not os.path.isdir(pdir):
+                        continue
+                    for fname in os.listdir(pdir):
+                        if fname.endswith('.jsonl'):
+                            paths.append(os.path.join(pdir, fname))
+            except FileNotFoundError:
+                time.sleep(10)
+                continue
+
+            for path in paths:
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    continue
+                # First time we see this file: skip to end (don't replay history)
+                if path not in file_offsets:
+                    file_offsets[path] = size
+                    continue
+                # File shrank? Could be a rotation or rewrite. Reset.
+                if size < file_offsets[path]:
+                    file_offsets[path] = size
+                    continue
+                if size == file_offsets[path]:
+                    continue
+                # New content
+                try:
+                    with open(path, 'r') as f:
+                        f.seek(file_offsets[path])
+                        new_data = f.read()
+                        file_offsets[path] = f.tell()
+                except OSError:
+                    continue
+                for line in new_data.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    rtype = rec.get('type', '')
+                    msg = rec.get('message') or {}
+                    role = msg.get('role', '')
+                    content = msg.get('content')
+                    ts = rec.get('timestamp', '')
+                    # Convert text into a single string preview, ignoring
+                    # tool_result + tool_use blocks (those aren't the
+                    # natural-language content prompt_defense scans).
+                    text_preview = None
+                    event_type = None
+                    if rtype == 'user' and role == 'user':
+                        if isinstance(content, str):
+                            text_preview = content
+                            event_type = 'PROMPT'
+                        elif isinstance(content, list):
+                            # If any block is tool_result, this whole entry is
+                            # a tool-result echo — not a real prompt. Skip.
+                            if any(isinstance(b, dict) and b.get('type') == 'tool_result' for b in content):
+                                continue
+                            texts = [b.get('text', '') for b in content
+                                     if isinstance(b, dict) and b.get('type') == 'text']
+                            if texts:
+                                text_preview = '\n'.join(texts)
+                                event_type = 'PROMPT'
+                    elif rtype == 'assistant' and role == 'assistant':
+                        if isinstance(content, list):
+                            texts = [b.get('text', '') for b in content
+                                     if isinstance(b, dict) and b.get('type') == 'text']
+                            if texts:
+                                text_preview = '\n'.join(texts)
+                                event_type = 'RESPONSE'
+                    if not event_type or not text_preview:
+                        continue
+                    # _redact in append_event will catch GitHub tokens, JWTs,
+                    # sk-ant-*, etc. Truncate first so we don't store
+                    # multi-KB blobs in events.db.
+                    text_preview = text_preview.strip()[:_TRANSCRIPT_PREVIEW_CHARS]
+                    entry = {
+                        'time': coerce_ms_iso(ts) or now_utc_iso(),
+                        'type': event_type,
+                        'uid': 965,
+                        'binary': 'claude-code',
+                        'args': text_preview,
+                        'policy': '',
+                        'is_agent': True,
+                        'source': 'claude-transcript',
+                    }
+                    with lock:
+                        append_event(entry)
+        except Exception:
+            pass
+        time.sleep(3)
+
 def tail_log(logfile):
     while not os.path.exists(logfile): time.sleep(1)
     with open(logfile) as f:
@@ -2498,6 +2625,8 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
 .color-MCP{fill:#ffaa00}
 .color-EXEC{fill:#607080}
 .color-TOOL{fill:#ff6688}
+.color-PROMPT{fill:#ff88dd}
+.color-RESPONSE{fill:#88ddff}
 .color-OTHER{fill:#404060}
 #detail{padding:12px 20px;background:#0e0e22;border-top:1px solid #20304a;font-size:11px;line-height:1.5}
 #detail h3{margin:0 0 8px 0;font-size:12px;color:#00bceb;font-weight:normal;letter-spacing:1px}
@@ -2538,6 +2667,8 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
   <span><span class="swatch color-DEFENSE"></span>DefenseClaw</span>
   <span><span class="swatch color-MCP"></span>MCP</span>
   <span><span class="swatch color-TOOL"></span>Tool</span>
+  <span><span class="swatch color-PROMPT"></span>Prompt</span>
+  <span><span class="swatch color-RESPONSE"></span>Response</span>
   <span><span class="swatch color-EXEC"></span>Process</span>
   <span><span class="swatch color-OTHER"></span>Other</span>
 </div>
@@ -3134,13 +3265,17 @@ a{{color:#0a6aba}}
                 if typ == 'WEBHOOK':
                     return 1
                 # 7. Model response — Stop hook event captured by DC's
-                # claudecode connector (args is literal 'llm_response').
-                if src == 'defenseclaw' and 'llm_response' in args:
+                # claudecode connector (args is literal 'llm_response')
+                # or actual response text from claude-transcript.
+                if (src == 'defenseclaw' and 'llm_response' in args) \
+                        or (src == 'claude-transcript' and typ == 'RESPONSE'):
                     return 7
-                # 5. Claude Code prompt submit / session start
-                if src == 'defenseclaw' and (
+                # 5. Claude Code prompt submit / session start, or actual
+                # prompt text from claude-transcript.
+                if (src == 'defenseclaw' and (
                         'llm_prompt' in args or 'userpromptsubmit' in args
-                        or 'sessionstart' in args or 'session_start' in args):
+                        or 'sessionstart' in args or 'session_start' in args)) \
+                        or (src == 'claude-transcript' and typ == 'PROMPT'):
                     return 5
                 # 9. Cleanup / audit fan-out — DC lifecycle stop events
                 # only (the daemon emits 'gateway completed' for every
@@ -3535,6 +3670,7 @@ def main():
     threading.Thread(target=tail_sessions,daemon=True).start()
     threading.Thread(target=tail_orchestrator_skills,args=(ORCHESTRATOR_LOG,),daemon=True).start()
     threading.Thread(target=tail_defenseclaw_audit,args=(DEFENSECLAW_AUDIT_LOG,),daemon=True).start()
+    threading.Thread(target=tail_claude_transcripts,daemon=True).start()
     threading.Thread(target=tail_tinyproxy_log,daemon=True).start()
     for target,fn in [(a.log,tail_log),(VALIDATION_LOG,tail_validation_log),(MCP_AUDIT_LOG,tail_mcp_audit)]:
         threading.Thread(target=fn,args=(target,),daemon=True).start()
