@@ -1668,6 +1668,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 <div style="flex:1"><h1>AetherClaude Defense-in-Depth Dashboard</h1>
 <div class="sub">Cisco Isovalent (Tetragon) &middot; Cisco DefenseClaw CodeGuard &middot; Cisco AI Defense &middot; MCP Token Isolation</div></div>
 <a href="#" onclick="showWhitepaper();return false" style="color:#607080;font-size:11px;text-decoration:none;margin-right:8px;border:1px solid #304050;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#00b4d8';this.style.borderColor='#00b4d8'" onmouseout="this.style.color='#607080';this.style.borderColor='#304050'">Agent Defense-in-Depth Whitepaper</a>
+<a href="/agent-walk" target="_blank" style="color:#00ff88;font-size:11px;text-decoration:none;margin-right:8px;border:1px solid #205040;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#88ffaa';this.style.borderColor='#88ffaa'" onmouseout="this.style.color='#00ff88';this.style.borderColor='#205040'">Agent Walk &#x2197;</a>
 <a href="#" onclick="openOperatorTui();return false" style="color:#6688ff;font-size:11px;text-decoration:none;margin-right:16px;border:1px solid #303860;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#88aaff';this.style.borderColor='#88aaff'" onmouseout="this.style.color='#6688ff';this.style.borderColor='#303860'">Operator TUI &#x2197;</a>
 <div class="live" id="agent-status">&#9679; LIVE</div>
 </div>
@@ -2425,11 +2426,225 @@ setInterval(refresh,REFRESH_MS);refresh();
 </div>
 </body></html>""".replace('REFRESH_MS',str(REFRESH_INTERVAL_MS))
 
+AGENT_WALK_HTML = r"""<!DOCTYPE html>
+<html><head><title>AetherClaude Agent Walk</title><meta charset="utf-8">
+<style>
+body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospace;font-size:12px;margin:0;padding:0}
+header{background:#0e0e22;padding:10px 20px;border-bottom:1px solid #20304a;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+header h1{margin:0;font-size:14px;color:#00bceb;font-weight:normal;letter-spacing:1px}
+header .picker{display:flex;align-items:center;gap:6px}
+header select,header input{background:#0a0a1a;color:#c8d8e8;border:1px solid #304050;padding:4px 8px;font-family:inherit;font-size:11px;border-radius:3px;min-width:200px}
+header select{min-width:340px}
+header a.back{color:#607080;font-size:11px;text-decoration:none;margin-left:auto;border:1px solid #304050;padding:4px 10px;border-radius:6px}
+header a.back:hover{color:#00bceb;border-color:#00bceb}
+.meta{padding:8px 20px;color:#8090a0;font-size:11px;border-bottom:1px solid #20304a;background:#0e0e22}
+.meta .label{color:#607080;margin-right:4px}
+.meta .val{color:#c8d8e8;margin-right:18px}
+#swim{padding:14px 20px;background:#0a0a1a;overflow-x:auto}
+.lane-bg{fill:#101025}
+.lane-bg.alt{fill:#0c0c1c}
+.lane-label{fill:#8090a0;font-size:11px;font-family:'SF Mono',monospace}
+.lane-label.num{fill:#607080;font-size:10px}
+.lane-divider{stroke:#20304a;stroke-width:1}
+.time-axis{stroke:#304050;stroke-width:1}
+.time-tick{fill:#607080;font-size:10px}
+.event-dot{cursor:pointer;transition:r 0.1s}
+.event-dot:hover{stroke:#00bceb;stroke-width:2}
+.event-dot.sel{stroke:#00bceb;stroke-width:2}
+.color-WEBHOOK{fill:#aa88ff}
+.color-SKILL{fill:#00ff88}
+.color-SCAN{fill:#00b4d8}
+.color-DEFENSE{fill:#6688ff}
+.color-MCP{fill:#ffaa00}
+.color-EXEC{fill:#607080}
+.color-TOOL{fill:#ff6688}
+.color-OTHER{fill:#404060}
+#detail{padding:12px 20px;background:#0e0e22;border-top:1px solid #20304a;font-size:11px;line-height:1.5}
+#detail h3{margin:0 0 8px 0;font-size:12px;color:#00bceb;font-weight:normal;letter-spacing:1px}
+#detail .row{display:flex;margin-bottom:4px}
+#detail .k{color:#607080;width:120px;flex-shrink:0}
+#detail .v{color:#c8d8e8;font-family:'SF Mono',monospace;word-break:break-all}
+#detail .stage-pill{display:inline-block;background:#203040;color:#00bceb;padding:1px 8px;border-radius:10px;font-size:10px;margin-left:6px}
+.empty{padding:60px 20px;text-align:center;color:#607080}
+.legend{display:flex;gap:16px;font-size:10px;color:#607080;padding:6px 20px;background:#0a0a1a;border-bottom:1px solid #20304a}
+.legend .swatch{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle}
+</style></head><body>
+<header>
+  <h1>AGENT WALK</h1>
+  <div class="picker">
+    <span style="color:#607080">trace:</span>
+    <select id="trace-select"></select>
+  </div>
+  <div class="picker">
+    <span style="color:#607080">or paste:</span>
+    <input id="trace-input" placeholder="X-GitHub-Delivery UUID" />
+  </div>
+  <a href="/" class="back">Main dashboard ↗</a>
+</header>
+<div class="legend">
+  <span><span class="swatch color-WEBHOOK"></span>Webhook</span>
+  <span><span class="swatch color-SKILL"></span>Skill</span>
+  <span><span class="swatch color-SCAN"></span>Scan</span>
+  <span><span class="swatch color-DEFENSE"></span>DefenseClaw</span>
+  <span><span class="swatch color-MCP"></span>MCP</span>
+  <span><span class="swatch color-TOOL"></span>Tool</span>
+  <span><span class="swatch color-EXEC"></span>Process</span>
+  <span><span class="swatch color-OTHER"></span>Other</span>
+</div>
+<div class="meta" id="meta">No trace loaded.</div>
+<div id="swim"></div>
+<div id="detail"><h3>Event detail</h3><p style="color:#607080">Click an event in the swimlane above.</p></div>
+
+<script>
+const STAGES=[
+  {n:1,name:'Webhook'},
+  {n:2,name:'Orchestrator'},
+  {n:3,name:'Skill'},
+  {n:4,name:'Pre-flight scans'},
+  {n:5,name:'Claude Code'},
+  {n:6,name:'Tool calls'},
+  {n:7,name:'Response'},
+  {n:8,name:'GitHub publish'},
+  {n:9,name:'Cleanup / audit'},
+];
+const SVG_NS='http://www.w3.org/2000/svg';
+const LANE_HEIGHT=40,LANE_LABEL_W=180,RIGHT_PAD=24,TOP_PAD=8,BOTTOM_PAD=28;
+let _events=[],_selectedIdx=-1;
+
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function fmtTime(s){if(!s)return '';const dt=new Date(s);if(isNaN(dt))return s;const hms=dt.toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});const ms=String(dt.getMilliseconds()).padStart(3,'0');return `${hms}.${ms}`}
+function fmtDuration(ms){if(ms<1000)return `${ms}ms`;if(ms<60000)return `${(ms/1000).toFixed(2)}s`;return `${Math.floor(ms/60000)}m${Math.floor((ms%60000)/1000)}s`}
+
+function loadRecentTraces(){
+  fetch('/api/agent-walk-traces?limit=25').then(r=>r.json()).then(d=>{
+    const sel=document.getElementById('trace-select');
+    sel.innerHTML='<option value="">— pick a recent trace —</option>';
+    for(const t of (d.traces||[])){
+      const opt=document.createElement('option');
+      opt.value=t.trace_id;
+      const t8=t.trace_id.substring(0,8);
+      const ts=t.first_ts?(new Date(t.first_ts)).toLocaleString():'?';
+      opt.textContent=`${t8}…  ${ts}  (${t.event_count} events) ${t.summary.substring(0,60)}`;
+      sel.appendChild(opt);
+    }
+    // If URL has ?trace= and matches a known trace, preselect
+    const urlTrace=new URLSearchParams(location.search).get('trace');
+    if(urlTrace){sel.value=urlTrace;loadTrace(urlTrace)}
+  })
+}
+
+function loadTrace(traceId){
+  if(!traceId){document.getElementById('swim').innerHTML='<div class="empty">No trace selected.</div>';return}
+  // Reflect in URL without reloading
+  const u=new URL(location.href);u.searchParams.set('trace',traceId);history.replaceState({},'',u);
+  fetch('/api/agent-walk?trace='+encodeURIComponent(traceId)).then(r=>r.json()).then(d=>{
+    if(d.error){document.getElementById('swim').innerHTML='<div class="empty">'+esc(d.error)+'</div>';return}
+    _events=d.events||[];_selectedIdx=-1;
+    const meta=document.getElementById('meta');
+    if(_events.length===0){meta.textContent='Trace has no events.';document.getElementById('swim').innerHTML='<div class="empty">No events for this trace.</div>';return}
+    const t0=new Date(_events[0].time),tN=new Date(_events[_events.length-1].time);
+    const dur=tN-t0;
+    meta.innerHTML=
+      `<span class="label">trace:</span><span class="val">${esc(traceId.substring(0,8))}…</span>`+
+      `<span class="label">start:</span><span class="val">${fmtTime(_events[0].time)}</span>`+
+      `<span class="label">end:</span><span class="val">${fmtTime(_events[_events.length-1].time)}</span>`+
+      `<span class="label">duration:</span><span class="val">${fmtDuration(dur)}</span>`+
+      `<span class="label">events:</span><span class="val">${d.event_count}</span>`;
+    renderSwimlane();
+  })
+}
+
+function renderSwimlane(){
+  const container=document.getElementById('swim');
+  const width=Math.max(900,container.clientWidth-40);
+  const innerW=width-LANE_LABEL_W-RIGHT_PAD;
+  const height=TOP_PAD+STAGES.length*LANE_HEIGHT+BOTTOM_PAD;
+  // Time domain: from first_ts to last_ts (with min 1s padding for tiny traces)
+  const t0=new Date(_events[0].time).getTime();
+  const tN=new Date(_events[_events.length-1].time).getTime();
+  const span=Math.max(tN-t0,1000);
+  function x(t){return LANE_LABEL_W+((new Date(t).getTime()-t0)/span)*innerW}
+
+  let svg=`<svg xmlns="${SVG_NS}" width="${width}" height="${height}" style="background:#0a0a1a">`;
+  // Lane backgrounds + labels
+  for(let i=0;i<STAGES.length;i++){
+    const cls=(i%2===0)?'lane-bg':'lane-bg alt';
+    const y=TOP_PAD+i*LANE_HEIGHT;
+    svg+=`<rect class="${cls}" x="0" y="${y}" width="${width}" height="${LANE_HEIGHT}"/>`;
+    svg+=`<text class="lane-label num" x="12" y="${y+LANE_HEIGHT/2-3}">stage ${STAGES[i].n}</text>`;
+    svg+=`<text class="lane-label" x="12" y="${y+LANE_HEIGHT/2+12}">${STAGES[i].name}</text>`;
+    svg+=`<line class="lane-divider" x1="${LANE_LABEL_W}" y1="${y+LANE_HEIGHT}" x2="${width}" y2="${y+LANE_HEIGHT}"/>`;
+  }
+  // Time axis
+  const axisY=TOP_PAD+STAGES.length*LANE_HEIGHT+12;
+  svg+=`<line class="time-axis" x1="${LANE_LABEL_W}" y1="${axisY}" x2="${width-RIGHT_PAD}" y2="${axisY}"/>`;
+  // Time ticks: 5 evenly spaced
+  for(let i=0;i<=4;i++){
+    const tx=LANE_LABEL_W+(i/4)*innerW;
+    const tt=t0+(i/4)*span;
+    svg+=`<line class="time-axis" x1="${tx}" y1="${axisY-3}" x2="${tx}" y2="${axisY+3}"/>`;
+    svg+=`<text class="time-tick" x="${tx}" y="${axisY+16}" text-anchor="middle">${fmtTime(new Date(tt).toISOString())}</text>`;
+  }
+  // Event dots — uncategorized (stage 0) go in a thin row above the swimlane
+  for(let i=0;i<_events.length;i++){
+    const e=_events[i];
+    const stage=e.stage||0;
+    let yCenter;
+    if(stage===0){yCenter=2}  // pinned at top, won't display in normal lanes
+    else{yCenter=TOP_PAD+(stage-1)*LANE_HEIGHT+LANE_HEIGHT/2}
+    if(stage===0)continue;  // hide uncategorized for the demo cleanliness; can toggle on
+    const xCenter=x(e.time);
+    const colorCls='color-'+(e.type||'OTHER');
+    svg+=`<circle class="event-dot ${colorCls}" data-i="${i}" cx="${xCenter}" cy="${yCenter}" r="5"><title>${esc(e.type)} · ${esc(e.binary)} · ${esc((e.args||'').substring(0,80))}</title></circle>`;
+  }
+  svg+='</svg>';
+  container.innerHTML=svg;
+  // Wire click
+  container.querySelectorAll('.event-dot').forEach(el=>{
+    el.addEventListener('click',()=>{
+      _selectedIdx=parseInt(el.getAttribute('data-i'),10);
+      container.querySelectorAll('.event-dot.sel').forEach(d=>d.classList.remove('sel'));
+      el.classList.add('sel');
+      renderDetail();
+    });
+  });
+}
+
+function renderDetail(){
+  const d=document.getElementById('detail');
+  if(_selectedIdx<0||_selectedIdx>=_events.length){d.innerHTML='<h3>Event detail</h3><p style="color:#607080">Click an event in the swimlane above.</p>';return}
+  const e=_events[_selectedIdx];
+  const stage=e.stage||0;
+  const stageName=stage>0?STAGES[stage-1].name:'(uncategorized)';
+  d.innerHTML='<h3>Event detail <span class="stage-pill">stage '+stage+' · '+esc(stageName)+'</span></h3>'+
+    '<div class="row"><div class="k">timestamp</div><div class="v">'+esc(e.time)+'</div></div>'+
+    '<div class="row"><div class="k">type</div><div class="v">'+esc(e.type)+'</div></div>'+
+    '<div class="row"><div class="k">source</div><div class="v">'+esc(e.source)+'</div></div>'+
+    '<div class="row"><div class="k">binary</div><div class="v">'+esc(e.binary)+'</div></div>'+
+    '<div class="row"><div class="k">uid</div><div class="v">'+esc(e.uid)+'</div></div>'+
+    '<div class="row"><div class="k">policy</div><div class="v">'+esc(e.policy||'(none)')+'</div></div>'+
+    '<div class="row"><div class="k">args</div><div class="v">'+esc(e.args)+'</div></div>'+
+    '<div class="row"><div class="k">trace_id</div><div class="v">'+esc(e.trace_id)+'</div></div>';
+}
+
+// Wire pickers
+document.getElementById('trace-select').addEventListener('change',ev=>{loadTrace(ev.target.value)});
+document.getElementById('trace-input').addEventListener('change',ev=>{loadTrace(ev.target.value.trim())});
+document.getElementById('trace-input').addEventListener('keydown',ev=>{if(ev.key==='Enter')loadTrace(ev.target.value.trim())});
+
+window.addEventListener('resize',()=>{if(_events.length>0)renderSwimlane()});
+loadRecentTraces();
+</script>
+</body></html>"""
+
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path=='/':
             self.send_response(200);self.send_header('Content-Type','text/html');self.end_headers()
             self.wfile.write(HTML.encode())
+        elif self.path == '/agent-walk' or self.path.startswith('/agent-walk?'):
+            self.send_response(200); self.send_header('Content-Type', 'text/html'); self.end_headers()
+            self.wfile.write(AGENT_WALK_HTML.encode())
         elif self.path == '/agent-sbom.json':
             try:
                 with open('/Users/aetherclaude/logs/agent-sbom.cdx.json', 'r') as sf:
@@ -2710,6 +2925,139 @@ a{{color:#0a6aba}}
                      'stats':{'total_events':stats['total_events'],'exec_count':stats['exec_count'],'kprobe_count':stats['kprobe_count'],'exit_count':stats['exit_count'],'aetherclaude_events':stats['aetherclaude_events'],'network_connections':stats['network_connections'],'alert_count':len(stats['alerts']),'policy_hits':dict(stats['policy_hits']),'binaries_seen':dict(stats['binaries_seen']),'alerts':list(stats['alerts']),'suppressed':stats['suppressed'],'tokens':{'input':token_stats['input'],'output':token_stats['output'],'cache_read':token_stats['cache_read'],'cache_create':token_stats['cache_create'],'messages':token_stats['messages'],'total':token_stats['input']+token_stats['output'],'estimated_cost_usd':round(token_stats['input']/1e6*15+token_stats['output']/1e6*75,2)},'tools':{'total':tool_stats['total'],'breakdown':tool_stats['breakdown']}},'mcp_scan_details':ring_stats.get('r6_mcp_details',[]),'rings':dict(ring_stats)}
             self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Access-Control-Allow-Origin','*');self.end_headers()
             self._send_json(d)
+        elif self.path.startswith('/api/agent-walk-traces'):
+            # List recent traces for the picker dropdown. One row per
+            # distinct trace_id, with summary (event count, time bounds,
+            # webhook event type if available).
+            from urllib.parse import urlparse, parse_qs
+            params = parse_qs(urlparse(self.path).query)
+            limit = min(int(params.get('limit', ['25'])[0]), 100)
+            try:
+                conn = sqlite3.connect(EVENTS_DB)
+                rows = conn.execute(
+                    "SELECT trace_id, "
+                    "       MIN(timestamp) AS first_ts, "
+                    "       MAX(timestamp) AS last_ts, "
+                    "       COUNT(*) AS event_count, "
+                    "       (SELECT args FROM events e2 "
+                    "        WHERE e2.trace_id = events.trace_id AND e2.type='WEBHOOK' "
+                    "        LIMIT 1) AS webhook_summary, "
+                    "       (SELECT binary_name FROM events e3 "
+                    "        WHERE e3.trace_id = events.trace_id AND e3.type='WEBHOOK' "
+                    "        LIMIT 1) AS webhook_binary "
+                    "FROM events "
+                    "WHERE trace_id IS NOT NULL AND LENGTH(trace_id) > 8 "
+                    "GROUP BY trace_id "
+                    "ORDER BY first_ts DESC LIMIT ?",
+                    (limit,)
+                ).fetchall()
+                conn.close()
+                traces = [{
+                    'trace_id': r[0], 'first_ts': r[1], 'last_ts': r[2],
+                    'event_count': r[3],
+                    'summary': r[4] or '(no webhook event)',
+                    'binary': r[5] or '',
+                } for r in rows]
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self._send_json({'traces': traces})
+            except Exception as ex:
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+                self._send_json({'traces': [], 'error': str(ex)})
+        elif self.path.startswith('/api/agent-walk'):
+            # All events for one trace, ordered by timestamp. Plus a
+            # classification of which of the 9 walk stages each event
+            # belongs to — done server-side so the JS doesn't have to
+            # carry the rules.
+            from urllib.parse import urlparse, parse_qs
+            params = parse_qs(urlparse(self.path).query)
+            trace_id = params.get('trace', [''])[0].strip()
+            if not trace_id:
+                self.send_response(400); self.send_header('Content-Type', 'application/json'); self.end_headers()
+                self._send_json({'error': 'trace param required'})
+                return
+
+            def classify_stage(typ, src, args, binary):
+                """Return 1..9 for the 9 walk stages; 0 if uncategorized.
+                Order matters — first match wins (publish before generic
+                tool, etc.)."""
+                args = (args or '').lower()
+                src = (src or '').lower()
+                binary = (binary or '').lower()
+                # 1. Webhook
+                if typ == 'WEBHOOK':
+                    return 1
+                # 8. GitHub publish via MCP — must come before generic tool
+                if typ == 'MCP' and any(op in args for op in (
+                        'comment_on_', 'create_pr', 'close_issue',
+                        'create_pull_request', 'create_pr_review',
+                        'comment_on_discussion', 'create_release')):
+                    return 8
+                # 9. Cleanup / audit fan-out
+                if src == 'defenseclaw' and any(t in args for t in (
+                        'session_end', 'sessionend', 'completed',
+                        'sidecar stop', 'gateway stop')):
+                    return 9
+                # 7. Model response
+                if src == 'defenseclaw' and ('llm_response' in args or 'stop hook' in args):
+                    return 7
+                # 5. Claude Code invocation
+                if src == 'defenseclaw' and ('llm_prompt' in args or 'userpromptsubmit' in args
+                                              or 'sessionstart' in args or 'connector' in args):
+                    return 5
+                # 6. Tool calls (generic)
+                if typ == 'MCP' or (src == 'defenseclaw' and ('tool' in args or 'pretooluse' in args
+                                                              or 'posttooluse' in args)):
+                    return 6
+                # 4. Pre-flight scans
+                if typ == 'SCAN' or src in ('codeguard', 'mcp-scan', 'skill-scan', 'prompt-scan'):
+                    return 4
+                # 3. Skill selection
+                if src == 'skill-dispatch' and 'agent-run' not in args:
+                    return 3
+                # 2. Orchestrator dispatch
+                if src == 'skill-dispatch' and 'agent-run' in args:
+                    return 2
+                # eslogger raw process events: place on the orchestrator
+                # lane if early in the trace, tool lane otherwise (left
+                # as 0 here; frontend can promote based on time-window)
+                return 0
+
+            try:
+                conn = sqlite3.connect(EVENTS_DB)
+                rows = conn.execute(
+                    "SELECT timestamp, type, uid, binary_name, args, policy, "
+                    "       is_agent, source, trace_id "
+                    "FROM events WHERE trace_id = ? ORDER BY timestamp ASC, id ASC",
+                    (trace_id,)
+                ).fetchall()
+                conn.close()
+                events = []
+                for r in rows:
+                    ts, typ, uid, binary, args, policy, is_agent, source, tid = r
+                    events.append({
+                        'time': ts, 'type': typ, 'uid': uid, 'binary': binary,
+                        'args': args, 'policy': policy,
+                        'is_agent': bool(is_agent), 'source': source,
+                        'trace_id': tid,
+                        'stage': classify_stage(typ, source, args, binary),
+                    })
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self._send_json({
+                    'trace_id': trace_id,
+                    'events': events,
+                    'first_ts': events[0]['time'] if events else None,
+                    'last_ts': events[-1]['time'] if events else None,
+                    'event_count': len(events),
+                })
+            except Exception as ex:
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+                self._send_json({'events': [], 'error': str(ex)})
         elif self.path.startswith('/api/issue-actions'):
             from urllib.parse import urlparse, parse_qs
             params = parse_qs(urlparse(self.path).query)
