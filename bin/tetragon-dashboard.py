@@ -241,10 +241,10 @@ def db_batch_writer():
         try:
             conn = sqlite3.connect(EVENTS_DB)
             conn.executemany(
-                'INSERT INTO events (timestamp, type, uid, binary_name, args, policy, is_agent, source) VALUES (?,?,?,?,?,?,?,?)',
+                'INSERT INTO events (timestamp, type, uid, binary_name, args, policy, is_agent, source, trace_id) VALUES (?,?,?,?,?,?,?,?,?)',
                 [(e.get('time',''), e.get('type',''), e.get('uid',''),
                   e.get('binary',''), e.get('args',''), e.get('policy',''),
-                  e.get('is_agent', False), e.get('source','')) for e in batch]
+                  e.get('is_agent', False), e.get('source',''), e.get('trace_id')) for e in batch]
             )
             conn.commit()
             conn.close()
@@ -371,12 +371,13 @@ def load_memory_buffer():
     try:
         conn = sqlite3.connect(EVENTS_DB)
         cursor = conn.execute(
-            'SELECT timestamp, type, uid, binary_name, args, policy, is_agent, source FROM events ORDER BY id DESC LIMIT ?',
+            'SELECT timestamp, type, uid, binary_name, args, policy, is_agent, source, trace_id FROM events ORDER BY id DESC LIMIT ?',
             (MEMORY_BUFFER_MAX,))
         rows = cursor.fetchall()
         conn.close()
         entries = [{'time': r[0], 'type': r[1], 'uid': r[2], 'binary': r[3],
-                    'args': r[4], 'policy': r[5], 'is_agent': bool(r[6]), 'source': r[7]}
+                    'args': r[4], 'policy': r[5], 'is_agent': bool(r[6]), 'source': r[7],
+                    'trace_id': r[8]}
                    for r in reversed(rows)]  # oldest first
         with memory_lock:
             memory_buffer.extend(entries)
@@ -388,10 +389,10 @@ def db_insert_event(entry):
     try:
         conn = sqlite3.connect(EVENTS_DB)
         conn.execute(
-            'INSERT INTO events (timestamp, type, uid, binary_name, args, policy, is_agent, source) VALUES (?,?,?,?,?,?,?,?)',
+            'INSERT INTO events (timestamp, type, uid, binary_name, args, policy, is_agent, source, trace_id) VALUES (?,?,?,?,?,?,?,?,?)',
             (entry.get('time',''), entry.get('type',''), entry.get('uid',''),
              entry.get('binary',''), entry.get('args',''), entry.get('policy',''),
-             entry.get('is_agent', False), entry.get('source',''))
+             entry.get('is_agent', False), entry.get('source',''), entry.get('trace_id'))
         )
         conn.commit()
         conn.close()
@@ -400,7 +401,7 @@ def db_insert_event(entry):
 def db_query_events(limit=1000, source=None, event_type=None):
     try:
         conn = sqlite3.connect(EVENTS_DB)
-        query = 'SELECT timestamp, type, uid, binary_name, args, policy, is_agent, source FROM events'
+        query = 'SELECT timestamp, type, uid, binary_name, args, policy, is_agent, source, trace_id FROM events'
         params = []
         conditions = []
         if source:
@@ -417,7 +418,8 @@ def db_query_events(limit=1000, source=None, event_type=None):
         rows = cursor.fetchall()
         conn.close()
         return [{'time': r[0], 'type': r[1], 'uid': r[2], 'binary': r[3],
-                 'args': r[4], 'policy': r[5], 'is_agent': bool(r[6]), 'source': r[7]}
+                 'args': r[4], 'policy': r[5], 'is_agent': bool(r[6]), 'source': r[7],
+                 'trace_id': r[8]}
                 for r in reversed(rows)]
     except:
         return []
@@ -2734,7 +2736,7 @@ a{{color:#0a6aba}}
                 self.wfile.write(f'error: {ex}'.encode())
             return
         elif self.path == '/webhook':
-            import hmac, hashlib
+            import hmac, hashlib, uuid
             global _last_webhook_trigger
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length)
@@ -2745,6 +2747,13 @@ a{{color:#0a6aba}}
             expected = 'sha256=' + hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
             if not hmac.compare_digest(sig_header, expected):
                 self.send_response(401); self.end_headers(); self.wfile.write(b'Invalid signature'); return
+            # Mint trace_id from GitHub's X-GitHub-Delivery (UUID per webhook,
+            # already unique in their audit) — falls back to a fresh UUID for
+            # synthetic deliveries (gh webhook-redeliver, manual replay). The
+            # trace_id is the join key for the Agent Walk view that links
+            # every event from this webhook through orchestrator → Claude →
+            # tools → MCP → GitHub publish.
+            trace_id = self.headers.get('X-GitHub-Delivery') or str(uuid.uuid4())
             # Parse event
             event_type = self.headers.get('X-GitHub-Event', 'unknown')
             try:
@@ -2778,7 +2787,8 @@ a{{color:#0a6aba}}
             with lock:
                 entry = {'time': now_utc_iso(), 'type': 'WEBHOOK', 'uid': 0,
                          'binary': f'github:{event_type}', 'args': summary,
-                         'policy': '', 'is_agent': True, 'source': 'webhook'}
+                         'policy': '', 'is_agent': True, 'source': 'webhook',
+                         'trace_id': trace_id}
                 append_event(entry)
             # Skip events from our own bot to avoid loops
             sender = payload.get('sender', {}).get('login', '')
@@ -2835,6 +2845,16 @@ a{{color:#0a6aba}}
                         trigger_str += f":{label_name}"
                 with open('/Users/aetherclaude/state/trigger-event', 'w') as tf:
                     tf.write(trigger_str)
+            except: pass
+            # Hand the trace_id off to the orchestrator. launchctl kickstart
+            # doesn't propagate env vars, so we drop the trace_id in a state
+            # file that run-agent.sh sources at startup. Same pattern as
+            # trigger-event above. The orchestrator exports it as
+            # AETHER_TRACE_ID + DEFENSECLAW_RUN_ID so the Agent Walk view can
+            # correlate every downstream event back to this webhook.
+            try:
+                with open('/Users/aetherclaude/state/trace-id', 'w') as tf:
+                    tf.write(trace_id)
             except: pass
             # Trigger agent run locally via launchctl
             try:
