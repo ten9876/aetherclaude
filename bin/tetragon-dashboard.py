@@ -1480,6 +1480,16 @@ def tail_defenseclaw_audit(logfile):
                 # Generic fallback — just show the event_type
                 args_text = etype
 
+            # DC v7 audit records carry run_id (populated from
+            # DEFENSECLAW_RUN_ID env which the orchestrator exports
+            # equal to AETHER_TRACE_ID). Extract it so we don't have
+            # to rely on the active-trace fallback. /defenseclaw-webhook
+            # already does this for the HTTP audit_sink path; this
+            # mirror keeps the file-tail path symmetric.
+            dc_trace = (rec.get('run_id')
+                        or rec.get('trace_id')
+                        or rec.get('correlation_id')
+                        or (rec.get('context') or {}).get('run_id'))
             entry = {
                 'time': ts,
                 'type': 'DEFENSE',
@@ -1489,6 +1499,7 @@ def tail_defenseclaw_audit(logfile):
                 'policy': policy,
                 'is_agent': True,
                 'source': 'defenseclaw',
+                'trace_id': dc_trace,
             }
             with lock:
                 append_event(entry)
@@ -3465,10 +3476,27 @@ a{{color:#0a6aba}}
                         'post /repos', 'put /repos', 'patch /repos',
                         'delete /repos')):
                     return 9
+                # 9. GitHub publish via Claude's MCP tool (write ops).
+                # claude-code emits source=claude-code, type=TOOL,
+                # binary=claude:MCP for every MCP invocation, with args
+                # = the operation name (comment_on_issue, create_pr_*,
+                # close_issue, etc.).
+                if src == 'claude-code' and typ == 'TOOL' \
+                        and binary == 'claude:mcp' \
+                        and any(t in args for t in (
+                            'comment_on_', 'create_pr', 'close_issue',
+                            'create_pull_request', 'create_pr_review',
+                            'comment_on_discussion', 'create_release',
+                            'add_labels', 'remove_label')):
+                    return 9
                 # 7. MCP — all other MCP server activity (read ops, list
                 # operations, generic queries). Distinct from stage 6
                 # which now holds only non-MCP tool-call verdicts.
                 if typ == 'MCP':
+                    return 7
+                # 7. MCP read ops via Claude's MCP tool (e.g.
+                # get_pr_diff, list_open_prs, read_issue, search_issues)
+                if src == 'claude-code' and typ == 'TOOL' and binary == 'claude:mcp':
                     return 7
                 # 4. Scanning — skill-scanner + mcp-scanner specifically.
                 # These are Cisco AI Defense's pre-flight scanners that
@@ -3510,6 +3538,16 @@ a{{color:#0a6aba}}
                         or 'tool' in args
                         or 'action=' in args or 'verdict' in args
                         or 'gateway completed' in args):
+                    return 6
+                # 6. Claude's actual tool invocations (Bash, Read, Edit,
+                # Write, Grep, Glob, WebFetch, ToolSearch, TodoWrite,
+                # Task, Agent, Skill, AskUserQuestion, TaskStop).
+                # Source = claude-code, type = TOOL, binary like
+                # 'claude:Bash'. claude:MCP is handled above (stage 7
+                # / 9), so this catches everything else that runs via
+                # the Claude tool-call dispatch.
+                if src == 'claude-code' and typ == 'TOOL' \
+                        and binary.startswith('claude:'):
                     return 6
                 # 2. Orchestrator dispatch — skill-dispatch events whose
                 # binary indicates the run-boundary skill (binary is
