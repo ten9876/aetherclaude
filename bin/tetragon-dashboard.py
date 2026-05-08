@@ -2686,6 +2686,8 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
   <button id="btn-play">▶ Play</button>
   <button id="btn-pause" disabled>⏸ Pause</button>
   <button id="btn-reset">⟲ Reset</button>
+  <button id="btn-prev" title="Step back to previous event">◀ Prev</button>
+  <button id="btn-next" title="Step forward to next event">Next ▶</button>
   <span class="speed-label">speed:</span>
   <button class="speed-btn" data-speed="1">1×</button>
   <button class="speed-btn active" data-speed="4">4×</button>
@@ -2714,6 +2716,9 @@ const LANE_HEIGHT=40,LANE_LABEL_W=180,RIGHT_PAD=24,TOP_PAD=8,BOTTOM_PAD=28;
 let _events=[],_selectedIdx=-1;
 // Replay state
 let _playTimers=[],_progressInterval=null,_isPlaying=false,_speed=4,_replayStart=0,_replayDuration=0;
+// Step state — index of the latest event shown via Prev/Next stepping.
+// -1 means "no stepping in progress" (live mode, all dots visible).
+let _stepIdx=-1;
 
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function fmtTime(s){if(!s)return '';const dt=new Date(s);if(isNaN(dt))return s;const hms=dt.toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});const ms=String(dt.getMilliseconds()).padStart(3,'0');return `${hms}.${ms}`}
@@ -2748,6 +2753,7 @@ function loadTrace(traceId){
     if(_events.length===0){meta.textContent='Trace has no events.';document.getElementById('swim').innerHTML='<div class="empty">No events for this trace.</div>';document.getElementById('player').style.display='none';return}
     document.getElementById('player').style.display='flex';
     stopReplay();
+    _stepIdx=-1;
     const t0=new Date(_events[0].time),tN=new Date(_events[_events.length-1].time);
     const dur=tN-t0;
     const bg=d.background_dropped||0;
@@ -2894,12 +2900,62 @@ function stopReplay(){
 
 function resetReplay(){
   stopReplay();
-  document.querySelectorAll('.event-dot').forEach(d=>d.classList.remove('hidden'));
+  _stepIdx=-1;
+  document.querySelectorAll('.event-dot').forEach(d=>{d.classList.remove('hidden');d.classList.remove('sel')});
+  document.getElementById('progress-bar').style.width='0%';
+  document.getElementById('progress-ts').textContent='—';
+  // Detail panel back to default
+  _selectedIdx=-1;
+  renderDetail();
+}
+
+// Step to a specific event index. Hides dots after it, shows dots up to
+// and including it, selects the target dot, and updates the detail panel
+// + progress indicator. If a Play is in flight, pause it first so the
+// step doesn't fight the timer queue.
+function stepTo(idx){
+  if(_events.length===0)return;
+  if(_isPlaying)stopReplay();
+  if(idx<0)idx=0;
+  if(idx>_events.length-1)idx=_events.length-1;
+  _stepIdx=idx;
+  // Show/hide each dot based on whether its event index is <= idx
+  document.querySelectorAll('.event-dot').forEach(d=>{
+    const di=parseInt(d.getAttribute('data-i'),10);
+    if(di<=idx){d.classList.remove('hidden')}else{d.classList.add('hidden')}
+    d.classList.remove('sel');
+  });
+  // Highlight the current step's dot
+  const cur=document.querySelector('.event-dot[data-i="'+idx+'"]');
+  if(cur)cur.classList.add('sel');
+  // Populate detail panel
+  _selectedIdx=idx;
+  renderDetail();
+  // Progress indicator
+  const t0=new Date(_events[0].time).getTime();
+  const tN=new Date(_events[_events.length-1].time).getTime();
+  const tCur=new Date(_events[idx].time).getTime();
+  const pct=tN>t0?((tCur-t0)/(tN-t0))*100:100;
+  document.getElementById('progress-bar').style.width=pct+'%';
+  document.getElementById('progress-ts').textContent=fmtTime(_events[idx].time);
 }
 
 document.getElementById('btn-play').addEventListener('click',startReplay);
 document.getElementById('btn-pause').addEventListener('click',stopReplay);
 document.getElementById('btn-reset').addEventListener('click',resetReplay);
+document.getElementById('btn-prev').addEventListener('click',()=>{
+  // If we haven't started stepping, jump to the LAST event so Prev
+  // first goes to the end (intuitive: scrub backward from the end).
+  // Otherwise, step back from the current position.
+  if(_stepIdx<0)stepTo(_events.length-1);
+  else stepTo(_stepIdx-1);
+});
+document.getElementById('btn-next').addEventListener('click',()=>{
+  // If we haven't started stepping, start at the first event.
+  // Otherwise, advance.
+  if(_stepIdx<0)stepTo(0);
+  else stepTo(_stepIdx+1);
+});
 document.querySelectorAll('.speed-btn').forEach(b=>{
   b.addEventListener('click',()=>{
     _speed=parseInt(b.getAttribute('data-speed'),10);
