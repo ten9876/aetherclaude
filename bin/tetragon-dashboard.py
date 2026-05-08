@@ -1559,6 +1559,7 @@ def tail_claude_transcripts():
     for new files.
     """
     file_offsets = {}  # absolute path → byte offset of last-read end
+    startup_ts = time.time()
     while True:
         try:
             # Enumerate every .jsonl under the projects tree.
@@ -1577,13 +1578,21 @@ def tail_claude_transcripts():
 
             for path in paths:
                 try:
-                    size = os.path.getsize(path)
+                    st = os.stat(path)
+                    size = st.st_size
+                    mtime = st.st_mtime
                 except OSError:
                     continue
-                # First time we see this file: skip to end (don't replay history)
+                # First time we see this file. If it was modified BEFORE
+                # the dashboard started, it's pre-existing transcript
+                # history we don't want to replay — skip to end. If it
+                # appeared AFTER startup (real new agent session, OR a
+                # file written in one shot we haven't seen yet), start
+                # from offset 0 so we capture its content.
                 if path not in file_offsets:
-                    file_offsets[path] = size
-                    continue
+                    file_offsets[path] = 0 if mtime > startup_ts else size
+                    if file_offsets[path] == size:
+                        continue
                 # File shrank? Could be a rotation or rewrite. Reset.
                 if size < file_offsets[path]:
                     file_offsets[path] = size
