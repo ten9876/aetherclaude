@@ -2763,14 +2763,29 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
 #detail .v{color:#c8d8e8;font-family:'SF Mono',monospace;word-break:break-all}
 #detail .stage-pill{display:inline-block;background:#203040;color:#00bceb;padding:1px 8px;border-radius:10px;font-size:10px;margin-left:6px}
 /* Log stream rows. Compact monospace so dense traces stay readable. */
-#log-stream .lrow{display:flex;gap:8px;padding:2px 4px;font-family:'SF Mono',monospace;font-size:10px;border-radius:2px;cursor:pointer;align-items:baseline}
-#log-stream .lrow:hover{background:#101020}
-#log-stream .lrow.cur{background:#1a2a4a;color:#fff}
+#log-stream .lrow{display:flex;gap:8px;padding:2px 4px 2px 6px;font-family:'SF Mono',monospace;font-size:10px;border-radius:2px;cursor:pointer;align-items:baseline;border-left:3px solid #303040;background:#0e0e22}
+#log-stream .lrow:hover{filter:brightness(1.4)}
+#log-stream .lrow.cur{box-shadow:inset 0 0 0 1px #00bceb;color:#fff}
 #log-stream .lrow .lt{color:#505060;width:80px;flex-shrink:0}
 #log-stream .lrow .lstage{color:#607080;width:30px;flex-shrink:0;text-align:right}
 #log-stream .lrow .ltype{width:80px;flex-shrink:0;text-overflow:ellipsis;overflow:hidden;white-space:nowrap}
 #log-stream .lrow .larg{flex:1;color:#8090a0;text-overflow:ellipsis;overflow:hidden;white-space:nowrap}
 #log-stream .empty-state{color:#607080;padding:30px 0;text-align:center}
+/* Source-based coloring — mirrors the main dashboard's .ev.<source> rules
+ * so an SE sees the same visual mapping in both places. */
+#log-stream .lrow.agent{background:#0a1a0a;border-left-color:#00ff88}
+#log-stream .lrow.guard{background:#1a0a10;border-left-color:#ff6688}
+#log-stream .lrow.mcp{background:#0f0a1a;border-left-color:#aa88ff}
+#log-stream .lrow.nftables{background:#1a0808;border-left-color:#ff4444}
+#log-stream .lrow.tinyproxy{background:#081a10;border-left-color:#44ddaa}
+#log-stream .lrow.mcp-scan{background:#081018;border-left-color:#00ddff}
+#log-stream .lrow.skill-scan{background:#100818;border-left-color:#dd88ff}
+#log-stream .lrow.skill-dispatch{background:#181808;border-left-color:#ffdd44}
+#log-stream .lrow.webhook{background:#081018;border-left-color:#44aaff}
+#log-stream .lrow.defenseclaw{background:#0c0c20;border-left-color:#6688ff}
+#log-stream .lrow.claude-code{background:#180818;border-left-color:#ff88cc}
+#log-stream .lrow.claude-transcript{background:#180818;border-left-color:#ff88dd}
+#log-stream .lrow.prompt-scan{background:#150818;border-left-color:#ff88dd}
 .empty{padding:60px 20px;text-align:center;color:#607080}
 .legend{display:flex;gap:16px;font-size:10px;color:#607080;padding:6px 20px;background:#0a0a1a;border-bottom:1px solid #20304a}
 .legend .swatch{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle}
@@ -2983,6 +2998,28 @@ function renderDetail(){
 // Mirrors the swimlane: each visible-now event gets one row in time order.
 // Clicking a row selects that event (highlights its dot in the swimlane and
 // populates the detail pane on the right).
+//
+// Source → CSS class mapping mirrors the main dashboard so SEs see the
+// same visual scheme in both views (yellow=skill-dispatch, blue=webhook,
+// blue-purple=defenseclaw, pink=claude-code, etc.).
+function rowSourceClass(e){
+  const s=e.source||'';
+  switch(s){
+    case 'webhook': return 'webhook';
+    case 'skill-dispatch': return 'skill-dispatch';
+    case 'defenseclaw': return 'defenseclaw';
+    case 'claude-code': return 'claude-code';
+    case 'claude-transcript': return 'claude-transcript';
+    case 'mcp': return 'mcp';
+    case 'mcp-scan': return 'mcp-scan';
+    case 'skill-scan': return 'skill-scan';
+    case 'prompt-scan': return 'prompt-scan';
+    case 'codeguard': return 'guard';
+    case 'tinyproxy': return 'tinyproxy';
+    case 'nftables': return 'nftables';
+    default: return e.is_agent ? 'agent' : '';
+  }
+}
 function logStreamClear(){
   const body=document.getElementById('log-stream-body');
   body.innerHTML='<p class="empty-state">Press ▶ Play or step with Next ▶ — events will appear here in time-order.</p>';
@@ -2996,8 +3033,9 @@ function logStreamRenderUpTo(idx){
     const e=_events[i];
     const cur=(i===idx)?' cur':'';
     const stage=e.stage||0;
+    const srcCls=rowSourceClass(e);
     const colorCls='color-'+(e.type||'OTHER');
-    h+=`<div class="lrow${cur}" data-i="${i}" onclick="logStreamSelect(${i})">`+
+    h+=`<div class="lrow ${srcCls}${cur}" data-i="${i}" onclick="logStreamSelect(${i})">`+
        `<span class="lt">${fmtTime(e.time)}</span>`+
        `<span class="lstage" style="color:#00bceb">${stage||'·'}</span>`+
        `<span class="ltype ${colorCls}" style="font-weight:bold">${esc(e.type||'')}</span>`+
@@ -3020,9 +3058,10 @@ function logStreamAppend(idx){
   body.querySelectorAll('.lrow.cur').forEach(el=>el.classList.remove('cur'));
   const e=_events[idx];
   const stage=e.stage||0;
+  const srcCls=rowSourceClass(e);
   const colorCls='color-'+(e.type||'OTHER');
   const div=document.createElement('div');
-  div.className='lrow cur';
+  div.className=`lrow ${srcCls} cur`;
   div.setAttribute('data-i',String(idx));
   div.setAttribute('onclick',`logStreamSelect(${idx})`);
   div.innerHTML=
