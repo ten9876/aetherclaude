@@ -262,12 +262,22 @@ def init_db():
         policy TEXT,
         is_agent BOOLEAN,
         source TEXT,
+        trace_id TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )''')
+    # Idempotent ALTER for DBs created before trace_id existed. SQLite raises
+    # OperationalError "duplicate column name" if the column is already there;
+    # silence that and let any other error surface.
+    try:
+        conn.execute('ALTER TABLE events ADD COLUMN trace_id TEXT')
+    except sqlite3.OperationalError as e:
+        if 'duplicate column' not in str(e).lower():
+            raise
     conn.execute('CREATE INDEX IF NOT EXISTS idx_source ON events(source)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_type ON events(type)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_agent ON events(is_agent)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_created ON events(created_at)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_trace_id ON events(trace_id)')
     conn.execute('''CREATE TABLE IF NOT EXISTS codeguard_findings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         scan_time TEXT DEFAULT CURRENT_TIMESTAMP,
