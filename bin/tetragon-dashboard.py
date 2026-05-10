@@ -3603,7 +3603,7 @@ a{{color:#0a6aba}}
                     "FROM events "
                     "WHERE trace_id IS NOT NULL AND LENGTH(trace_id) > 8 "
                     "GROUP BY trace_id "
-                    "HAVING event_count >= 3000 "
+                    "HAVING event_count > 5000 "
                     "ORDER BY first_ts DESC LIMIT ?",
                     (limit,)
                 ).fetchall()
