@@ -3719,16 +3719,13 @@ a{{color:#0a6aba}}
                 # 1. Webhook arrival
                 if typ == 'WEBHOOK':
                     return 1
-                # 8. Prompt / Response — both halves of the LLM exchange live
-                # in one lane. Covers actual content (claude-transcript
-                # PROMPT/RESPONSE) and DC's audit observations of either
-                # side (llm_prompt, llm_response, userpromptsubmit). Session
-                # lifecycle markers (sessionstart/session_start) stay at
-                # stage 5 — they bracket the prompt, but aren't a prompt.
-                if (src == 'claude-transcript' and typ in ('PROMPT', 'RESPONSE')) \
-                        or (src == 'defenseclaw' and (
-                            'llm_prompt' in args or 'llm_response' in args
-                            or 'userpromptsubmit' in args)):
+                # 8. Prompt / Response — actual content of the LLM exchange
+                # (claude-transcript PROMPT/RESPONSE). DC's audit rows that
+                # describe the prompt/response (llm_prompt, llm_response,
+                # userpromptsubmit) stay at Stage 6 with the rest of the
+                # DefenseClaw observability stream — caught by the DC
+                # catch-all further down.
+                if src == 'claude-transcript' and typ in ('PROMPT', 'RESPONSE'):
                     return 8
                 # 5. Claude Code — session lifecycle (DC sessionstart) and
                 # every action Claude takes after a prompt is in flight:
