@@ -18,7 +18,7 @@ Unified security observability across all 7 defense rings.
 """
 
 import json, os, sys, time, re, sqlite3, threading, argparse, subprocess, glob
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from collections import deque, defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -4175,7 +4175,7 @@ def main():
     threading.Thread(target=db_pruner,daemon=True).start()
     threading.Thread(target=db_trace_backfill_correlator,daemon=True).start()
     threading.Thread(target=track_active_trace,daemon=True).start()
-    s=HTTPServer((a.bind,a.port),H);print(f"Dashboard at http://{a.bind}:{a.port}")
+    s=ThreadingHTTPServer((a.bind,a.port),H);print(f"Dashboard at http://{a.bind}:{a.port}")
     try:s.serve_forever()
     except KeyboardInterrupt:print("\nShutdown")
 
