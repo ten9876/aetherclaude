@@ -2062,7 +2062,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 
 <div class="filter-bar">
 <button class="fbtn active" data-types="" onclick="toggleFilter(this)">All</button>
-<button class="fbtn" data-types="is_agent" onclick="toggleFilter(this)">Agent</button>
+<button class="fbtn" data-preset="agent" onclick="toggleFilter(this)">Agent</button>
 <button class="fbtn" data-types="EXEC,FORK,EXIT,SIGNAL" onclick="toggleFilter(this)">Tetragon</button>
 <button class="fbtn" data-types="RENAME,UNLINK" onclick="toggleFilter(this)">Files</button>
 <button class="fbtn" data-types="BLOCK" style="border-color:#ff4444" onclick="toggleFilter(this)">Firewall</button>
@@ -2131,6 +2131,12 @@ const all=document.querySelector('.filter-bar .fbtn[data-types=""]');
 if(btn===all){
   document.querySelectorAll('.filter-bar .fbtn').forEach(b=>b.classList.remove('active'));
   all.classList.add('active');
+}else if(btn.dataset.preset==='agent'){
+  const presetTypes=new Set(['BLOCK','SCAN','GUARD','TOOL','MCP','SKILL','WEBHOOK','DEFENSE']);
+  document.querySelectorAll('.filter-bar .fbtn').forEach(b=>{
+    if(presetTypes.has(b.dataset.types))b.classList.add('active');
+    else b.classList.remove('active');
+  });
 }else{
   all.classList.remove('active');
   btn.classList.toggle('active');
