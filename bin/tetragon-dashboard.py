@@ -3786,21 +3786,21 @@ a{{color:#0a6aba}}
                 # to be sent to the model). Must come BEFORE stage 6
                 # because DC's 'gateway completed' catch-all there
                 # would otherwise swallow scan_finding rows.
-                if src in ('skill-scan', 'mcp-scan', 'vt-scan', 'prompt-scan'):
+                # Codeguard is structurally another Cisco AI Defense scanner
+                # — it static-analyzes changed source files with the same
+                # CG-* rule set (CG-CRED, CG-EXEC, CG-NET, …). Same family
+                # as skill-scanner / mcp-scanner / prompt-scanner / vt-scan,
+                # so route to Stage 4 alongside them. Its own type='GUARD'
+                # is unique to codeguard, so the type check stays safe.
+                if src in ('skill-scan', 'mcp-scan', 'vt-scan', 'prompt-scan', 'codeguard'):
                     return 4
-                if typ == 'SCAN' and binary in ('skill-scanner', 'mcp-scanner', 'vt-scan', 'prompt-scanner'):
+                if typ in ('SCAN', 'GUARD') and binary in ('skill-scanner', 'mcp-scanner', 'vt-scan', 'prompt-scanner', 'codeguard'):
                     return 4
-                if src == 'defenseclaw' and (
-                        'skill-scanner' in args or 'mcp-scanner' in args
-                        or 'plugin-scanner' in args or 'scan_finding' in args
-                        or 'prompt-scanner' in args):
-                    return 4
-                # 6b. CodeGuard scan results — emitted by validate-diff.sh
-                # during tool-call code validation. Conceptually a tool
-                # call (it's the code-review step), so stage 6.
-                if src == 'codeguard' or (typ == 'SCAN' and binary == 'codeguard') \
-                        or (src == 'defenseclaw' and 'codeguard' in args):
-                    return 6
+                # DC audit rows describing scanner activity (skill/mcp/
+                # prompt/codeguard/plugin/scan_finding) stay in Stage 6
+                # with the rest of the DefenseClaw observability stream —
+                # the canonical scanner-output rows already populate
+                # Stage 4 via the source/binary checks above.
                 # 6. Tool calls — DC verdict / tool-hook events for
                 # non-MCP tools (Bash, Read, Edit, Grep, …). The DC
                 # daemon emits 'gateway completed — action=…' per
