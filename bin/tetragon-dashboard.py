@@ -3786,20 +3786,15 @@ a{{color:#0a6aba}}
                 # to be sent to the model). Must come BEFORE stage 6
                 # because DC's 'gateway completed' catch-all there
                 # would otherwise swallow scan_finding rows.
-                if src in ('skill-scan', 'mcp-scan', 'vt-scan'):
+                if src in ('skill-scan', 'mcp-scan', 'vt-scan', 'prompt-scan'):
                     return 4
-                if typ == 'SCAN' and binary in ('skill-scanner', 'mcp-scanner', 'vt-scan'):
+                if typ == 'SCAN' and binary in ('skill-scanner', 'mcp-scanner', 'vt-scan', 'prompt-scanner'):
                     return 4
                 if src == 'defenseclaw' and (
                         'skill-scanner' in args or 'mcp-scanner' in args
-                        or 'plugin-scanner' in args or 'scan_finding' in args):
+                        or 'plugin-scanner' in args or 'scan_finding' in args
+                        or 'prompt-scanner' in args):
                     return 4
-                # 5b. Prompt-scanner verdicts — DC's prompt-defense judges
-                # scan the prompt content; these belong with stage 5
-                # (Claude Code) which is where the prompt itself sits.
-                if src == 'prompt-scan' or (typ == 'SCAN' and binary == 'prompt-scanner') \
-                        or (src == 'defenseclaw' and 'prompt-scanner' in args):
-                    return 5
                 # 6b. CodeGuard scan results — emitted by validate-diff.sh
                 # during tool-call code validation. Conceptually a tool
                 # call (it's the code-review step), so stage 6.
