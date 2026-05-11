@@ -1399,6 +1399,41 @@ def tail_nftables_log():
             append_event(entry)
             stats['alerts'].append({'time': entry['time'], 'msg': f"FIREWALL: Blocked {detail}", 'severity': 'high'})
 
+# --- Session→trace correlation (leveraged by --worktree wiring) ---
+# Each orchestrator runs claude with cwd = $WORKSPACE/.claude/worktrees/<lock_key>,
+# so Claude Code writes its session JSONL under
+# ~/.claude/projects/-Users-aetherclaude-workspace-AetherSDR--claude-worktrees-<lock_key>/.
+# Parsing lock_key out of the project dir gives us a deterministic lookup into
+# state/trace-id.<lock_key>, eliminating the fuzzy time-window pass for the
+# entire Claude swimlane.
+_session_trace = {}  # filepath -> (trace_id, lock_key); stable for file lifetime
+_WORKTREE_RE = re.compile(r'--claude-worktrees-(.+)$')
+
+def _session_trace_lookup(filepath):
+    """Return (trace_id, lock_key) for a Claude session JSONL path. Cached
+    once per filepath. Returns (None, None) for legacy (pre-worktree)
+    session paths; the caller may then fall back to a wider strategy
+    (DB WEBHOOK-row join, or append_event's global _active_trace_id)."""
+    cached = _session_trace.get(filepath)
+    if cached is not None:
+        return cached
+    proj_dir = os.path.basename(os.path.dirname(filepath))
+    m = _WORKTREE_RE.search(proj_dir)
+    if not m:
+        _session_trace[filepath] = (None, None)
+        return None, None
+    lk = m.group(1)
+    try:
+        with open(f'/Users/aetherclaude/state/trace-id.{lk}') as f:
+            tid = f.read().strip() or None
+    except (FileNotFoundError, PermissionError, OSError):
+        tid = None
+    if tid:
+        # Cache only when both halves are resolved; if state file isn't
+        # flushed yet (tight race at orch startup), retry on next event.
+        _session_trace[filepath] = (tid, lk)
+    return tid, lk
+
 def tail_sessions():
     """Watch Claude Code session files for tool_use events."""
     import glob, re
@@ -1457,6 +1492,7 @@ def tail_sessions():
                                 else:
                                     detail = ''
 
+                                trace_id, _lk = _session_trace_lookup(filepath)
                                 with lock:
                                     entry = {
                                         'time': ts,
@@ -1466,7 +1502,8 @@ def tail_sessions():
                                         'args': detail,
                                         'policy': '',
                                         'is_agent': True,
-                                        'source': 'claude-code'
+                                        'source': 'claude-code',
+                                        'trace_id': trace_id,
                                     }
                                     append_event(entry)
                         except:
@@ -1701,9 +1738,16 @@ def tail_claude_transcripts():
     startup_ts = time.time()
 
     def _trace_for_session_path(p):
-        """Map a session JSONL path to a trace_id by parsing the issue
-        number from the project dir and joining against WEBHOOK rows.
-        Returns None if no match (calendar-triggered runs, weird paths)."""
+        """Map a session JSONL path to a trace_id. Strategy:
+          1. State-file lookup via _session_trace_lookup — deterministic
+             and free for paths under .claude/worktrees/<lock_key>/.
+          2. DB WEBHOOK-row join — fallback for legacy session paths
+             (calendar-era runs, manual claude invocations not under a
+             worktree) where the state file doesn't exist.
+        Returns None if neither resolves."""
+        tid, _lk = _session_trace_lookup(p)
+        if tid:
+            return tid
         try:
             project_dir = os.path.basename(os.path.dirname(p))
             # Project dirs look like '-private-tmp-aetherclaude-issue-1028'
