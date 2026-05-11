@@ -1696,13 +1696,22 @@ def tail_orchestrator_skills(logfile):
                     trace_for_entry = _trace_prefix_to_full.get(short, short)
                 # Scanner output emitted into the orchestrator log is not a
                 # skill-dispatch event — it's a SCAN event. Classify it that
-                # way so the Scan filter button and the agent-walk Stage-4
-                # classifier (which keys on binary in {'skill-scanner',
-                # 'mcp-scanner'}) pick it up. Everything else stays SKILL.
-                if skill == 'skill-scanner':
+                # way so the Scan filter button picks it up and the agent-
+                # walk classifier routes it to the right stage (4 = pre-
+                # flight scanning; 5 = prompt-scanner, kept in Stage 5 with
+                # the prompt itself). Everything else (real skill markers
+                # like 'First-Time Contributor Welcome', '@Mention …',
+                # 'Token Rotated …') stays SKILL.
+                _SCANNERS = {
+                    'skill-scanner':   'skill-scan',
+                    'mcp-scanner':     'mcp-scan',
+                    'vt-scan':         'vt-scan',
+                    'prompt-scanner':  'prompt-scan',
+                }
+                if skill in _SCANNERS:
                     ev_type = 'SCAN'
-                    ev_binary = 'skill-scanner'
-                    ev_source = 'skill-scan'
+                    ev_binary = skill
+                    ev_source = _SCANNERS[skill]
                 else:
                     ev_type = 'SKILL'
                     ev_binary = f'skill:{skill}'
@@ -3777,9 +3786,9 @@ a{{color:#0a6aba}}
                 # to be sent to the model). Must come BEFORE stage 6
                 # because DC's 'gateway completed' catch-all there
                 # would otherwise swallow scan_finding rows.
-                if src in ('skill-scan', 'mcp-scan'):
+                if src in ('skill-scan', 'mcp-scan', 'vt-scan'):
                     return 4
-                if typ == 'SCAN' and binary in ('skill-scanner', 'mcp-scanner'):
+                if typ == 'SCAN' and binary in ('skill-scanner', 'mcp-scanner', 'vt-scan'):
                     return 4
                 if src == 'defenseclaw' and (
                         'skill-scanner' in args or 'mcp-scanner' in args
