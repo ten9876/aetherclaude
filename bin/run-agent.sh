@@ -985,9 +985,21 @@ skill_process_issues() {
                 remove_label "$number" "claude-active" "$token"
                 add_label "$number" "awaiting-response" "$token"
             else
-                record_action "$number" "triage" "implement" "success"
-                set_state "issue_${number}_state" "implement"
-                log "Issue #${number} — analysis complete, moving to IMPLEMENT"
+                # Triage complete with no questions — hand off to maintainer
+                # for explicit authorization. Implementation MUST go through
+                # 'maintainer-review' so that a maintainer adding
+                # 'aetherclaude-eligible' mid-triage doesn't skip ahead, and
+                # so the maintainer has a chance to review/decline before
+                # code is written. If they've already added the label by
+                # now, the next loop iteration (case 'maintainer-review')
+                # will pick that up and advance to implement in this same
+                # orch run.
+                record_action "$number" "triage" "maintainer-review" "success" "Triage complete, awaiting maintainer authorization"
+                set_state "issue_${number}_state" "maintainer-review"
+                add_label "$number" "maintainer-review" "$token"
+                remove_label "$number" "claude-active" "$token"
+                remove_label "$number" "awaiting-response" "$token"
+                log "Issue #${number} — triage complete, moving to MAINTAINER-REVIEW"
             fi
             set_state "issue_${number}_last_action" "$(date "+%Y-%m-%dT%H:%M:%S")"
             processed=$((processed + 1))
@@ -1088,6 +1100,33 @@ except Exception:
                 fi
             fi
             # Waiting doesn't count as a processed action
+            ;;
+
+        maintainer-review)
+            # STATE: MAINTAINER-REVIEW — triage and follow-ups have
+            # completed; the issue is parked here until a maintainer
+            # explicitly authorizes implementation by adding the
+            # 'aetherclaude-eligible' label.
+            #
+            # Re-fetch labels (not the cached $issue_data ones, which
+            # are from this orch's initial listing). This is what
+            # closes the mid-run race: if the maintainer applied
+            # 'aetherclaude-eligible' while we were still triaging,
+            # this state is the first moment we're entitled to act on
+            # it, and the fresh GET picks it up. If the label isn't
+            # there yet, break out and wait for the next webhook
+            # (maintainer's label-add).
+            local mr_labels
+            mr_labels=$(github_api GET "/repos/${REPO}/issues/${number}" "$token" | jq -r '[.labels[].name]')
+            if echo "$mr_labels" | jq -e 'any(. == "aetherclaude-eligible")' >/dev/null; then
+                log "Issue #${number} — maintainer authorized (aetherclaude-eligible present), moving to IMPLEMENT"
+                record_action "$number" "maintainer-review" "implement" "success" "aetherclaude-eligible label present"
+                set_state "issue_${number}_state" "implement"
+            else
+                log "Issue #${number} — in MAINTAINER-REVIEW, awaiting maintainer to add aetherclaude-eligible"
+                processed=$((processed + 1))
+                break
+            fi
             ;;
 
         implement)
