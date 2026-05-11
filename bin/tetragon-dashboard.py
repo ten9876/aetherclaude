@@ -1694,16 +1694,29 @@ def tail_orchestrator_skills(logfile):
                 if m_prefix:
                     short = m_prefix.group(1)
                     trace_for_entry = _trace_prefix_to_full.get(short, short)
+                # Scanner output emitted into the orchestrator log is not a
+                # skill-dispatch event — it's a SCAN event. Classify it that
+                # way so the Scan filter button and the agent-walk Stage-4
+                # classifier (which keys on binary in {'skill-scanner',
+                # 'mcp-scanner'}) pick it up. Everything else stays SKILL.
+                if skill == 'skill-scanner':
+                    ev_type = 'SCAN'
+                    ev_binary = 'skill-scanner'
+                    ev_source = 'skill-scan'
+                else:
+                    ev_type = 'SKILL'
+                    ev_binary = f'skill:{skill}'
+                    ev_source = 'skill-dispatch'
                 with lock:
                     entry = {
                         'time': ts,
-                        'type': 'SKILL',
+                        'type': ev_type,
                         'uid': 965,
-                        'binary': f'skill:{skill}',
+                        'binary': ev_binary,
                         'args': detail,
                         'policy': '',
                         'is_agent': True,
-                        'source': 'skill-dispatch',
+                        'source': ev_source,
                         'trace_id': trace_for_entry,
                     }
                     append_event(entry)
