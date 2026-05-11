@@ -2993,7 +2993,7 @@ const STAGES=[
   {n:5,name:'Claude Code'},
   {n:6,name:'AI-Defense'},
   {n:7,name:'MCP'},
-  {n:8,name:'Response'},
+  {n:8,name:'Prompt / Response'},
   {n:9,name:'GitHub publish'},
   {n:10,name:'Cleanup / audit'},
 ];
@@ -3719,26 +3719,25 @@ a{{color:#0a6aba}}
                 # 1. Webhook arrival
                 if typ == 'WEBHOOK':
                     return 1
-                # 8. Model response — Stop hook event captured by DC's
-                # claudecode connector (args is literal 'llm_response')
-                # or actual response text from claude-transcript.
-                if (src == 'defenseclaw' and 'llm_response' in args) \
-                        or (src == 'claude-transcript' and typ == 'RESPONSE'):
+                # 8. Prompt / Response — both halves of the LLM exchange live
+                # in one lane. Covers actual content (claude-transcript
+                # PROMPT/RESPONSE) and DC's audit observations of either
+                # side (llm_prompt, llm_response, userpromptsubmit). Session
+                # lifecycle markers (sessionstart/session_start) stay at
+                # stage 5 — they bracket the prompt, but aren't a prompt.
+                if (src == 'claude-transcript' and typ in ('PROMPT', 'RESPONSE')) \
+                        or (src == 'defenseclaw' and (
+                            'llm_prompt' in args or 'llm_response' in args
+                            or 'userpromptsubmit' in args)):
                     return 8
-                # 5. Claude Code — every action Claude takes, whether it's
-                # the initial prompt or a downstream tool call. Includes:
-                #   - Initial llm_prompt + UserPromptSubmit (DC view)
-                #   - Actual prompt text (claude-transcript PROMPT)
-                #   - Every tool call Claude invokes: Bash, Read, Edit,
-                #     Write, Grep, Glob, WebFetch, ToolSearch, TodoWrite,
-                #     Task, Agent, Skill, AskUserQuestion, TaskStop
-                #   - claude:MCP READ operations (the Claude side of the
-                #     call — the MCP server's response lands on stage 7)
-                # AI-Defense verdicts ON these actions live on stage 6.
-                if (src == 'defenseclaw' and (
-                        'llm_prompt' in args or 'userpromptsubmit' in args
-                        or 'sessionstart' in args or 'session_start' in args)) \
-                        or (src == 'claude-transcript' and typ == 'PROMPT'):
+                # 5. Claude Code — session lifecycle (DC sessionstart) and
+                # every action Claude takes after a prompt is in flight:
+                # tool calls (Bash, Read, Edit, Write, Grep, Glob, WebFetch,
+                # ToolSearch, TodoWrite, Task, Agent, Skill, AskUserQuestion,
+                # TaskStop) and claude:MCP read calls. Prompt + response
+                # content lives at stage 8 above; DC verdicts at stage 6.
+                if src == 'defenseclaw' and (
+                        'sessionstart' in args or 'session_start' in args):
                     return 5
                 if src == 'claude-code' and typ == 'TOOL' and binary.startswith('claude:'):
                     # claude:MCP write ops are a publish moment (stage 9);
