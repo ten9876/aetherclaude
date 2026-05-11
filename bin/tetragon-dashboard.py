@@ -1679,6 +1679,78 @@ def tail_orchestrator_skills(logfile):
             m = re.search(r'Token Rotated: (.+)', line)
             if m: skill = 'dc-rotate'; detail = m.group(1)
 
+            # --- Orchestrator state-machine and substep markers ---
+            # These describe the orchestrator's own work (state transitions,
+            # phase boundaries, validation, push, PR creation) — not skill
+            # dispatch. Their binary uses the 'skill:orch-*' prefix so the
+            # classifier routes them to Stage 2 (Orchestrator) rather than
+            # Stage 3 (Skill). Without these the Orchestrator lane has only
+            # agent-run start/stop, which is what the dashboard previously
+            # showed.
+            m = re.search(r'Trigger: (\S+)\s*(?:\(([^)]+)\))?', line)
+            if m: skill = 'orch-trigger'; detail = f'{m.group(1)}{":"+m.group(2) if m.group(2) else ""}'
+
+            m = re.search(r'Found (\d+) candidate (issues|prs|discussions)', line)
+            if m: skill = 'orch-pipeline'; detail = f'{m.group(1)} {m.group(2)}'
+
+            m = re.search(r'Issue #(\d+) — detected state: (\S+)', line)
+            if m: skill = 'orch-state'; detail = f'Issue #{m.group(1)}: {m.group(2)}'
+
+            m = re.search(r'Issue #(\d+) — state changed to (\S+)', line)
+            if m: skill = 'orch-transition'; detail = f'Issue #{m.group(1)} → {m.group(2)}'
+
+            m = re.search(r'Issue #(\d+) — already (\S+), skipping', line)
+            if m: skill = 'orch-skip'; detail = f'Issue #{m.group(1)} ({m.group(2)})'
+
+            m = re.search(r'Issue #(\d+) — \d+ PR\(s\) already exist', line)
+            if m: skill = 'orch-skip'; detail = f'Issue #{m.group(1)} (PR exists)'
+
+            m = re.search(r'Issue #(\d+) — asked questions, moving to (\S+)', line)
+            if m: skill = 'orch-transition'; detail = f'Issue #{m.group(1)} → {m.group(2)}'
+
+            m = re.search(r'Issue #(\d+) — triage complete, moving to (\S+)', line)
+            if m: skill = 'orch-transition'; detail = f'Issue #{m.group(1)} → {m.group(2)}'
+
+            m = re.search(r'Issue #(\d+) — Claude handed off to maintainer', line)
+            if m: skill = 'orch-transition'; detail = f'Issue #{m.group(1)} → maintainer-review'
+
+            m = re.search(r'Issue #(\d+) — maintainer authorized', line)
+            if m: skill = 'orch-transition'; detail = f'Issue #{m.group(1)} → implement'
+
+            m = re.search(r'Running Claude Code for issue #(\d+)', line)
+            if m: skill = 'orch-claude-start'; detail = f'Issue #{m.group(1)}'
+
+            m = re.search(r'Issue #(\d+) — (\d+) commit\(s\) from Claude Code', line)
+            if m: skill = 'orch-commits'; detail = f'Issue #{m.group(1)}: {m.group(2)} commits'
+
+            m = re.search(r'Running validation gate for issue #(\d+)', line)
+            if m: skill = 'orch-validate'; detail = f'Issue #{m.group(1)}'
+
+            m = re.search(r'VALIDATION FAILED for issue #(\d+)', line)
+            if m: skill = 'orch-validate-fail'; detail = f'Issue #{m.group(1)}'
+
+            m = re.search(r'Pushing branch (\S+) as signed commit', line)
+            if m: skill = 'orch-push'; detail = f'branch {m.group(1)}'
+
+            m = re.search(r'Signed commit ([0-9a-f]+) pushed to (\S+)', line)
+            if m: skill = 'orch-push-done'; detail = f'{m.group(1)} → {m.group(2)}'
+
+            m = re.search(r'Creating PR for issue #(\d+)', line)
+            if m: skill = 'orch-pr'; detail = f'Issue #{m.group(1)}'
+
+            m = re.search(r'PR #(\d+) created for issue #(\d+)', line)
+            if m: skill = 'orch-pr-done'; detail = f'PR #{m.group(1)} for #{m.group(2)}'
+
+            m = re.search(r'Completed issue #(\d+)', line)
+            if m: skill = 'orch-complete'; detail = f'Issue #{m.group(1)}'
+
+            # Errors / timeouts — last so a generic regex doesn't swallow
+            # a more specific match above. Don't catch random ERROR: lines
+            # from sub-tools (validate-diff, MCP); restrict to orchestrator-
+            # framed errors via the leading [trace_prefix] log marker.
+            m = re.search(r'(ERROR|TIMEOUT|CRITICAL): (.+)', line)
+            if m and not skill: skill = f'orch-{m.group(1).lower()}'; detail = m.group(2)[:80]
+
             if skill:
                 # The orchestrator log timestamps in local time without a zone
                 # marker, which would parse as local in the browser only by
@@ -3807,10 +3879,14 @@ a{{color:#0a6aba}}
                         or 'action=' in args or 'verdict' in args
                         or 'gateway completed' in args):
                     return 6
-                # 2. Orchestrator dispatch — skill-dispatch events whose
-                # binary indicates the run-boundary skill (binary is
-                # 'skill:agent-run', NOT in args).
-                if src == 'skill-dispatch' and 'agent-run' in binary:
+                # 2. Orchestrator — run boundaries (agent-run start/stop)
+                # plus the orchestrator's own state-machine and substep
+                # work (orch-state, orch-transition, orch-skip, orch-push,
+                # orch-pr, orch-validate, orch-claude-start, …). All emit
+                # as source='skill-dispatch' with binary='skill:orch-*' or
+                # 'skill:agent-run'.
+                if src == 'skill-dispatch' and (
+                        'agent-run' in binary or 'orch-' in binary):
                     return 2
                 # 3. Skill selection — every other skill-dispatch event
                 if src == 'skill-dispatch':
