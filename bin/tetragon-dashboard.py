@@ -2073,7 +2073,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 <button class="fbtn" data-types="MCP" style="border-color:#aa88ff" onclick="toggleFilter(this)">MCP</button>
 <button class="fbtn" data-types="SKILL" style="border-color:#ffdd44" onclick="toggleFilter(this)">Skills</button>
 <button class="fbtn" data-types="WEBHOOK" style="border-color:#44aaff" onclick="toggleFilter(this)">Webhook</button>
-<button class="fbtn" data-types="DEFENSE" style="border-color:#6688ff" onclick="toggleFilter(this)">DefenseClaw</button>
+<button class="fbtn" data-types="DEFENSE" style="border-color:#6688ff" onclick="toggleFilter(this)">AI-Defense</button>
 <label style="margin-left:8px">Search:</label>
 <input class="finput" id="search" placeholder="grep pattern..." oninput="debouncedRefresh()" style="width:250px">
 <span class="muted" id="sc"></span>
@@ -2883,7 +2883,7 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
   <span><span class="swatch color-WEBHOOK"></span>Webhook</span>
   <span><span class="swatch color-SKILL"></span>Skill</span>
   <span><span class="swatch color-SCAN"></span>Scan</span>
-  <span><span class="swatch color-DEFENSE"></span>DefenseClaw</span>
+  <span><span class="swatch color-DEFENSE"></span>AI-Defense</span>
   <span><span class="swatch color-MCP"></span>MCP</span>
   <span><span class="swatch color-TOOL"></span>Tool</span>
   <span><span class="swatch color-PROMPT"></span>Prompt</span>
