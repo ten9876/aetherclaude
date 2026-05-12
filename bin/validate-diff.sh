@@ -11,7 +11,16 @@ LOGFILE="/Users/aetherclaude/logs/validation.log"
 cd "$WORKSPACE"
 
 log() {
-    echo "$(date "+%Y-%m-%dT%H:%M:%S") VALIDATE: $1" >> "$LOGFILE"
+    # Stamp each line with the orchestrator's trace prefix (when set) so
+    # the dashboard's tail_validation_log can attribute codeguard/validation
+    # events to the correct trace deterministically, even under parallel
+    # orchestrators where the global active-trace heuristic could pick the
+    # wrong one. Mirrors run-agent.sh's log() format.
+    local prefix=""
+    if [ -n "${AETHER_TRACE_ID:-}" ]; then
+        prefix=" [${AETHER_TRACE_ID:0:8}]"
+    fi
+    echo "$(date "+%Y-%m-%dT%H:%M:%S")${prefix} VALIDATE: $1" >> "$LOGFILE"
 }
 
 ERRORS=0

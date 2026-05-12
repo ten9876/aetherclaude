@@ -1286,8 +1286,20 @@ def tail_validation_log(logfile):
             if not line or 'VALIDATE:' not in line: continue
             with lock:
                 parts = line.split(' VALIDATE: ', 1)
-                ts = parts[0] if len(parts) > 1 else ''
+                header = parts[0] if len(parts) > 1 else ''
                 msg = parts[1] if len(parts) > 1 else line
+                # Header is "<ISO-timestamp>" or "<ISO-timestamp> [<8-hex>]".
+                # The orchestrator-side log() stamps the trace prefix; pull
+                # it out and resolve to a full UUID via _trace_prefix_to_full
+                # so codeguard events get deterministic trace attribution
+                # instead of relying on append_event's global active-trace
+                # heuristic (which races under parallel orchestrators).
+                ts = header.split()[0] if header else ''
+                m_prefix = re.search(r'\[([0-9a-f]{8})\]', header)
+                trace_for_entry = None
+                if m_prefix:
+                    short = m_prefix.group(1)
+                    trace_for_entry = _trace_prefix_to_full.get(short, short)
                 # Track validation runs
                 if msg.startswith('Validating '):
                     current_run = {'time': ts, 'files': 0, 'blocked': []}
@@ -1304,7 +1316,11 @@ def tail_validation_log(logfile):
                             (current_run['time'], current_run['files'], result, '\n'.join(current_run['blocked'])))
                         dbc.commit(); dbc.close()
                     except: pass
-                entry = {'time': ts, 'type': 'GUARD', 'uid': 965, 'binary': 'codeguard', 'args': msg[:120], 'policy': 'codeguard' if 'CodeGuard' in msg else 'validation-gate', 'is_agent': True, 'source': 'codeguard'}
+                entry = {'time': ts, 'type': 'GUARD', 'uid': 965, 'binary': 'codeguard',
+                         'args': msg[:120],
+                         'policy': 'codeguard' if 'CodeGuard' in msg else 'validation-gate',
+                         'is_agent': True, 'source': 'codeguard',
+                         'trace_id': trace_for_entry}
                 append_event(entry)
 
 def tail_mcp_audit(logfile):
