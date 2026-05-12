@@ -252,13 +252,6 @@ except:
 CLAUDE_TIMEOUT=${CLAUDE_TIMEOUT:-600}  # 10 minutes default
 
 run_claude() {
-    # Check token expiry before dispatching
-    local token_secs
-    token_secs=$(check_token_time)
-    if [ "$token_secs" -ge 0 ] && [ "$token_secs" -lt "$CLAUDE_MIN_TOKEN_SECS" ]; then
-        log "SKIPPED: Anthropic token expires in ${token_secs}s (< ${CLAUDE_MIN_TOKEN_SECS}s minimum)"
-        return 2
-    fi
     local prompt="$1" logfile="$2"
     local claude_pid
 
@@ -1462,13 +1455,6 @@ export GIT_TERMINAL_PROMPT=0
 git fetch origin --quiet 2>/dev/null || { log "ERROR: git fetch failed"; exit 1; }
 git checkout main --quiet 2>/dev/null
 git reset --hard origin/main --quiet 2>/dev/null || { log "ERROR: reset to origin/main failed"; exit 1; }
-
-# --- Early exit if Claude is unavailable ---
-_token_remaining=$(check_token_time)
-if [ "${_token_remaining}" -ge 0 ] && [ "${_token_remaining}" -lt "$CLAUDE_MIN_TOKEN_SECS" ]; then
-    log "Token expires in ${_token_remaining}s — nothing to do without Claude, exiting"
-    exit 0
-fi
 
 # --- Trigger-event scope decision (drives both the pre-flight scanners
 # and the skill dispatcher below) ---
