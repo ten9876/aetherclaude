@@ -3026,6 +3026,18 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
 .player .progress .ts-label{color:#607080;font-size:10px;min-width:90px;text-align:right;font-family:'SF Mono',monospace}
 .event-dot.hidden{opacity:0}
 .event-dot{transition:opacity 0.15s,r 0.1s}
+/* Alert dots — events whose args contain 'failed' or 'blocked' pulse
+   bright red so failures stand out from background activity on the
+   swimlane. Stays on top via :not(.sel) so a selected alert dot still
+   gets the cyan selection ring. */
+@keyframes alert-pulse{
+  0%,100%{r:5;fill:#ff2222;filter:drop-shadow(0 0 2px #ff2222)}
+  50%    {r:8;fill:#ff5555;filter:drop-shadow(0 0 7px #ff2222)}
+}
+.event-dot.alert-pulse{
+  fill:#ff2222 !important;
+  animation:alert-pulse 1.1s ease-in-out infinite;
+}
 </style></head><body>
 <header>
   <h1>AGENT WALK</h1>
@@ -3184,7 +3196,14 @@ function renderSwimlane(){
     if(stage===0)continue;  // hide uncategorized for the demo cleanliness; can toggle on
     const xCenter=x(e.time);
     const colorCls='color-'+(e.type||'OTHER');
-    svg+=`<circle class="event-dot ${colorCls}" data-i="${i}" cx="${xCenter}" cy="${yCenter}" r="5"><title>${esc(e.type)} · ${esc(e.binary)} · ${esc((e.args||'').substring(0,80))}</title></circle>`;
+    // Failure / blocked markers — surface them as pulsing red dots so
+    // validation rejections, blocked tool calls, and orchestrator
+    // failures are visible at a glance, regardless of which stage they
+    // land in. Case-insensitive substring match on args.
+    const haystack=((e.args||'')+' '+(e.policy||'')).toLowerCase();
+    const isAlert=haystack.includes('failed')||haystack.includes('blocked');
+    const dotCls=isAlert?`event-dot alert-pulse ${colorCls}`:`event-dot ${colorCls}`;
+    svg+=`<circle class="${dotCls}" data-i="${i}" cx="${xCenter}" cy="${yCenter}" r="5"><title>${esc(e.type)} · ${esc(e.binary)} · ${esc((e.args||'').substring(0,80))}</title></circle>`;
   }
   svg+='</svg>';
   container.innerHTML=svg;
