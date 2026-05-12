@@ -861,8 +861,26 @@ skill_process_issues() {
         local issue_labels_str
         issue_labels_str=$(echo "$issue_data" | jq -r '[.labels[].name] | join(" ")')
 
-        # State override: if a maintainer-review issue gets the
-        # 'aetherclaude-eligible' label added, transition to implement.
+        # State override A: maintainer applied 'maintainer-review' to a
+        # 'waiting' issue. The waiting branch only advances on a NEW user
+        # comment, so an issue that has all the info we need but no user
+        # reply (because the maintainer themselves answered, or because
+        # the triage questions weren't blocking after all) would otherwise
+        # be stuck in 'waiting' forever. Applying the maintainer-review
+        # label is the maintainer's explicit "I have enough info, skip
+        # waiting for user reply" signal. Advance to maintainer-review
+        # so override B below can fire if aetherclaude-eligible is also
+        # present.
+        if [ "$issue_state" = "waiting" ] && \
+           echo "$issue_data" | jq -e '[.labels[].name] | any(. == "maintainer-review")' >/dev/null; then
+            log "Issue #${number} — maintainer applied 'maintainer-review' while waiting; advancing state"
+            record_action "$number" "waiting" "maintainer-review" "success" "Maintainer applied maintainer-review label"
+            issue_state="maintainer-review"
+            set_state "issue_${number}_state" "maintainer-review"
+        fi
+
+        # State override B: maintainer-review issue gets the
+        # 'aetherclaude-eligible' label — transition to implement.
         # That label is the maintainer's authorization to write the fix.
         if [ "$issue_state" = "maintainer-review" ] && \
            echo "$issue_data" | jq -e '[.labels[].name] | any(. == "aetherclaude-eligible")' >/dev/null; then
