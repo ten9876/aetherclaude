@@ -11,7 +11,8 @@ device.key
 
 # Runtime state / data / logs
 state/
-data/
+data/*
+!data/cpp-aibom-components.json
 logs/
 audit.db
 audit.db-journal

@@ -1,0 +1,262 @@
+{
+  "$comment": "cpp-aibom knowledge base. Each entry's `detect` block lists signals the scanner matches in source/CMake files. Confidence = high (both include AND cmake fire), medium (only one fires), or low (fuzzy only). Adding a component is a data-only PR. Schema: name (unique), category, description, license (SPDX), purl (used for OSV.dev), detect.include (header substring list), detect.cmake (find_package/target_link_libraries/include name list), ai_ml (bool: ML inference component, changes CycloneDX type to ml-model).",
+  "version": 1,
+  "categories": ["dsp", "audio_io", "audio_dsp", "audio_codec", "audio_ml", "rpc", "ui", "network", "hardware", "dependency", "system", "other"],
+  "components": [
+    {
+      "name": "KissFFT",
+      "category": "dsp",
+      "description": "Keep It Simple FFT",
+      "license": "BSD-3-Clause",
+      "purl": "pkg:github/mborgerding/kissfft",
+      "detect": {"include": ["kiss_fft.h", "kiss_fftr.h"], "cmake": ["kissfft", "KissFFT"]}
+    },
+    {
+      "name": "FFTW3",
+      "category": "dsp",
+      "description": "Fastest Fourier Transform in the West",
+      "license": "GPL-2.0-or-later",
+      "purl": "pkg:generic/fftw",
+      "detect": {"include": ["fftw3.h"], "cmake": ["FFTW", "FFTW3"]}
+    },
+    {
+      "name": "PortAudio",
+      "category": "audio_io",
+      "description": "Cross-platform audio I/O",
+      "license": "MIT",
+      "purl": "pkg:generic/portaudio",
+      "detect": {"include": ["portaudio.h"], "cmake": ["portaudio", "PortAudio"]}
+    },
+    {
+      "name": "ALSA",
+      "category": "audio_io",
+      "description": "Advanced Linux Sound Architecture",
+      "license": "LGPL-2.1-or-later",
+      "purl": "pkg:generic/alsa-lib",
+      "detect": {"include": ["alsa/asoundlib.h"], "cmake": ["ALSA"]}
+    },
+    {
+      "name": "PulseAudio",
+      "category": "audio_io",
+      "description": "PulseAudio sound server client library",
+      "license": "LGPL-2.1-or-later",
+      "purl": "pkg:generic/pulseaudio",
+      "detect": {"include": ["pulse/pulseaudio.h", "pulse/simple.h"], "cmake": ["PulseAudio"]}
+    },
+    {
+      "name": "libsoundio",
+      "category": "audio_io",
+      "description": "Cross-platform audio I/O library",
+      "license": "MIT",
+      "purl": "pkg:generic/libsoundio",
+      "detect": {"include": ["soundio/soundio.h"], "cmake": ["SoundIO", "libsoundio"]}
+    },
+    {
+      "name": "r8brain",
+      "category": "audio_dsp",
+      "description": "High-quality audio resampler",
+      "license": "MIT",
+      "purl": "pkg:github/avaneev/r8brain-free-src",
+      "detect": {"include": ["CDSPResampler.h", "r8bbase.h"], "cmake": ["r8brain"]}
+    },
+    {
+      "name": "libsamplerate",
+      "category": "audio_dsp",
+      "description": "Sample rate converter (Secret Rabbit Code)",
+      "license": "BSD-2-Clause",
+      "purl": "pkg:generic/libsamplerate",
+      "detect": {"include": ["samplerate.h"], "cmake": ["SampleRate", "libsamplerate"]}
+    },
+    {
+      "name": "Opus",
+      "category": "audio_codec",
+      "description": "Xiph Opus audio codec (includes neural components)",
+      "license": "BSD-3-Clause",
+      "purl": "pkg:generic/opus",
+      "detect": {"include": ["opus/opus.h", "opus.h"], "cmake": ["Opus", "opus"]}
+    },
+    {
+      "name": "libvorbis",
+      "category": "audio_codec",
+      "description": "Ogg Vorbis audio codec",
+      "license": "BSD-3-Clause",
+      "purl": "pkg:generic/libvorbis",
+      "detect": {"include": ["vorbis/codec.h"], "cmake": ["Vorbis"]}
+    },
+    {
+      "name": "FLAC",
+      "category": "audio_codec",
+      "description": "Free Lossless Audio Codec",
+      "license": "BSD-3-Clause",
+      "purl": "pkg:generic/flac",
+      "detect": {"include": ["FLAC/format.h"], "cmake": ["FLAC"]}
+    },
+    {
+      "name": "RNNoise",
+      "category": "audio_ml",
+      "description": "Mozilla/Xiph neural noise suppression",
+      "license": "BSD-3-Clause",
+      "purl": "pkg:github/xiph/rnnoise",
+      "ai_ml": true,
+      "detect": {"include": ["rnnoise.h"], "cmake": ["rnnoise", "RNNoise"]}
+    },
+    {
+      "name": "FreeDV",
+      "category": "audio_ml",
+      "description": "FreeDV digital voice (includes RADE neural codec)",
+      "license": "LGPL-2.1-or-later",
+      "purl": "pkg:generic/codec2",
+      "ai_ml": true,
+      "detect": {"include": ["codec2/freedv_api.h", "freedv_api.h"], "cmake": ["freedv", "codec2"]}
+    },
+    {
+      "name": "ggmorse",
+      "category": "audio_ml",
+      "description": "Neural CW/Morse code decoder",
+      "license": "MIT",
+      "purl": "pkg:github/ggerganov/ggmorse",
+      "ai_ml": true,
+      "detect": {"include": ["ggmorse/ggmorse.h"], "cmake": ["ggmorse"]}
+    },
+    {
+      "name": "whisper.cpp",
+      "category": "audio_ml",
+      "description": "Whisper speech-to-text C++ port (GGML-based)",
+      "license": "MIT",
+      "purl": "pkg:github/ggerganov/whisper.cpp",
+      "ai_ml": true,
+      "detect": {"include": ["whisper.h"], "cmake": ["whisper"]}
+    },
+    {
+      "name": "TensorFlow Lite",
+      "category": "audio_ml",
+      "description": "TensorFlow Lite inference runtime",
+      "license": "Apache-2.0",
+      "purl": "pkg:generic/tensorflow-lite",
+      "ai_ml": true,
+      "detect": {"include": ["tensorflow/lite/c/c_api.h", "tensorflow/lite/interpreter.h"], "cmake": ["tensorflow-lite", "tflite"]}
+    },
+    {
+      "name": "ONNX Runtime",
+      "category": "audio_ml",
+      "description": "ONNX model inference runtime",
+      "license": "MIT",
+      "purl": "pkg:generic/onnxruntime",
+      "ai_ml": true,
+      "detect": {"include": ["onnxruntime_cxx_api.h"], "cmake": ["onnxruntime"]}
+    },
+    {
+      "name": "GGML",
+      "category": "audio_ml",
+      "description": "GGML tensor library for ML inference",
+      "license": "MIT",
+      "purl": "pkg:github/ggerganov/ggml",
+      "ai_ml": true,
+      "detect": {"include": ["ggml.h"], "cmake": ["ggml"]}
+    },
+    {
+      "name": "gRPC",
+      "category": "rpc",
+      "description": "Google RPC framework (AI service communication)",
+      "license": "Apache-2.0",
+      "purl": "pkg:github/grpc/grpc",
+      "detect": {"include": ["grpc/grpc.h", "grpcpp/grpcpp.h"], "cmake": ["gRPC"]}
+    },
+    {
+      "name": "Protocol Buffers",
+      "category": "rpc",
+      "description": "Protocol Buffers serialization",
+      "license": "BSD-3-Clause",
+      "purl": "pkg:generic/protobuf",
+      "detect": {"include": ["google/protobuf/message.h"], "cmake": ["Protobuf", "protobuf"]}
+    },
+    {
+      "name": "libcurl",
+      "category": "network",
+      "description": "Multi-protocol file transfer library",
+      "license": "curl",
+      "purl": "pkg:generic/curl",
+      "detect": {"include": ["curl/curl.h"], "cmake": ["CURL"]}
+    },
+    {
+      "name": "nlohmann_json",
+      "category": "dependency",
+      "description": "JSON for Modern C++",
+      "license": "MIT",
+      "purl": "pkg:github/nlohmann/json",
+      "detect": {"include": ["nlohmann/json.hpp"], "cmake": ["nlohmann_json"]}
+    },
+    {
+      "name": "Qt6",
+      "category": "ui",
+      "description": "Qt 6 cross-platform application framework",
+      "license": "LGPL-3.0-or-later",
+      "purl": "pkg:generic/qt",
+      "detect": {"include": ["QtCore/QObject", "QObject", "QtWidgets/QApplication"], "cmake": ["Qt6"]}
+    },
+    {
+      "name": "Qt5",
+      "category": "ui",
+      "description": "Qt 5 cross-platform application framework (legacy)",
+      "license": "LGPL-3.0-or-later",
+      "purl": "pkg:generic/qt",
+      "detect": {"include": [], "cmake": ["Qt5"]}
+    },
+    {
+      "name": "hidapi",
+      "category": "hardware",
+      "description": "HID device interface library",
+      "license": "BSD-3-Clause",
+      "purl": "pkg:generic/hidapi",
+      "detect": {"include": ["hidapi/hidapi.h"], "cmake": ["hidapi"]}
+    },
+    {
+      "name": "libusb",
+      "category": "hardware",
+      "description": "USB device access library",
+      "license": "LGPL-2.1-or-later",
+      "purl": "pkg:generic/libusb",
+      "detect": {"include": ["libusb-1.0/libusb.h", "libusb.h"], "cmake": ["libusb-1.0", "LibUSB"]}
+    },
+    {
+      "name": "OpenSSL",
+      "category": "dependency",
+      "description": "OpenSSL cryptography and TLS",
+      "license": "Apache-2.0",
+      "purl": "pkg:generic/openssl",
+      "detect": {"include": ["openssl/ssl.h", "openssl/crypto.h"], "cmake": ["OpenSSL"]}
+    },
+    {
+      "name": "Boost",
+      "category": "dependency",
+      "description": "Boost C++ Libraries",
+      "license": "BSL-1.0",
+      "purl": "pkg:generic/boost",
+      "detect": {"include": ["boost/"], "cmake": ["Boost"]}
+    },
+    {
+      "name": "zlib",
+      "category": "dependency",
+      "description": "Lossless data compression",
+      "license": "Zlib",
+      "purl": "pkg:generic/zlib",
+      "detect": {"include": ["zlib.h"], "cmake": ["ZLIB"]}
+    },
+    {
+      "name": "SQLite",
+      "category": "dependency",
+      "description": "Embedded SQL database",
+      "license": "blessing",
+      "purl": "pkg:generic/sqlite",
+      "detect": {"include": ["sqlite3.h"], "cmake": ["SQLite3"]}
+    },
+    {
+      "name": "MQTT",
+      "category": "network",
+      "description": "libmosquitto MQTT client (Phase 1 station integration)",
+      "license": "EPL-2.0",
+      "purl": "pkg:generic/mosquitto",
+      "detect": {"include": ["mosquitto.h", "mqtt_protocol.h"], "cmake": ["mosquitto", "Mosquitto"]}
+    }
+  ]
+}

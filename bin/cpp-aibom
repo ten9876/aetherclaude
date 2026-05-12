@@ -1,0 +1,754 @@
+#!/usr/bin/env python3
+"""cpp-aibom — C++ AI Bill of Materials scanner.
+
+Scans a C++ codebase against a knowledge base of known AI/ML, DSP, audio, codec,
+network, and dependency libraries. Produces an inventory plus per-component CVE
+lookups against OSV.dev. Outputs in three formats:
+
+  - aibom-json   (default; the shape the AetherClaude dashboard ingests)
+  - cyclonedx    (CycloneDX 1.6 ML-BOM — for release artifacts / compliance)
+  - sarif        (SARIF 2.1.0 — CVE findings rendered as PR annotations)
+
+USAGE
+    cpp-aibom scan PATH [--format FMT] [--output FILE] [--config FILE] [--no-osv]
+    cpp-aibom diff BASELINE CURRENT
+
+If invoked without a subcommand and given a path, defaults to `scan`.
+
+CONFIG OVERRIDES (.aibom.json in target root or via --config)
+    {
+      "excludes": ["KissFFT"],
+      "overrides": {
+        "RNNoise": {"confidence": "high", "license": "BSD-3-Clause"}
+      },
+      "custom_components": [
+        {"name": "AetherDSP-internal", "category": "dsp", "description": "..."}
+      ]
+    }
+
+DESIGN NOTES
+    KB lives in data/cpp-aibom-components.json — adding components is a data PR.
+    OSV.dev responses cached at ~/.cache/cpp-aibom/osv/ for 7 days.
+    Confidence is high if both an include AND a cmake signal fire, medium if one
+    fires, low only via .aibom.json override.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import hashlib
+import json
+import os
+import re
+import sys
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+VERSION = "2.0.0"
+
+# ── Paths / config ─────────────────────────────────────────────────────────────
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_KB = REPO_ROOT / "data" / "cpp-aibom-components.json"
+DEFAULT_OUT = Path("/Users/aetherclaude/logs/aibom-latest.json")
+OSV_CACHE_DIR = Path(
+    os.environ.get("CPP_AIBOM_CACHE", str(Path.home() / ".cache" / "cpp-aibom" / "osv"))
+)
+OSV_CACHE_TTL = 7 * 24 * 3600  # seconds
+OSV_API_URL = "https://api.osv.dev/v1/query"
+OSV_TIMEOUT = 15
+OSV_MAX_RETRIES = 2
+
+SOURCE_EXTS = {".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hh", ".hxx"}
+CMAKE_BASENAMES = {"CMakeLists.txt"}
+CMAKE_EXTS = {".cmake"}
+IGNORE_DIRS = {
+    ".git", "build", "build-debug", "build-release", "out", "cmake-build-debug",
+    "cmake-build-release", ".vs", ".idea", "vcpkg_installed", "_deps", ".venv",
+    "node_modules", "__pycache__",
+}
+
+# ── Regex ──────────────────────────────────────────────────────────────────────
+_RE_INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.MULTILINE)
+_RE_FIND_PACKAGE = re.compile(r'find_package\s*\(\s*([A-Za-z0-9_+.-]+)', re.IGNORECASE)
+_RE_PKG_CHECK = re.compile(r'pkg_check_modules\s*\([^)]*?([A-Za-z0-9_+.-]+)\s*(?:>=|=|<=)?', re.IGNORECASE)
+_RE_TLL = re.compile(r'target_link_libraries\s*\(([^)]*)\)', re.IGNORECASE | re.DOTALL)
+_RE_INCLUDE_CALL = re.compile(r'^\s*include\s*\(\s*([A-Za-z0-9_+.-]+)', re.IGNORECASE | re.MULTILINE)
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+def _iso_now() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _purl_hash(purl: str) -> str:
+    return hashlib.sha256(purl.encode()).hexdigest()[:16]
+
+
+def _atomic_write(path: Path, data: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(data)
+    tmp.replace(path)
+
+
+# ── KB loader ──────────────────────────────────────────────────────────────────
+def load_kb(kb_path: Path) -> list[dict[str, Any]]:
+    if not kb_path.exists():
+        sys.exit(f"cpp-aibom: KB not found at {kb_path}")
+    data = json.loads(kb_path.read_text())
+    components = data.get("components", [])
+    seen = set()
+    for c in components:
+        n = c.get("name")
+        if not n:
+            sys.exit(f"cpp-aibom: KB entry missing 'name': {c}")
+        if n in seen:
+            sys.exit(f"cpp-aibom: duplicate KB entry '{n}'")
+        seen.add(n)
+        c.setdefault("detect", {})
+        c["detect"].setdefault("include", [])
+        c["detect"].setdefault("cmake", [])
+    return components
+
+
+# ── Override config (.aibom.json) ──────────────────────────────────────────────
+def load_overrides(target: Path, explicit: Path | None) -> dict[str, Any]:
+    path = explicit if explicit else target / ".aibom.json"
+    if not path.exists():
+        return {"excludes": [], "overrides": {}, "custom_components": []}
+    try:
+        cfg = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        sys.exit(f"cpp-aibom: failed to parse {path}: {e}")
+    cfg.setdefault("excludes", [])
+    cfg.setdefault("overrides", {})
+    cfg.setdefault("custom_components", [])
+    return cfg
+
+
+# ── Walker ─────────────────────────────────────────────────────────────────────
+def walk_codebase(target: Path) -> tuple[list[Path], list[Path]]:
+    """Return (source_files, cmake_files), pre-filtered against IGNORE_DIRS."""
+    sources: list[Path] = []
+    cmakes: list[Path] = []
+    for root, dirs, files in os.walk(target):
+        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith(".")]
+        for f in files:
+            p = Path(root) / f
+            ext = p.suffix.lower()
+            if ext in SOURCE_EXTS:
+                sources.append(p)
+            elif f in CMAKE_BASENAMES or ext in CMAKE_EXTS:
+                cmakes.append(p)
+    return sources, cmakes
+
+
+# ── Signal extraction ──────────────────────────────────────────────────────────
+class Signals:
+    """Collected signals from a codebase scan, indexed for fast component matching."""
+
+    def __init__(self) -> None:
+        # include_path -> first file that contained it
+        self.includes: dict[str, Path] = {}
+        # cmake_name (lowercased) -> (file, line_excerpt)
+        self.cmake: dict[str, tuple[Path, str]] = {}
+
+    def add_include(self, path_str: str, source: Path) -> None:
+        self.includes.setdefault(path_str, source)
+
+    def add_cmake(self, name: str, source: Path, excerpt: str) -> None:
+        self.cmake.setdefault(name.lower(), (source, excerpt[:200]))
+
+
+def extract_signals(target: Path, sources: list[Path], cmakes: list[Path]) -> Signals:
+    sig = Signals()
+    for sf in sources:
+        try:
+            text = sf.read_text(errors="replace")
+        except OSError:
+            continue
+        for m in _RE_INCLUDE.finditer(text):
+            sig.add_include(m.group(1), sf)
+
+    for cf in cmakes:
+        try:
+            text = cf.read_text(errors="replace")
+        except OSError:
+            continue
+        for m in _RE_FIND_PACKAGE.finditer(text):
+            name = m.group(1)
+            line = _line_for(text, m.start())
+            sig.add_cmake(name, cf, line)
+        for m in _RE_PKG_CHECK.finditer(text):
+            name = m.group(1)
+            line = _line_for(text, m.start())
+            sig.add_cmake(name, cf, line)
+        for m in _RE_INCLUDE_CALL.finditer(text):
+            name = m.group(1)
+            # filter generic cmake stdlib (CMakePushCheckState, etc.)
+            if name not in {"CMakePackageConfigHelpers", "GNUInstallDirs", "CMakeFindDependencyMacro",
+                            "CheckCXXSourceCompiles", "CheckSymbolExists", "FetchContent",
+                            "ExternalProject", "FindPkgConfig"}:
+                line = _line_for(text, m.start())
+                sig.add_cmake(name, cf, line)
+        for m in _RE_TLL.finditer(text):
+            body = m.group(1)
+            line = _line_for(text, m.start())
+            for tok in re.findall(r'[A-Za-z0-9_+.:-]+', body):
+                # skip common keywords/scopes in TLL
+                if tok.upper() in {"PUBLIC", "PRIVATE", "INTERFACE"}:
+                    continue
+                if tok.startswith("$"):
+                    continue
+                sig.add_cmake(tok, cf, line)
+    return sig
+
+
+def _line_for(text: str, pos: int) -> str:
+    start = text.rfind("\n", 0, pos) + 1
+    end = text.find("\n", pos)
+    if end == -1:
+        end = len(text)
+    return text[start:end].strip()
+
+
+# ── Matching ───────────────────────────────────────────────────────────────────
+def match_component(comp: dict[str, Any], sig: Signals) -> dict[str, Any] | None:
+    """Return a detection record for `comp` if any signal matches; else None."""
+    include_hits: list[tuple[str, Path]] = []
+    cmake_hits: list[tuple[str, Path, str]] = []
+
+    for patt in comp["detect"]["include"]:
+        if not patt:
+            continue
+        patt_l = patt.lower()
+        for inc_path, src in sig.includes.items():
+            if patt_l in inc_path.lower():
+                include_hits.append((inc_path, src))
+                break
+    for patt in comp["detect"]["cmake"]:
+        if not patt:
+            continue
+        key = patt.lower()
+        if key in sig.cmake:
+            src, excerpt = sig.cmake[key]
+            cmake_hits.append((patt, src, excerpt))
+
+    if not include_hits and not cmake_hits:
+        return None
+
+    if include_hits and cmake_hits:
+        confidence = "high"
+    else:
+        confidence = "medium"
+
+    # Choose "primary" detection line for the human-readable fields.
+    if cmake_hits:
+        name_matched, src, excerpt = cmake_hits[0]
+        detection_str = f"cmake — CMake reference: {name_matched}"
+        location = str(src)
+        evidence = excerpt
+    else:
+        inc, src = include_hits[0]
+        detection_str = f"include — #include matching: {inc.split('/')[0] or inc}"
+        location = str(src)
+        evidence = f"#include <{inc}>"
+
+    return {
+        "name": comp["name"],
+        "category": comp.get("category", "other"),
+        "description": comp.get("description", ""),
+        "license": comp.get("license", ""),
+        "purl": comp.get("purl", ""),
+        "ai_ml": bool(comp.get("ai_ml", False)),
+        "detection": detection_str,
+        "location": location,
+        "evidence": evidence,
+        "confidence": confidence,
+        "include_hits": [str(s) for _, s in include_hits],
+        "cmake_hits": [{"name": n, "file": str(s), "line": e} for n, s, e in cmake_hits],
+        "vulnerabilities": [],
+    }
+
+
+def apply_overrides(detected: list[dict[str, Any]], cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    excludes = set(cfg.get("excludes", []))
+    overrides = cfg.get("overrides", {})
+    out = []
+    for d in detected:
+        if d["name"] in excludes:
+            continue
+        if d["name"] in overrides:
+            for k, v in overrides[d["name"]].items():
+                d[k] = v
+        out.append(d)
+    # custom components: add as-is with confidence='manual'
+    for c in cfg.get("custom_components", []):
+        cc = {
+            "name": c["name"],
+            "category": c.get("category", "other"),
+            "description": c.get("description", ""),
+            "license": c.get("license", ""),
+            "purl": c.get("purl", ""),
+            "ai_ml": bool(c.get("ai_ml", False)),
+            "detection": "manual — declared in .aibom.json",
+            "location": c.get("location", ".aibom.json"),
+            "evidence": "custom_components entry",
+            "confidence": c.get("confidence", "high"),
+            "include_hits": [],
+            "cmake_hits": [],
+            "vulnerabilities": [],
+        }
+        out.append(cc)
+    return out
+
+
+# ── OSV.dev client ─────────────────────────────────────────────────────────────
+def osv_query(purl: str) -> list[dict[str, Any]]:
+    """Query OSV.dev for `purl`; return list of vulnerability dicts. Cached on disk."""
+    if not purl:
+        return []
+    OSV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_file = OSV_CACHE_DIR / f"{_purl_hash(purl)}.json"
+    if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < OSV_CACHE_TTL:
+        try:
+            cached = json.loads(cache_file.read_text())
+            # Cached entries are already summarized (post-`_summarize_vulns`).
+            return cached.get("summarized", [])
+        except Exception:
+            pass  # fall through to refetch
+
+    body = json.dumps({"package": {"purl": purl}}).encode()
+    req = Request(OSV_API_URL, data=body, method="POST",
+                  headers={"Content-Type": "application/json", "User-Agent": f"cpp-aibom/{VERSION}"})
+
+    last_err = None
+    for attempt in range(OSV_MAX_RETRIES + 1):
+        try:
+            with urlopen(req, timeout=OSV_TIMEOUT) as resp:
+                payload = json.loads(resp.read().decode())
+            raw_vulns = payload.get("vulns", [])
+            summarized = _summarize_vulns(raw_vulns)
+            cache_file.write_text(json.dumps({
+                "purl": purl,
+                "queried_at": _iso_now(),
+                "summarized": summarized,
+            }))
+            return summarized
+        except HTTPError as e:
+            if e.code == 404:
+                # No vulns for this purl — cache empty.
+                cache_file.write_text(json.dumps({
+                    "purl": purl, "queried_at": _iso_now(), "summarized": [],
+                }))
+                return []
+            last_err = f"HTTP {e.code}"
+        except URLError as e:
+            last_err = f"network: {e.reason}"
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+        time.sleep(1)
+    sys.stderr.write(f"cpp-aibom: OSV.dev query failed for {purl}: {last_err}\n")
+    return []
+
+
+def _summarize_vulns(raw_vulns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for v in raw_vulns:
+        sev_label = "UNKNOWN"
+        max_score = -1.0
+        # 1. CVSS vectors (highest signal — the standard CVE path).
+        for rating in v.get("severity", []) or []:
+            score_str = rating.get("score", "")
+            num = _cvss_base_score(score_str)
+            if num is not None and num > max_score:
+                max_score = num
+        if max_score >= 9.0:
+            sev_label = "CRITICAL"
+        elif max_score >= 7.0:
+            sev_label = "HIGH"
+        elif max_score >= 4.0:
+            sev_label = "MEDIUM"
+        elif max_score >= 0:
+            sev_label = "LOW"
+        # 2. database_specific.severity (some sources put a plain string here).
+        if sev_label == "UNKNOWN":
+            ds = v.get("database_specific") or {}
+            if isinstance(ds, dict):
+                ds_sev = ds.get("severity")
+                if isinstance(ds_sev, str) and ds_sev.upper() in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}:
+                    sev_label = ds_sev.upper()
+        # 3. Heuristic for OSS-Fuzz entries (OSV-YYYY-N) which carry no rating:
+        #    crash-class keywords in summary imply HIGH severity (memory-safety bugs
+        #    in C/C++ are usually exploitable). Bias up rather than down — false
+        #    HIGH is recoverable, missed CRITICAL is not.
+        if sev_label == "UNKNOWN":
+            text = ((v.get("summary") or "") + " " + (v.get("details") or "")).lower()
+            if any(k in text for k in (
+                "heap-buffer-overflow", "stack-buffer-overflow", "use-after-free",
+                "out-of-bounds", "integer-overflow", "null-deref", "double-free",
+                "uninitialized", "global-buffer-overflow", "memory leak",
+            )):
+                sev_label = "HIGH"
+        out.append({
+            "id": v.get("id", ""),
+            "aliases": v.get("aliases", []),
+            "summary": (v.get("summary") or v.get("details", "")).strip()[:240],
+            "severity": sev_label,
+            "score": max_score if max_score >= 0 else None,
+            "references": [r.get("url", "") for r in (v.get("references") or [])[:3]],
+        })
+    return out
+
+
+_CVSS_BASE_RE = re.compile(r'CVSS:[\d.]+/[^/]*?\bAV:', re.IGNORECASE)
+
+
+def _cvss_base_score(vector: str) -> float | None:
+    # OSV returns full CVSS vectors as strings. We parse out the metrics naively
+    # and use a lookup — sufficient for severity-band classification.
+    if not vector or "CVSS" not in vector:
+        return None
+    # OSV sometimes includes a /baseScore=X.Y suffix; prefer that when present.
+    m = re.search(r'baseScore=(\d+(?:\.\d+)?)', vector)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+    # Approximate from AV/AC/PR/UI/S/C/I/A — full CVSS calc is overkill.
+    # Use AV (Attack Vector) as primary band: N=high, A=med, L/P=low.
+    av = re.search(r'AV:([NALP])', vector)
+    s = re.search(r'/S:([UC])', vector)
+    if not av:
+        return None
+    base = {"N": 8.0, "A": 6.5, "L": 5.0, "P": 4.0}.get(av.group(1), 5.0)
+    if s and s.group(1) == "C":  # scope changed = bump
+        base = min(base + 1.0, 10.0)
+    return base
+
+
+def enrich_with_osv(detected: list[dict[str, Any]]) -> None:
+    for d in detected:
+        d["vulnerabilities"] = osv_query(d.get("purl", ""))
+
+
+# ── Output: aibom-json (dashboard-compatible) ──────────────────────────────────
+def emit_aibom_json(target: Path, components: list[dict[str, Any]]) -> dict[str, Any]:
+    total_vulns = sum(len(c["vulnerabilities"]) for c in components)
+    by_conf: dict[str, int] = {}
+    for c in components:
+        by_conf[c["confidence"]] = by_conf.get(c["confidence"], 0) + 1
+    return {
+        "scanner": "cpp-aibom",
+        "version": VERSION,
+        "scan_time": _iso_now(),
+        "target": str(target),
+        "aibom_analysis": {
+            "summary": {
+                "total_components": len(components),
+                "total_model_files": sum(1 for c in components if c["ai_ml"]),
+                "has_neural_components": any(c["ai_ml"] for c in components),
+                "vulnerabilities_found": total_vulns,
+                "high_confidence": by_conf.get("high", 0),
+                "medium_confidence": by_conf.get("medium", 0),
+                "low_confidence": by_conf.get("low", 0),
+            },
+            "components": components,
+        },
+    }
+
+
+# ── Output: CycloneDX 1.6 ML-BOM ──────────────────────────────────────────────
+def emit_cyclonedx(target: Path, components: list[dict[str, Any]]) -> dict[str, Any]:
+    serial = f"urn:uuid:{uuid.uuid4()}"
+    target_ref = "urn:component:root"
+    cdx_components = []
+    cdx_vulns = []
+    for c in components:
+        ref = f"urn:component:{_slug(c['name'])}"
+        # ML-BOM: ai_ml components get type=machine-learning-model
+        ctype = "machine-learning-model" if c["ai_ml"] else "library"
+        comp: dict[str, Any] = {
+            "bom-ref": ref,
+            "type": ctype,
+            "name": c["name"],
+            "description": c["description"],
+            "properties": [
+                {"name": "aibom:category", "value": c["category"]},
+                {"name": "aibom:confidence", "value": c["confidence"]},
+                {"name": "aibom:detection", "value": c["detection"]},
+                {"name": "aibom:location", "value": c["location"]},
+            ],
+        }
+        if c["purl"]:
+            comp["purl"] = c["purl"]
+        if c["license"]:
+            comp["licenses"] = [{"license": _license_entry(c["license"])}]
+        cdx_components.append(comp)
+        for v in c["vulnerabilities"]:
+            cdx_vulns.append({
+                "bom-ref": f"urn:vuln:{_slug(v['id'])}",
+                "id": v["id"],
+                "ratings": [{"severity": v["severity"].lower()}] if v["severity"] != "UNKNOWN" else [],
+                "description": v["summary"],
+                "advisories": [{"url": url} for url in v["references"] if url],
+                "affects": [{"ref": ref}],
+            })
+
+    return {
+        "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "serialNumber": serial,
+        "version": 1,
+        "metadata": {
+            "timestamp": _iso_now(),
+            "tools": {
+                "components": [{
+                    "type": "application",
+                    "name": "cpp-aibom",
+                    "version": VERSION,
+                }],
+            },
+            "component": {
+                "bom-ref": target_ref,
+                "type": "application",
+                "name": target.name or "target",
+            },
+        },
+        "components": cdx_components,
+        "vulnerabilities": cdx_vulns,
+    }
+
+
+def _license_entry(spdx: str) -> dict[str, str]:
+    # SPDX IDs use specific syntax; treat anything unrecognized as `name`.
+    if re.match(r'^[A-Za-z0-9.+-]+$', spdx) and "-" in spdx:
+        return {"id": spdx}
+    return {"name": spdx}
+
+
+def _slug(s: str) -> str:
+    return re.sub(r'[^a-z0-9-]+', '-', s.lower()).strip('-') or "x"
+
+
+# ── Output: SARIF 2.1.0 (CVE findings) ─────────────────────────────────────────
+def emit_sarif(target: Path, components: list[dict[str, Any]]) -> dict[str, Any]:
+    results = []
+    rules: dict[str, dict[str, Any]] = {}
+    sev_to_level = {"CRITICAL": "error", "HIGH": "error", "MEDIUM": "warning", "LOW": "note", "UNKNOWN": "note"}
+
+    for c in components:
+        for v in c["vulnerabilities"]:
+            rule_id = f"cpp-aibom-{v['severity'].lower()}"
+            rules.setdefault(rule_id, {
+                "id": rule_id,
+                "name": f"Vulnerability-{v['severity']}",
+                "shortDescription": {"text": f"{v['severity']} severity vulnerability in a detected component"},
+                "fullDescription": {"text": "cpp-aibom queries OSV.dev for known vulnerabilities in detected C++ dependencies."},
+                "defaultConfiguration": {"level": sev_to_level.get(v["severity"], "note")},
+            })
+            try:
+                rel_loc = str(Path(c["location"]).relative_to(target))
+            except ValueError:
+                rel_loc = c["location"]
+            results.append({
+                "ruleId": rule_id,
+                "level": sev_to_level.get(v["severity"], "note"),
+                "message": {"text": f"{c['name']} — {v['id']}: {v['summary']}"},
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": rel_loc},
+                        "region": {"startLine": 1},
+                    },
+                }],
+                "properties": {
+                    "component": c["name"],
+                    "purl": c["purl"],
+                    "severity": v["severity"],
+                    "score": v["score"],
+                    "advisory_id": v["id"],
+                    "references": v["references"],
+                },
+            })
+
+    return {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "cpp-aibom",
+                    "version": VERSION,
+                    "informationUri": "https://github.com/ten9876/aetherclaude",
+                    "rules": list(rules.values()),
+                },
+            },
+            "results": results,
+        }],
+    }
+
+
+# ── Diff command ───────────────────────────────────────────────────────────────
+def cmd_diff(args: argparse.Namespace) -> int:
+    baseline = json.loads(Path(args.baseline).read_text())
+    current = json.loads(Path(args.current).read_text())
+    b_comps = {c["name"]: c for c in baseline.get("aibom_analysis", {}).get("components", [])}
+    c_comps = {c["name"]: c for c in current.get("aibom_analysis", {}).get("components", [])}
+
+    added = sorted(set(c_comps) - set(b_comps))
+    removed = sorted(set(b_comps) - set(c_comps))
+    changed = []
+    new_vulns: list[tuple[str, dict[str, Any]]] = []
+
+    for name in sorted(set(b_comps) & set(c_comps)):
+        b, c = b_comps[name], c_comps[name]
+        deltas: list[str] = []
+        if b.get("confidence") != c.get("confidence"):
+            deltas.append(f"confidence: {b.get('confidence')} → {c.get('confidence')}")
+        b_vulns = {v["id"] for v in b.get("vulnerabilities", [])}
+        c_vulns = {v["id"] for v in c.get("vulnerabilities", [])}
+        added_vulns = c_vulns - b_vulns
+        if added_vulns:
+            deltas.append(f"new vulns: {sorted(added_vulns)}")
+            for v in c["vulnerabilities"]:
+                if v["id"] in added_vulns:
+                    new_vulns.append((name, v))
+        removed_vulns = b_vulns - c_vulns
+        if removed_vulns:
+            deltas.append(f"resolved vulns: {sorted(removed_vulns)}")
+        if deltas:
+            changed.append((name, deltas))
+
+    print(f"cpp-aibom diff — {args.baseline} → {args.current}")
+    print()
+    if added:
+        print(f"Added ({len(added)}):")
+        for n in added:
+            print(f"  + {n}  [{c_comps[n].get('category','')}]")
+        print()
+    if removed:
+        print(f"Removed ({len(removed)}):")
+        for n in removed:
+            print(f"  - {n}  [{b_comps[n].get('category','')}]")
+        print()
+    if changed:
+        print(f"Changed ({len(changed)}):")
+        for n, deltas in changed:
+            print(f"  ~ {n}: {'; '.join(deltas)}")
+        print()
+    if new_vulns:
+        print(f"NEW VULNERABILITIES ({len(new_vulns)}):")
+        for comp, v in new_vulns:
+            print(f"  ! {comp} {v['severity']:8s} {v['id']:24s} {v['summary'][:80]}")
+        print()
+    if not (added or removed or changed):
+        print("No changes.")
+    # exit non-zero if new vulns appeared — useful for CI gates
+    return 1 if new_vulns else 0
+
+
+# ── Scan command ───────────────────────────────────────────────────────────────
+def cmd_scan(args: argparse.Namespace) -> int:
+    target = Path(args.path).resolve()
+    if not target.exists():
+        sys.exit(f"cpp-aibom: target not found: {target}")
+    kb = load_kb(Path(args.kb) if args.kb else DEFAULT_KB)
+    cfg = load_overrides(target, Path(args.config) if args.config else None)
+
+    sources, cmakes = walk_codebase(target)
+    if args.verbose:
+        sys.stderr.write(f"cpp-aibom: scanning {len(sources)} source + {len(cmakes)} cmake files\n")
+    sig = extract_signals(target, sources, cmakes)
+
+    detected: list[dict[str, Any]] = []
+    for comp in kb:
+        rec = match_component(comp, sig)
+        if rec:
+            detected.append(rec)
+    detected = apply_overrides(detected, cfg)
+    detected.sort(key=lambda c: (c["category"], c["name"]))
+
+    if not args.no_osv:
+        if args.verbose:
+            sys.stderr.write(f"cpp-aibom: querying OSV.dev for {len(detected)} components\n")
+        enrich_with_osv(detected)
+
+    fmt = args.format
+    if fmt == "aibom-json":
+        out = emit_aibom_json(target, detected)
+    elif fmt == "cyclonedx":
+        out = emit_cyclonedx(target, detected)
+    elif fmt == "sarif":
+        out = emit_sarif(target, detected)
+    else:
+        sys.exit(f"cpp-aibom: unknown --format {fmt}")
+
+    rendered = json.dumps(out, indent=2)
+    if args.output:
+        _atomic_write(Path(args.output), rendered)
+        if args.verbose:
+            sys.stderr.write(f"cpp-aibom: wrote {args.output}\n")
+    else:
+        sys.stdout.write(rendered + "\n")
+
+    # Exit code: non-zero if there are HIGH/CRITICAL vulns and --fail-on-vuln is set
+    if args.fail_on_vuln:
+        sev_set = {s.upper() for s in args.fail_on_vuln.split(",")}
+        for c in detected:
+            for v in c["vulnerabilities"]:
+                if v["severity"] in sev_set:
+                    sys.stderr.write(f"cpp-aibom: FAIL — {c['name']} has {v['severity']} CVE {v['id']}\n")
+                    return 1
+    return 0
+
+
+# ── CLI ────────────────────────────────────────────────────────────────────────
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="cpp-aibom", description="C++ AI Bill of Materials scanner.")
+    p.add_argument("--version", action="version", version=f"cpp-aibom {VERSION}")
+    sub = p.add_subparsers(dest="cmd")
+
+    sp = sub.add_parser("scan", help="Scan a codebase (default subcommand).")
+    sp.add_argument("path", help="Target directory (codebase root).")
+    sp.add_argument("-f", "--format", default="aibom-json",
+                    choices=["aibom-json", "cyclonedx", "sarif"],
+                    help="Output format (default: aibom-json — the dashboard shape).")
+    sp.add_argument("-o", "--output", help="Write to FILE instead of stdout.")
+    sp.add_argument("--kb", help="Override KB path (default: data/cpp-aibom-components.json).")
+    sp.add_argument("--config", help="Override .aibom.json path.")
+    sp.add_argument("--no-osv", action="store_true", help="Skip OSV.dev CVE lookups (fast path).")
+    sp.add_argument("--fail-on-vuln", help="Exit non-zero if any matching severity found (e.g. HIGH,CRITICAL).")
+    sp.add_argument("-v", "--verbose", action="store_true")
+
+    dp = sub.add_parser("diff", help="Compare two aibom-json snapshots.")
+    dp.add_argument("baseline", help="Baseline JSON (older).")
+    dp.add_argument("current", help="Current JSON (newer).")
+
+    return p
+
+
+def main() -> int:
+    parser = build_parser()
+    # Accept `cpp-aibom <path>` as shorthand for `cpp-aibom scan <path>`.
+    argv = sys.argv[1:]
+    if argv and argv[0] not in {"scan", "diff", "--help", "-h", "--version"} and not argv[0].startswith("-"):
+        argv = ["scan"] + argv
+    args = parser.parse_args(argv)
+
+    if args.cmd == "scan":
+        return cmd_scan(args)
+    if args.cmd == "diff":
+        return cmd_diff(args)
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
