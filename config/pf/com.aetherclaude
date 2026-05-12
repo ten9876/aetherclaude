@@ -3,6 +3,12 @@
 # Allow agent to reach localhost (proxy, MCP server, dashboard)
 pass out quick proto tcp from any to 127.0.0.1 user 965
 
+# IPv6 loopback — DefenseClaw 0.5.0's new local connectors (e.g.
+# splunk-local-bridge) bind to [::1] and the prior IPv4-only loopback
+# rule didn't cover it. Matches the IPv4 rule semantics: any local
+# IPv6 service the agent dials is allowed.
+pass out quick inet6 proto tcp from any to ::1 user 965
+
 # Allow DNS (Cloudflare, Google, Quad9, router)
 pass out quick proto udp from any to { 1.1.1.1 8.8.8.8 9.9.9.9 192.168.50.1 } port 53 user 965
 
