@@ -252,6 +252,38 @@ except: print(0)
     fi
 fi
 
+# --- Check 9: cpp-aibom — AI Bill of Materials + OSV.dev CVE scan ---
+# Runs cpp-aibom against the full worktree (not per-file like CodeGuard).
+# OSV.dev queries are cached for 7 days so repeated PR-time scans are fast.
+# --fail-on-vuln blocks the PR if any detected component has a HIGH or
+# CRITICAL CVE; component inventory alone is informational and never blocks.
+CPP_AIBOM="/Users/aetherclaude/bin/cpp-aibom"
+if [ -x "$CPP_AIBOM" ]; then
+    log "Running cpp-aibom AIBOM + CVE scan..."
+    AIBOM_TMP=$(mktemp -t aibom-pr.XXXXXX)
+    AIBOM_STDERR=$(mktemp -t aibom-stderr.XXXXXX)
+    trap 'rm -f "$AIBOM_TMP" "$AIBOM_STDERR"' EXIT
+    if "$CPP_AIBOM" scan "$WORKSPACE" \
+            --fail-on-vuln HIGH,CRITICAL \
+            -o "$AIBOM_TMP" 2>"$AIBOM_STDERR"; then
+        AIBOM_SUMMARY=$(python3 -c "
+import json
+d = json.load(open('$AIBOM_TMP'))
+s = d['aibom_analysis']['summary']
+print(f\"{s['total_components']} components, {s['total_model_files']} ML, {s['vulnerabilities_found']} vulns\")
+" 2>/dev/null || echo "summary unavailable")
+        log "cpp-aibom: $AIBOM_SUMMARY — clean"
+    else
+        # Capture which component+CVE tripped the gate (printed to stderr by cpp-aibom)
+        FAIL_LINE=$(grep "cpp-aibom: FAIL" "$AIBOM_STDERR" | head -1 || true)
+        log "BLOCKED: cpp-aibom found HIGH/CRITICAL CVE in detected component"
+        [ -n "$FAIL_LINE" ] && log "  $FAIL_LINE"
+        ERRORS=$((ERRORS + 1))
+    fi
+else
+    log "WARNING: cpp-aibom not available at $CPP_AIBOM — skipping AIBOM scan"
+fi
+
 # --- Result ---
 if [ "$ERRORS" -gt 0 ]; then
     log "FAILED: $ERRORS blocking issues found"

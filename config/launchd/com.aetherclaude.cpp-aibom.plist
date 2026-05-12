@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aetherclaude.cpp-aibom</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/Shared/aetherclaude/bin/cpp-aibom</string>
+        <string>scan</string>
+        <string>/Users/aetherclaude/workspace/AetherSDR</string>
+        <string>-o</string>
+        <string>/Users/aetherclaude/logs/aibom-latest.json</string>
+        <string>--verbose</string>
+    </array>
+    <key>UserName</key>
+    <string>aetherclaude</string>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>15</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/aetherclaude/logs/cpp-aibom-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/aetherclaude/logs/cpp-aibom-stderr.log</string>
+</dict>
+</plist>
