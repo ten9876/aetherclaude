@@ -1390,6 +1390,12 @@ PYEOF
                     "$comment_json" \
                     > /dev/null 2>&1 || true
                 remove_label "$number" "claude-active" "$token"
+                # Eligibility was the maintainer's authorization to write
+                # the fix; with the PR up that authorization has been
+                # consumed. Removing it prevents accidental re-triggering
+                # and signals to the maintainer that the implementation
+                # phase is done.
+                remove_label "$number" "aetherclaude-eligible" "$token"
                 set_state "issue_${number}_state" "done"
                 log "Completed issue #${number} — PR #${pr_number} verified"
             else
