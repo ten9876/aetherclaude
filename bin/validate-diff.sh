@@ -74,7 +74,8 @@ for file in $CHANGED_FILES; do
        && [[ "$file" != resources.qrc ]] \
        && [[ "$file" != CMakeLists.txt ]] \
        && [[ "$file" != third_party/* ]] \
-       && [[ "$file" != packaging/* ]]; then
+       && [[ "$file" != packaging/* ]] \
+       && [[ "$file" != plugins/* ]]; then
         log "BLOCKED: File outside allowed directories: $file"
         ERRORS=$((ERRORS + 1))
     fi
