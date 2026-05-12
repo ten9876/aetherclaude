@@ -61,9 +61,20 @@ for file in $CHANGED_FILES; do
     done
 done
 
-# --- Check 2: Only allow changes in src/ and docs/ ---
+# --- Check 2: Only allow changes in approved top-level paths ---
+# tests/ is included because AetherSDR has an existing test harness wired
+# into CMakeLists.txt (client_eq_test, client_eq_smoothing_test, …) and
+# Claude correctly follows that pattern when adding regression coverage
+# for a bug fix. Without it, every fix that adds a test gets blocked.
 for file in $CHANGED_FILES; do
-    if [[ "$file" != src/* ]] && [[ "$file" != docs/* ]] && [[ "$file" != resources/* ]] && [[ "$file" != resources.qrc ]] && [[ "$file" != CMakeLists.txt ]] && [[ "$file" != third_party/* ]] && [[ "$file" != packaging/* ]]; then
+    if [[ "$file" != src/* ]] \
+       && [[ "$file" != tests/* ]] \
+       && [[ "$file" != docs/* ]] \
+       && [[ "$file" != resources/* ]] \
+       && [[ "$file" != resources.qrc ]] \
+       && [[ "$file" != CMakeLists.txt ]] \
+       && [[ "$file" != third_party/* ]] \
+       && [[ "$file" != packaging/* ]]; then
         log "BLOCKED: File outside allowed directories: $file"
         ERRORS=$((ERRORS + 1))
     fi
