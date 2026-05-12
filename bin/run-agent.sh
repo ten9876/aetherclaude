@@ -779,21 +779,48 @@ skill_process_issues() {
 
     # Webhook-only mode: every orch is triggered by a webhook for a
     # specific issue/PR/disc, identified by LOCK_KEY. Scope the Issue
-    # Pipeline to just that issue so work on issue M doesn't get
-    # attributed to issue N's trace (and so a webhook for issue N
-    # doesn't surprise the maintainer by implementing issue M). If
-    # LOCK_KEY is 'global' or the triggering issue isn't in the
-    # candidate set, fall back to the original list.
+    # Pipeline to just that issue. If #N is in the Phase-1 candidate
+    # list, narrow to it. If #N is NOT in the list (older than 24h,
+    # missing aetherclaude-eligible, etc.), fetch it directly and
+    # check whether the maintainer-review-without-eligible filter
+    # would drop it; only then do we give up. Critically, we NEVER
+    # fall back to processing OTHER issues — a webhook for #N must
+    # not surprise the maintainer by implementing #M.
     if [[ "$LOCK_KEY" =~ ^issue-([0-9]+)$ ]]; then
         local trigger_num="${BASH_REMATCH[1]}"
         local scoped
         scoped=$(echo "$all_issues" | jq --argjson n "$trigger_num" '[.[] | select(.number == $n)]')
         local scoped_total
         scoped_total=$(echo "$scoped" | jq '. | length')
-        if [ "$scoped_total" -gt 0 ]; then
-            all_issues="$scoped"
-            total="$scoped_total"
+        if [ "$scoped_total" -eq 0 ]; then
+            # Not in the union of (recent, labeled, assigned). Fetch it
+            # directly so we can decide whether to process it or skip.
+            local direct
+            direct=$(github_api GET "/repos/${REPO}/issues/${trigger_num}" "$token")
+            if echo "$direct" | jq -e '.number' >/dev/null 2>&1 \
+               && [ "$(echo "$direct" | jq -r '.pull_request // empty')" = "" ]; then
+                # Apply the same maintainer-review-without-eligible filter
+                # as the Phase-1 jq pipeline.
+                local passes_filter
+                passes_filter=$(echo "$direct" | jq '
+                    ([.labels[].name] | any(. == "maintainer-review") | not)
+                    or ([.labels[].name] | any(. == "aetherclaude-eligible"))')
+                if [ "$passes_filter" = "true" ]; then
+                    scoped=$(echo "$direct" | jq '[.]')
+                    scoped_total=1
+                    log "Scoped Issue Pipeline to triggering issue #${trigger_num} (direct fetch)"
+                fi
+            fi
+        else
             log "Scoped Issue Pipeline to triggering issue #${trigger_num}"
+        fi
+        # Replace all_issues with whatever scoping resolved to (may be
+        # empty if #N is filtered out — that means we run no issues,
+        # not that we pivot to other candidates).
+        all_issues="$scoped"
+        total="$scoped_total"
+        if [ "$total" -eq 0 ]; then
+            log "Issue Pipeline: triggering issue #${trigger_num} not eligible, skipping"
         fi
     fi
 
