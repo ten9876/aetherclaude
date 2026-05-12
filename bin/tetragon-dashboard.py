@@ -391,6 +391,19 @@ def init_db():
         evidence TEXT
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_aibom_scan_time ON aibom_components(scan_time)')
+    conn.execute('''CREATE TABLE IF NOT EXISTS aibom_vulnerabilities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scan_time TEXT DEFAULT CURRENT_TIMESTAMP,
+        component_name TEXT,
+        purl TEXT,
+        vuln_id TEXT,
+        severity TEXT,
+        score REAL,
+        summary TEXT,
+        refs_json TEXT
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_aibom_vuln_scan_time ON aibom_vulnerabilities(scan_time)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_aibom_vuln_component ON aibom_vulnerabilities(component_name)')
     conn.execute('''CREATE TABLE IF NOT EXISTS skill_scan_results (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         scan_time TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -1030,6 +1043,12 @@ def scan_rings():
                                     dbc.execute('INSERT INTO aibom_components (name, category, description, detection, location, evidence) VALUES (?,?,?,?,?,?)',
                                         (c.get('name',''), c.get('category',''), c.get('description',''),
                                          c.get('detection',''), c.get('location',''), c.get('evidence','')))
+                                    for v in c.get('vulnerabilities', []) or []:
+                                        dbc.execute(
+                                            'INSERT INTO aibom_vulnerabilities (component_name, purl, vuln_id, severity, score, summary, refs_json) VALUES (?,?,?,?,?,?,?)',
+                                            (c.get('name',''), c.get('purl',''), v.get('id',''),
+                                             v.get('severity','UNKNOWN'), v.get('score'),
+                                             v.get('summary',''), json.dumps(v.get('references', []))))
                                 dbc.commit(); dbc.close()
                             except: pass
                 except: pass
@@ -2586,13 +2605,25 @@ if(d.total>0)fh+=`<p style="color:#607080;margin-bottom:8px">${d.total} componen
 if(d.components.length===0)fh+='<p style="color:#607080">No components recorded yet.</p>';
 const seen=new Set();
 const catColors={'audio_ml':'MEDIUM','audio_codec':'SAFE','dsp':'SAFE','audio_dsp':'SAFE','audio_io':'SAFE','rpc':'SAFE'};
+const vulnSev=(s)=>{s=(s||'').toUpperCase();return (s==='CRITICAL'||s==='HIGH')?'HIGH':(s==='MEDIUM')?'MEDIUM':(s==='LOW')?'LOW':'SAFE'};
 for(const c of d.components){
 if(seen.has(c.name))continue;seen.add(c.name);
-const sev=catColors[c.category]||'SAFE';
-fh+=`<div class="modal-finding ${sev}" style="margin-bottom:6px">`;
-fh+=`<span class="sev ${sev}">${esc(c.category)}</span> <strong>${esc(c.name)}</strong>`;
+const vs=c.vulnerabilities||[];
+const cardSev=vs.length>0?'HIGH':(catColors[c.category]||'SAFE');
+fh+=`<div class="modal-finding ${cardSev}" style="margin-bottom:6px">`;
+fh+=`<span class="sev ${catColors[c.category]||'SAFE'}">${esc(c.category)}</span> <strong>${esc(c.name)}</strong>`;
+if(vs.length>0)fh+=` <span class="sev HIGH" style="font-size:9px;padding:1px 4px;margin-left:4px">${vs.length} CVE${vs.length>1?'s':''}</span>`;
 fh+=`<div class="detail" style="margin-top:2px">${esc(c.description)}</div>`;
 fh+=`<div class="detail" style="margin-top:2px;color:#405060;font-size:10px">Detection: ${esc(c.detection)} — ${esc(c.evidence)}</div>`;
+if(vs.length>0){
+  fh+=`<div class="detail" style="margin-top:6px;color:#a0a8b0;font-size:10px;border-top:1px solid #2a3040;padding-top:4px">Vulnerabilities (OSV.dev):</div>`;
+  for(const v of vs){
+    const sc=vulnSev(v.severity);
+    const sum=esc((v.summary||'').substring(0,120))||'(no summary)';
+    const link=(v.references&&v.references[0])?` <a href="${esc(v.references[0])}" target="_blank" style="color:#00bceb;text-decoration:none">[advisory]</a>`:'';
+    fh+=`<div class="detail" style="margin-left:6px;margin-top:3px;font-size:10px;color:#a0a8b0;line-height:1.4"><span class="sev ${sc}" style="font-size:9px;padding:1px 5px">${esc(v.severity||'UNKNOWN')}</span> <code style="color:#7080a0">${esc(v.id||'')}</code>${link} — ${sum}</div>`;
+  }
+}
 fh+=`</div>`}
 document.getElementById('aibom-list').innerHTML=fh;
 }).catch(()=>{document.getElementById('aibom-list').innerHTML='<p style="color:#604040">Failed to load component data.</p>'})}
@@ -3705,9 +3736,42 @@ a{{color:#0a6aba}}
                     'SELECT scan_time, name, category, description, detection, location, evidence FROM aibom_components ORDER BY id DESC LIMIT 200'
                 ).fetchall()
                 total = conn.execute('SELECT COUNT(*) FROM aibom_components').fetchone()[0]
+                # Latest vulns per component: pick the scan_time of the newest row per
+                # component_name and return only the vulns from that scan. Avoids
+                # surfacing CVEs that were resolved upstream + re-scanned clean.
+                vuln_rows = conn.execute('''
+                    WITH latest AS (
+                        SELECT component_name, MAX(scan_time) AS latest_time
+                        FROM aibom_vulnerabilities GROUP BY component_name
+                    )
+                    SELECT v.component_name, v.vuln_id, v.severity, v.score, v.summary, v.refs_json, v.purl
+                    FROM aibom_vulnerabilities v
+                    JOIN latest l ON v.component_name = l.component_name AND v.scan_time = l.latest_time
+                    ORDER BY v.component_name,
+                        CASE v.severity WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2
+                                        WHEN 'MEDIUM' THEN 3 WHEN 'LOW' THEN 4 ELSE 5 END,
+                        v.vuln_id
+                    LIMIT 1000
+                ''').fetchall()
                 conn.close()
-                components = [{'scan_time': r[0], 'name': r[1], 'category': r[2], 'description': r[3],
-                               'detection': r[4], 'location': r[5], 'evidence': r[6]} for r in rows]
+                vulns_by_component: dict = {}
+                for v in vuln_rows:
+                    refs = []
+                    try:
+                        refs = json.loads(v[5] or '[]')
+                    except Exception:
+                        pass
+                    vulns_by_component.setdefault(v[0], []).append({
+                        'id': v[1], 'severity': v[2], 'score': v[3],
+                        'summary': v[4], 'references': refs, 'purl': v[6],
+                    })
+                components = []
+                for r in rows:
+                    components.append({
+                        'scan_time': r[0], 'name': r[1], 'category': r[2], 'description': r[3],
+                        'detection': r[4], 'location': r[5], 'evidence': r[6],
+                        'vulnerabilities': vulns_by_component.get(r[1], []),
+                    })
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
