@@ -65,39 +65,7 @@ echo $$ > "$LOCKFILE"
 # off this lockfile, leaving their traces empty of orchestrator activity).
 ACTIVE_TRACE_FILE="/Users/aetherclaude/state/active-trace-id.${LOCK_KEY}"
 echo "$AETHER_TRACE_ID" > "$ACTIVE_TRACE_FILE"
-
-# Per-lock-key git worktree. Two webhooks with different lock_keys can launch
-# parallel orchestrators (see dashboard /webhook handler); without isolated
-# checkouts they'd race on the shared WORKSPACE tree. The worktree shares
-# .git/ with WORKSPACE but has its own working directory, so claude edits in
-# one orch run cannot collide with edits in another. Detached HEAD off
-# origin/main — claude itself creates the work branch (aetherclaude/issue-N).
-WORKTREE_DIR="${WORKSPACE}/.claude/worktrees/${LOCK_KEY}"
-
-cleanup_worktree() {
-    [ -d "$WORKTREE_DIR" ] || return 0
-    cd "$WORKSPACE" 2>/dev/null || return 0
-    git worktree remove --force "$WORKTREE_DIR" 2>/dev/null
-    git worktree prune --quiet 2>/dev/null
-}
-
-ensure_worktree() {
-    cd "$WORKSPACE" 2>/dev/null || return 1
-    [ -d "$WORKTREE_DIR" ] && return 0
-    git worktree prune --quiet 2>/dev/null
-    if ! git worktree add --quiet --detach "$WORKTREE_DIR" origin/main 2>/dev/null; then
-        # Stale dir/registration from a previous crashed run — clean and retry.
-        git worktree remove --force "$WORKTREE_DIR" 2>/dev/null
-        rm -rf "$WORKTREE_DIR" 2>/dev/null
-        git worktree prune --quiet 2>/dev/null
-        git worktree add --quiet --detach "$WORKTREE_DIR" origin/main 2>/dev/null || {
-            echo "$(date "+%Y-%m-%dT%H:%M:%S") ERROR: failed to create worktree at $WORKTREE_DIR" >> "$LOGDIR/orchestrator.log"
-            return 1
-        }
-    fi
-}
-
-trap 'rm -f "$LOCKFILE" "$ACTIVE_TRACE_FILE"; cleanup_worktree' EXIT
+trap 'rm -f "$LOCKFILE" "$ACTIVE_TRACE_FILE"' EXIT
 
 log() { echo "$(date "+%Y-%m-%dT%H:%M:%S") [${AETHER_TRACE_ID:0:8}] $1" >> "$LOGDIR/orchestrator.log"; }
 
@@ -294,9 +262,13 @@ run_claude() {
     local prompt="$1" logfile="$2"
     local claude_pid
 
-    ensure_worktree || { log "ERROR: worktree setup failed for ${LOCK_KEY}"; return 1; }
-
-    ( cd "$WORKTREE_DIR" && exec env \
+    # Run claude in the caller's cwd. The orch chooses the right working
+    # directory per case: $WORKSPACE for triage/welcome (read-only paths),
+    # /tmp/aetherclaude/issue-N for IMPLEMENT (the orch's per-issue git
+    # worktree). Forcing cd into a separate worktree here would override
+    # the implement case's worktree choice and Claude's commits would land
+    # in the wrong tree.
+    env \
         -u GH_TOKEN -u GITHUB_TOKEN -u GH_APP_TOKEN -u GITHUB_APP_ID \
         HOME="$HOME" PATH="$PATH" \
         HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" NO_PROXY="$NO_PROXY" \
@@ -308,7 +280,7 @@ run_claude() {
             --allowedTools "Read,Glob,Grep,Edit,Write,Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git diff *),Bash(git log *),Bash(git status),Bash(git checkout *),Bash(ls *),Bash(head *),Bash(tail *),mcp__aetherclaude-github__*" \
             --disallowedTools "Bash(sudo *),Bash(curl *),Bash(wget *),Bash(rm -rf *),Bash(ssh *),Bash(scp *),Bash(nc *),Bash(ncat *),Bash(dd *),Bash(mount *),Bash(chmod *),Bash(chown *),Bash(chsh *),Bash(passwd *),Bash(brew *),Bash(npm *),Bash(pip *),Bash(nft *),Bash(systemctl *),Bash(cat /Users/aetherclaude/.env),Bash(cat /Users/aetherclaude/.git-credentials),Bash(cat /Users/aetherclaude/.github-app-key.pem),Bash(echo \$*),Bash(env),Bash(printenv),Bash(set),WebFetch,WebSearch,Agent" \
             --mcp-config /Users/aetherclaude/.claude/mcp-servers.json \
-        > "$logfile" 2>&1 ) &
+        > "$logfile" 2>&1 &
     claude_pid=$!
 
     # Watchdog: kill Claude if it exceeds timeout
@@ -804,6 +776,26 @@ skill_process_issues() {
     local total
     total=$(echo "$all_issues" | jq '. | length')
     log "Found $total candidate issues"
+
+    # Webhook-only mode: every orch is triggered by a webhook for a
+    # specific issue/PR/disc, identified by LOCK_KEY. Scope the Issue
+    # Pipeline to just that issue so work on issue M doesn't get
+    # attributed to issue N's trace (and so a webhook for issue N
+    # doesn't surprise the maintainer by implementing issue M). If
+    # LOCK_KEY is 'global' or the triggering issue isn't in the
+    # candidate set, fall back to the original list.
+    if [[ "$LOCK_KEY" =~ ^issue-([0-9]+)$ ]]; then
+        local trigger_num="${BASH_REMATCH[1]}"
+        local scoped
+        scoped=$(echo "$all_issues" | jq --argjson n "$trigger_num" '[.[] | select(.number == $n)]')
+        local scoped_total
+        scoped_total=$(echo "$scoped" | jq '. | length')
+        if [ "$scoped_total" -gt 0 ]; then
+            all_issues="$scoped"
+            total="$scoped_total"
+            log "Scoped Issue Pipeline to triggering issue #${trigger_num}"
+        fi
+    fi
 
     [ "$total" -eq 0 ] && return
 
