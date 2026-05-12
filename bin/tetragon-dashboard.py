@@ -1017,6 +1017,8 @@ def scan_rings():
                         ring_stats['r6_aibom_components'] = summary.get('total_components', 0)
                         ring_stats['r6_aibom_models'] = summary.get('total_model_files', 0)
                         ring_stats['r6_aibom_neural'] = summary.get('has_neural_components', False)
+                        ring_stats['r6_aibom_scanner_version'] = aibom.get('version', '1.0.0')
+                        ring_stats['r6_aibom_vulns'] = summary.get('vulnerabilities_found', 0)
                         # Persist to DB if file changed
                         global _last_aibom_mtime
                         aibom_mtime = os.path.getmtime(aibom_file)
@@ -2567,11 +2569,14 @@ function showAibom(){
 const comps=lastData.rings?.r6_aibom_components||0;
 const models=lastData.rings?.r6_aibom_models||0;
 const neural=lastData.rings?.r6_aibom_neural||false;
+const vulns=lastData.rings?.r6_aibom_vulns||0;
+const ver=lastData.rings?.r6_aibom_scanner_version||'1.0.0';
 let h='<p style="color:#607080;margin-bottom:12px">C++ AI Bill of Materials — scans for neural networks, ML frameworks, and DSP libraries</p>';
 h+=`<div class="modal-finding ${neural?'MEDIUM':'SAFE'}"><span class="sev ${neural?'MEDIUM':'SAFE'}">${neural?'NEURAL':'CLEAN'}</span> ${comps} AI/ML components detected</div>`;
 h+=`<div class="modal-finding SAFE"><span class="sev SAFE">INFO</span> ${models} model files found</div>`;
+if(vulns>0)h+=`<div class="modal-finding HIGH"><span class="sev HIGH">VULN</span> ${vulns} vulnerabilities found (OSV.dev)</div>`;
 h+=`<div id="aibom-list" style="margin-top:12px"><p style="color:#607080">Loading component details...</p></div>`;
-h+=`<div class="detail" style="margin-top:12px;color:#607080">Scanner: cpp-aibom v1.0.0 (custom C++ AIBOM for Cisco AI Defense)</div>`;
+h+=`<div class="detail" style="margin-top:12px;color:#607080">Scanner: cpp-aibom v${ver} (custom C++ AIBOM for Cisco AI Defense)</div>`;
 document.getElementById('modal-title').textContent='C++ AI Bill of Materials';
 document.getElementById('modal-body').innerHTML=h;
 document.getElementById('modal').classList.add('show');
