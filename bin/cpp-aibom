@@ -40,6 +40,7 @@ import datetime as _dt
 import hashlib
 import json
 import os
+import pwd
 import re
 import sys
 import time
@@ -49,14 +50,28 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
+
+
+def _real_home() -> Path:
+    """The current user's actual home dir from passwd.
+
+    Path.home() / os.path.expanduser('~') trust $HOME, which is wrong when
+    invoked via `sudo -u <user>` without `env HOME=...` — $HOME stays as the
+    caller's path and breaks the OSV cache mkdir. passwd is authoritative.
+    """
+    try:
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (KeyError, OSError):
+        return Path.home()
+
 
 # ── Paths / config ─────────────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_KB = REPO_ROOT / "data" / "cpp-aibom-components.json"
 DEFAULT_OUT = Path("/Users/aetherclaude/logs/aibom-latest.json")
 OSV_CACHE_DIR = Path(
-    os.environ.get("CPP_AIBOM_CACHE", str(Path.home() / ".cache" / "cpp-aibom" / "osv"))
+    os.environ.get("CPP_AIBOM_CACHE") or str(_real_home() / ".cache" / "cpp-aibom" / "osv")
 )
 OSV_CACHE_TTL = 7 * 24 * 3600  # seconds
 OSV_API_URL = "https://api.osv.dev/v1/query"
