@@ -1037,8 +1037,36 @@ skill_process_issues() {
 
         waiting)
             # ---------------------------------------------------------
-            # STATE: WAITING — Check for user replies
+            # STATE: WAITING — Check for user replies (or mid-orch
+            # maintainer authorization labels)
             # ---------------------------------------------------------
+            # Maintainer-authorization check: if the maintainer added
+            # 'maintainer-review' or 'aetherclaude-eligible' after we
+            # entered waiting (or even mid-triage, before the orch
+            # finished asking the clarifying question), advance state
+            # so the loop continues through maintainer-review → implement
+            # in the same run. Override A at lines 864-879 only catches
+            # this when state was ALREADY 'waiting' before the orch
+            # started; this catches the mid-orch case. Fresh GET because
+            # cached $issue_data is from the Phase-1 listing.
+            local waiting_labels
+            waiting_labels=$(github_api GET "/repos/${REPO}/issues/${number}" "$token" | jq -r '[.labels[].name]')
+            if echo "$waiting_labels" | jq -e '
+                    any(. == "maintainer-review")
+                    or any(. == "aetherclaude-eligible")
+                ' >/dev/null; then
+                log "Issue #${number} — maintainer authorization label present in waiting, advancing → maintainer-review"
+                record_action "$number" "waiting" "maintainer-review" "success" "Maintainer label applied mid-orch"
+                set_state "issue_${number}_state" "maintainer-review"
+                issue_state="maintainer-review"
+                remove_label "$number" "awaiting-response" "$token"
+                # Don't break or processed++. Falling out of the case
+                # naturally lets the state-machine loop re-read state,
+                # see the change, and enter the maintainer-review case
+                # on the next iteration (which advances to implement if
+                # aetherclaude-eligible is set).
+            else
+
             local last_action
             last_action=$(get_state "issue_${number}_last_action")
 
@@ -1129,6 +1157,7 @@ except Exception:
                     # Stay in waiting state; don't count as a processed action
                 fi
             fi
+            fi   # close the maintainer-label-override else
             # Waiting doesn't count as a processed action
             ;;
 
