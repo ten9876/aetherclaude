@@ -29,6 +29,13 @@ pass out quick proto tcp from any to { 184.34.79.0/24 52.25.192.0/24 52.38.114.0
 # Used by skill-scanner / mcp-scanner --use-virustotal for hash lookups
 pass out quick proto tcp from any to { 216.239.32.0/19 34.54.88.0/24 } port 443 user 965
 
+# OSV.dev (api.osv.dev — ghs.googlehosted.com — Google Hosted Service)
+# Used by bin/cpp-aibom for per-component CVE lookups at scan time.
+# /15 because Google rotates ghs.googlehosted.com across the full block;
+# pinning to /24 risks missing future DNS rotations. Matches the trust
+# model we already grant to VirusTotal and Anthropic telemetry (all Google Cloud).
+pass out quick proto tcp from any to 142.250.0.0/15 port 443 user 965
+
 # Claude OAuth login (AWS Cognito — dynamic IPs)
 pass out quick proto tcp from any to <anthropic_auth> port 443 user 965
 
