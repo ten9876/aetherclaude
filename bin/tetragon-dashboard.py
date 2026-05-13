@@ -2089,7 +2089,7 @@ def process_event(event):
         append_event(entry)
 
 HTML = r"""<!DOCTYPE html>
-<html><head><title>AetherClaude Defense-in-Depth Dashboard</title><meta charset="utf-8">
+<html><head><title>AetherClaude Defense-In-Depth Dashboard</title><meta charset="utf-8">
 <style>
 /* CiscoSans (Cisco's official brand typeface) — served from
    PRIVATE_FONTS_DIR (NOT in the git tree). Full family with seven
@@ -2116,7 +2116,7 @@ HTML = r"""<!DOCTYPE html>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospace;font-size:13px}
 .header{background:#101028;padding:12px 24px;border-bottom:1px solid #203040;display:flex;justify-content:space-between;align-items:center}
-.header h1{font-family:'CiscoSans','SF Mono',monospace;font-size:18px;color:#00b4d8;text-transform:uppercase;letter-spacing:4px;font-weight:300}
+.header h1{font-family:'CiscoSans','SF Mono',monospace;font-size:20px;color:#00b4d8;letter-spacing:1px;font-weight:400}
 .header .sub{font-family:'CiscoSans',system-ui,sans-serif;color:#607080;font-size:11px}
 .header .live{color:#00ff88;font-size:12px;animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
@@ -2230,7 +2230,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 
 <div class="header">
 <img src="/logo.png" style="height:48px;margin-right:16px;border-radius:50%">
-<div style="flex:1"><h1>AetherClaude Defense-in-Depth Dashboard</h1>
+<div style="flex:1"><h1>AetherClaude Defense-In-Depth Dashboard</h1>
 <div class="sub">Cisco Isovalent (Tetragon) &middot; Cisco DefenseClaw CodeGuard &middot; Cisco AI Defense &middot; MCP Token Isolation</div></div>
 <!-- Button stack: two rows of children inside the same header.
      Top row = primary nav + LIVE indicator. Bottom row = the wider
