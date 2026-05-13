@@ -2248,11 +2248,11 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 </div>
 
 <div class="rings">
-<div class="ring ok clickable" id="ring1" onclick="showRingEvents('nftables','Ring 1: nftables','Kernel-level packet filtering by UID — blocked outbound connections')"><span class="num">1 &gt;</span><span class="status green"></span>
-<div class="name">nftables</div><div class="value" id="r1v">0</div><div class="detail">packets blocked</div></div>
+<div class="ring ok clickable" id="ring1" onclick="showRingEvents('nftables','Ring 1: Firewall','Kernel-level packet filtering by UID — blocked outbound connections')"><span class="num">1 &gt;</span><span class="status green"></span>
+<div class="name">Firewall</div><div class="value" id="r1v">0</div><div class="detail">packets blocked</div></div>
 
-<div class="ring ok clickable" id="ring2" onclick="showRingEvents('tinyproxy','Ring 2: tinyproxy — denied connections','Last 100 HTTPS connections rejected by the domain allowlist (allowed connections omitted)',{policy:'domain-filter'})"><span class="num">2 &gt;</span><span class="status green"></span>
-<div class="name">tinyproxy</div><div class="value" id="r2v">0</div><div class="detail" id="r2d">allowed · 0 denied</div></div>
+<div class="ring ok clickable" id="ring2" onclick="showRingEvents('tinyproxy','Ring 2: Web Proxy — denied connections','Last 100 HTTPS connections rejected by the domain allowlist (allowed connections omitted)',{policy:'domain-filter'})"><span class="num">2 &gt;</span><span class="status green"></span>
+<div class="name">Web Proxy</div><div class="value" id="r2v">0</div><div class="detail" id="r2d">allowed · 0 denied</div></div>
 
 <div class="ring ok clickable" id="ring3" onclick="showRingEvents('eslogger','Ring 3: OS Isolation (Tetragon eBPF)','Last 100 process executions under UID 965 — what the agent has been running',{type:'EXEC'})"><span class="num">3 &gt;</span><span class="status green"></span>
 <div class="name">OS Isolation</div><div class="value" id="r3v">0</div><div class="detail" id="r3d">agent cmds · rbash</div></div>
