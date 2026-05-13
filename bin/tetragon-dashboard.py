@@ -2679,20 +2679,47 @@ document.getElementById('ring-events-list').innerHTML=fh;
 }).catch(()=>{document.getElementById('ring-events-list').innerHTML='<p style="color:#604040">Failed to load events.</p>'})}
 function showRing4(){
 const r=lastData.rings||{};
-let h='<p style="color:#607080;margin-bottom:12px">systemd service sandboxing — NoNewPrivileges, ProtectSystem=strict, read-only filesystem</p>';
+let h='<p style="color:#607080;margin-bottom:12px">Each agent run executes inside a UID-965 process tree managed by launchd. NoNewPrivileges, sandboxed PATH, restricted file access.</p>';
 h+=`<div class="modal-finding SAFE"><span class="sev SAFE">RUNS</span> ${r.r4_sandboxed_runs||0} sandboxed agent runs completed</div>`;
-h+=`<div class="modal-finding SAFE"><span class="sev SAFE">CONFIG</span> NoNewPrivileges=yes</div>`;
-h+=`<div class="modal-finding SAFE"><span class="sev SAFE">CONFIG</span> ProtectSystem=strict</div>`;
-h+=`<div class="modal-finding SAFE"><span class="sev SAFE">CONFIG</span> ProtectHome=read-only</div>`;
-h+=`<div class="modal-finding SAFE"><span class="sev SAFE">CONFIG</span> PrivateTmp=yes, PrivateDevices=yes</div>`;
-h+=`<div class="modal-finding SAFE"><span class="sev SAFE">CONFIG</span> ProtectKernelTunables, ProtectKernelModules, ProtectControlGroups</div>`;
-h+=`<div class="modal-finding SAFE"><span class="sev SAFE">CONFIG</span> RestrictNamespaces=yes</div>`;
-const writable=['workspace','logs','state','skills','.claude','.config','prompts','/tmp'];
-h+='<div class="modal-finding SAFE" style="margin-top:8px"><span class="sev SAFE">R/W</span> Writable paths: '+writable.map(p=>`<code>${p}</code>`).join(', ')+'</div>';
-if(r.r4_timer_since)h+=`<div class="detail" style="margin-top:8px;color:#607080">Timer active since: ${r.r4_timer_since}</div>`;
+h+=`<div id="ring4-traces" style="margin-top:12px"><p style="color:#607080">Loading recent runs...</p></div>`;
 document.getElementById('modal-title').textContent='Ring 4: systemd Sandbox';
 document.getElementById('modal-body').innerHTML=h;
-document.getElementById('modal').classList.add('show')}
+document.getElementById('modal').classList.add('show');
+// Each /api/agent-walk-traces row is one webhook-triggered sandboxed
+// run (one orchestrator invocation under UID 965). Render the last 20,
+// clickable to jump to the trace's agent-walk timeline.
+fetch('/api/agent-walk-traces?limit=20').then(r=>r.json()).then(d=>{
+const traces=d.traces||[];
+let fh=`<div class="detail" style="color:#a0a8b0;font-size:11px;margin-bottom:6px">Last ${traces.length} sandboxed runs (click to inspect the trace timeline):</div>`;
+if(traces.length===0){
+fh+='<p style="color:#607080">No traces recorded yet.</p>';
+}else{
+fh+='<div style="max-height:50vh;overflow-y:auto;font-family:monospace;font-size:11px">';
+for(const t of traces){
+// Compute duration
+const start=t.first_ts?new Date(t.first_ts):null;
+const end=t.last_ts?new Date(t.last_ts):null;
+let dur='';
+if(start&&end){const ms=end-start; const m=Math.floor(ms/60000); const s=Math.floor((ms%60000)/1000); dur=m>0?`${m}m${s}s`:`${s}s`;}
+const evType=(t.binary||'').replace('github:','');
+const startStr=start?start.toISOString().substr(11,8):'';
+const summary=t.summary||'(no summary)';
+fh+=`<div class="modal-finding SAFE clickable" style="margin-bottom:2px;padding:4px 8px;cursor:pointer" onclick="window.open('/agent-walk?trace='+encodeURIComponent('${t.trace_id}'),'_blank')">`;
+fh+=`<span style="color:#607080;margin-right:8px">${esc(startStr)}</span>`;
+if(dur)fh+=`<span style="color:#80ffaa;margin-right:6px">(${dur})</span>`;
+fh+=`<span style="color:#ffaa00;margin-right:6px">${(t.event_count||0).toLocaleString()} ev</span>`;
+if(evType)fh+=`<span style="color:#80c0ff;margin-right:6px">${esc(evType)}</span>`;
+fh+=`<span>${esc(summary).substring(0,80)}</span>`;
+fh+='</div>';}
+fh+='</div>';}
+// Brief sandboxing config (compressed from the prior static dump)
+fh+='<div class="detail" style="margin-top:12px;color:#607080;font-size:10px">';
+fh+='Sandboxing: NoNewPrivileges, ProtectSystem=strict, PrivateTmp, restricted PATH. ';
+fh+='Writable: <code>workspace</code> <code>logs</code> <code>state</code> <code>skills</code> <code>.claude</code> <code>/tmp</code>.';
+fh+='</div>';
+if(r.r4_timer_since)fh+=`<div class="detail" style="margin-top:4px;color:#607080;font-size:10px">Timer active since: ${esc(r.r4_timer_since)}</div>`;
+document.getElementById('ring4-traces').innerHTML=fh;
+}).catch(()=>{document.getElementById('ring4-traces').innerHTML='<p style="color:#604040">Failed to load recent runs.</p>'})}
 function showRing9(){
 const r=lastData.rings||{};
 let h='<p style="color:#607080;margin-bottom:12px">Human review — the final authority. All PRs require CODEOWNERS approval, GPG-signed commits, and CI checks.</p>';
