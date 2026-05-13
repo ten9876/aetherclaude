@@ -212,6 +212,89 @@ github_api_body() {
     rm -f "$tmpfile"
 }
 
+# Citation-resolution check (Foundry Principle I — Evidence Over Assertion,
+# partial form). Parses path:line / path:line-line citations from the latest
+# agent comment on an issue and verifies each against the workspace clone
+# of AetherSDR at origin/main. Unresolved citations are footnoted onto the
+# comment via PATCH; the run continues regardless of result (informational,
+# non-blocking — per the operator decision in this session).
+#
+# Args: ISSUE_NUMBER TOKEN
+# Side effect: logs a CITATION_CHECK: line; if any citation fails, also
+#   PATCHes the comment body to append a <details> footnote table.
+check_citations() {
+    local number="$1" token="$2"
+    local workspace_main="/Users/aetherclaude/workspace/AetherSDR"
+    [ -d "$workspace_main" ] || return 0
+
+    local comments comment_data comment_id comment_body
+    comments=$(github_api GET "/repos/${REPO}/issues/${number}/comments?per_page=100" "$token")
+    comment_data=$(echo "$comments" | jq -c '[.[] | select(.user.login == "aethersdr-agent[bot]")] | last // empty' 2>/dev/null)
+    [ -z "$comment_data" ] && return 0
+    comment_id=$(echo "$comment_data" | jq -r '.id')
+    comment_body=$(echo "$comment_data" | jq -r '.body')
+    [ -z "$comment_body" ] && return 0
+
+    # Refresh the workspace clone so citations check against current main.
+    git -C "$workspace_main" fetch --quiet origin main 2>/dev/null || true
+    git -C "$workspace_main" reset --hard --quiet origin/main 2>/dev/null || true
+
+    # Extract every `path:line` and `path:line-line` token. Limited to
+    # source-file extensions we actually have, anchored to project-shaped
+    # paths (src/, third_party/, tests/, docs/, CMakeLists, plus loose
+    # filename:line). Avoids matching code-block line annotations like
+    # `at line 42` or URLs.
+    local citations
+    citations=$(echo "$comment_body" | grep -oE '\b[A-Za-z0-9_./-]+\.(cpp|cc|cxx|c|h|hpp|hh|py|js|ts|md|sh|yml|yaml|json|qrc|cmake|cs|txt):[0-9]+(-[0-9]+)?\b' | sort -u)
+    [ -z "$citations" ] && return 0
+
+    local resolved=0 unresolved=0 unresolved_block=""
+    while IFS= read -r citation; do
+        [ -z "$citation" ] && continue
+        local path lines start_line end_line file_lines
+        path="${citation%:*}"
+        lines="${citation#*:}"
+        start_line="${lines%%-*}"
+        end_line="${lines##*-}"
+        # FlexLib citations point at the upstream C# reference dir, not
+        # the AetherSDR workspace — accept them as "external evidence".
+        if [[ "$path" == FlexLib/* ]] || [[ "$path" == */FlexLib/* ]] || [[ "$path" == *.cs ]]; then
+            resolved=$((resolved + 1))
+            continue
+        fi
+        if [ -f "$workspace_main/$path" ]; then
+            file_lines=$(wc -l < "$workspace_main/$path" 2>/dev/null | tr -d ' ')
+            file_lines=${file_lines:-0}
+            if [ "$start_line" -le "$file_lines" ] && [ "$end_line" -le "$file_lines" ]; then
+                resolved=$((resolved + 1))
+                continue
+            fi
+            unresolved=$((unresolved + 1))
+            unresolved_block="${unresolved_block}| \`${citation}\` | line out of range (file has ${file_lines} lines) |"$'\n'
+        else
+            unresolved=$((unresolved + 1))
+            unresolved_block="${unresolved_block}| \`${citation}\` | file not found in workspace |"$'\n'
+        fi
+    done <<< "$citations"
+
+    log "CITATION_CHECK: #${number} — ${resolved} resolved, ${unresolved} unresolved"
+    [ "$unresolved" -eq 0 ] && return 0
+
+    # PATCH the comment to append an unresolved-citations footnote.
+    # Non-blocking — failures here are logged but never fail the run.
+    local footnote
+    footnote=$(printf '\n\n---\n\n<sub>📍 Citation health check (Foundry Constitution Principle I): **%d resolved, %d unresolved** against `%s` at origin/main.</sub>\n\n<details><summary>Unresolved citations (%d)</summary>\n\n| Citation | Reason |\n|---|---|\n%s\n</details>' \
+        "$resolved" "$unresolved" "$workspace_main" "$unresolved" "$unresolved_block")
+    local new_body
+    new_body=$(jq -n --arg b "${comment_body}${footnote}" '{body: $b}')
+    if github_api_body PATCH "/repos/${REPO}/issues/comments/${comment_id}" "$token" "$new_body" > /dev/null 2>&1; then
+        log "CITATION_CHECK: appended footnote to comment ${comment_id}"
+    else
+        log "CITATION_CHECK: failed to PATCH comment ${comment_id} (non-blocking, run continues)"
+    fi
+    return 0
+}
+
 # --- Input sanitization ---
 sanitize_input() {
     local text="$1"
@@ -249,10 +332,25 @@ except:
 }
 
 # --- Run Claude Code (shared helper) ---
-CLAUDE_TIMEOUT=${CLAUDE_TIMEOUT:-1800}  # 30 minutes default — bumped from 600s after #2624
-                                        # was killed mid-implementation on a multi-file
-                                        # feature; non-trivial issues need real budget,
-                                        # and runaway runs are still bounded.
+# Heartbeat-based liveness limits — replaces the older fixed wall-clock
+# CLAUDE_TIMEOUT. A Claude process is "alive" as long as the active
+# session JSONL (where each tool_use / tool_result / text block is
+# appended) has been written within the last CLAUDE_MAX_IDLE seconds.
+# CLAUDE_HARD_CEILING is the absolute upper bound — productive runs
+# still get bounded, runaway loops that produce output indefinitely
+# are still stopped.
+#
+# Aligns with Foundry-security-spec Principle III ("Liveness By
+# Heartbeat, Never By Clock"). The prior wall-clock kill at 600s/
+# 1800s murdered productive runs whose work spilled past the timeout
+# — see trace 50f9d8d0 on #2624, which was actively making tool calls
+# at the 18-min mark when the old watchdog SIGTERM'd it. Heartbeat
+# liveness lets that exact run keep going.
+#
+# CLAUDE_TIMEOUT is retained as a backward-compat alias for
+# CLAUDE_HARD_CEILING so existing env overrides still take effect.
+CLAUDE_MAX_IDLE="${CLAUDE_MAX_IDLE:-180}"           # 3 min of silence = stale
+CLAUDE_HARD_CEILING="${CLAUDE_HARD_CEILING:-${CLAUDE_TIMEOUT:-3600}}"  # 60 min absolute
 
 # Default tool surface — used by all skills that legitimately write code
 # (triage, continue-triage, implement-fix, review-pr, explain-ci).
@@ -316,15 +414,59 @@ run_claude() {
             >> "$logfile" 2>&1 &
         claude_pid=$!
 
-        # Watchdog: kill Claude if it exceeds timeout
+        # Heartbeat watchdog (Foundry Principle III). Polls the active
+        # Claude session JSONL's mtime — Claude appends to it on every
+        # tool_use/tool_result/text block, so an mtime within the last
+        # CLAUDE_MAX_IDLE seconds is proof of life. Kill only when truly
+        # stale. Hard ceiling at CLAUDE_HARD_CEILING catches runaway
+        # loops that produce output indefinitely.
+        #
+        # JSONL path: claude encodes cwd-with-slashes-replaced-by-dashes
+        # into ~/.claude/projects/. `pwd -P` resolves /tmp -> /private/tmp.
+        local session_dir="/Users/aetherclaude/.claude/projects/$(pwd -P | sed 's|/|-|g')"
+        local hb_start=$(date +%s)
         (
-            sleep "$CLAUDE_TIMEOUT"
-            if kill -0 "$claude_pid" 2>/dev/null; then
-                log "TIMEOUT: Claude Code stuck for ${CLAUDE_TIMEOUT}s (PID $claude_pid), killing"
-                kill -TERM "$claude_pid" 2>/dev/null
-                sleep 5
-                kill -9 "$claude_pid" 2>/dev/null
-            fi
+            while kill -0 "$claude_pid" 2>/dev/null; do
+                sleep 10
+                local hb_now=$(date +%s)
+                local hb_elapsed=$((hb_now - hb_start))
+
+                # Hard ceiling — bound the worst case regardless of liveness.
+                if [ "$hb_elapsed" -gt "$CLAUDE_HARD_CEILING" ]; then
+                    log "CEILING: Claude Code hit hard ceiling ${CLAUDE_HARD_CEILING}s (PID $claude_pid), killing"
+                    kill -TERM "$claude_pid" 2>/dev/null
+                    sleep 5
+                    kill -9 "$claude_pid" 2>/dev/null
+                    break
+                fi
+
+                # 60s startup grace — give Claude time to write its first
+                # JSONL entry before we judge it stale.
+                [ "$hb_elapsed" -lt 60 ] && continue
+
+                # Find the most-recently-modified JSONL in the active session
+                # dir. Multiple files exist when prior sessions touched the
+                # same cwd; the running one is always the newest.
+                local active_jsonl
+                active_jsonl=$(ls -t "$session_dir"/*.jsonl 2>/dev/null | head -1)
+                if [ -z "$active_jsonl" ] || [ ! -f "$active_jsonl" ]; then
+                    # No JSONL yet despite 60s — keep waiting; might be
+                    # a fresh session_dir name we miscomputed. Don't kill
+                    # on absence alone.
+                    continue
+                fi
+
+                local last_mtime
+                last_mtime=$(stat -f %m "$active_jsonl" 2>/dev/null || echo "$hb_now")
+                local idle=$((hb_now - last_mtime))
+                if [ "$idle" -gt "$CLAUDE_MAX_IDLE" ]; then
+                    log "STALE: Claude Code no tool activity for ${idle}s (PID $claude_pid, elapsed ${hb_elapsed}s), killing"
+                    kill -TERM "$claude_pid" 2>/dev/null
+                    sleep 5
+                    kill -9 "$claude_pid" 2>/dev/null
+                    break
+                fi
+            done
         ) &
         watchdog_pid=$!
 
@@ -340,11 +482,13 @@ run_claude() {
             return 0
         fi
 
-        # Timeout (SIGTERM / SIGKILL from watchdog) → don't retry. The
-        # process was almost certainly making genuinely slow progress;
-        # retrying would just burn another 600s.
+        # Watchdog kill (SIGTERM / SIGKILL — heartbeat-stale or hard-
+        # ceiling) → don't retry. The watchdog only fires on genuine
+        # silence or absolute upper bound; retrying would hit the same
+        # condition immediately. Caller sees the explicit STALE: /
+        # CEILING: log line for the diagnosis.
         if [ "$exit_code" -eq 143 ] || [ "$exit_code" -eq 137 ]; then
-            log "ERROR: Claude Code was killed by stuck timer (exit $exit_code)"
+            log "ERROR: Claude Code was killed by watchdog (exit $exit_code)"
             return 1
         fi
 
@@ -1090,6 +1234,13 @@ skill_process_issues() {
                 set_state "issue_${number}_state" "failed"
                 break
             }
+
+            # Citation-resolution check (Foundry Principle I, informational
+            # form). Runs after triage but before the state branching; uses
+            # the same workspace clone the rest of the orch already keeps
+            # fresh. Never fails the run — if anything is unresolved it
+            # gets a footnote on the comment, not a state regression.
+            check_citations "$number" "$token" || true
 
             # Check if we asked questions (look for ? in our comment)
             local our_comment

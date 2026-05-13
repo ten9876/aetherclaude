@@ -2795,9 +2795,9 @@ document.getElementById('val-list').innerHTML=fh;
 function showWhitepaper(){document.getElementById('wp-modal').classList.add('show')}
 function showConstitution(){
 const principles=[
-{n:'I',t:'Evidence Over Assertion',s:'PARTIAL',a:'validate-diff.sh + CodeGuard gate; commits required before any verdict change'},
-{n:'II',t:'Surface Only What Survives',s:'MEDIUM',a:'zero-effort auto-close, 7-day stale-close, one-comment-per-triage'},
-{n:'III',t:'Liveness By Heartbeat, Never By Clock',s:'PARTIAL',a:'webhook-driven (spirit) but CLAUDE_TIMEOUT=1800s wall-clock kill'},
+{n:'I',t:'Evidence Over Assertion',s:'PARTIAL',a:'validate-diff + CodeGuard gate; post-triage citation health check footnotes unresolved path:line claims'},
+{n:'II',t:'Surface Only What Survives',s:'STRONG',a:'zero-effort auto-close, 7-day stale-close, one-comment-per-triage, label-gated promotion to maintainer review'},
+{n:'III',t:'Liveness By Heartbeat, Never By Clock',s:'STRONG',a:'session-JSONL mtime heartbeat (CLAUDE_MAX_IDLE=180s); CLAUDE_HARD_CEILING=3600s is the only wall-clock bound'},
 {n:'IV',t:'Claims Are Atomic And Mortal',s:'STRONG',a:'per-issue lockfiles + issue-actions.db ledger with mortal run_id'},
 {n:'V',t:'The Provider Is The Rate Arbiter',s:'STRONG',a:'webhook-paced cadence + adaptive auto-retry on Anthropic backpressure'},
 {n:'VI',t:'Coverage Before Yield',s:'N/A',a:'event-driven; no termination decision to make'},
@@ -2807,7 +2807,7 @@ const principles=[
 {n:'X',t:'The Operator Outranks Every Agent',s:'STRONG',a:'aetherclaude-eligible label is maintainer-only; Override A/B/C gates'},
 {n:'XI',t:'Persist Atomically',s:'STRONG',a:'SQLite ACID + temp-then-rename for every JSON artifact'},
 ];
-let h='<p style="color:#607080;margin-bottom:12px">11 inviolable principles from <a href="https://github.com/CiscoDevNet/foundry-security-spec/blob/main/constitution.md" target="_blank" style="color:#00b4d8">CiscoDevNet/foundry-security-spec</a> mapped to AetherClaude rings and files. Strong&times;5, Partial&times;4, N/A&times;2 (domain mismatch).</p>';
+let h='<p style="color:#607080;margin-bottom:12px">11 inviolable principles from <a href="https://github.com/CiscoDevNet/foundry-security-spec/blob/main/constitution.md" target="_blank" style="color:#00b4d8">CiscoDevNet/foundry-security-spec</a> mapped to AetherClaude rings and files. Strong&times;7, Partial&times;2, N/A&times;2 (domain mismatch).</p>';
 for(const p of principles){
 const cls=p.s==='STRONG'?'SAFE':(p.s==='MEDIUM'||p.s==='PARTIAL')?'MEDIUM':'SAFE';
 const chipColor=p.s==='STRONG'?'#80ffaa':(p.s==='PARTIAL'||p.s==='MEDIUM')?'#ffaa00':'#607080';
