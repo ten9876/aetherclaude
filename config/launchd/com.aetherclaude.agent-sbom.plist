@@ -3,16 +3,12 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.aetherclaude.cpp-aibom</string>
+    <string>com.aetherclaude.agent-sbom</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/Shared/aetherclaude/bin/cpp-aibom</string>
-        <string>scan</string>
-        <string>/Users/aetherclaude/workspace/AetherSDR</string>
+        <string>/Users/Shared/aetherclaude/bin/agent-sbom</string>
         <string>-o</string>
-        <string>/Users/aetherclaude/logs/aibom-latest.json</string>
-        <string>--also-cyclonedx</string>
-        <string>/Users/aetherclaude/logs/sbom.cdx.json</string>
+        <string>/Users/aetherclaude/logs/agent-sbom.cdx.json</string>
         <string>--verbose</string>
     </array>
     <key>UserName</key>
@@ -24,11 +20,11 @@
         <key>Hour</key>
         <integer>3</integer>
         <key>Minute</key>
-        <integer>15</integer>
+        <integer>30</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>/Users/aetherclaude/logs/cpp-aibom-stdout.log</string>
+    <string>/Users/aetherclaude/logs/agent-sbom-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/aetherclaude/logs/cpp-aibom-stderr.log</string>
+    <string>/Users/aetherclaude/logs/agent-sbom-stderr.log</string>
 </dict>
 </plist>

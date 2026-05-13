@@ -713,6 +713,15 @@ def cmd_scan(args: argparse.Namespace) -> int:
     else:
         sys.stdout.write(rendered + "\n")
 
+    # Optional side-output in CycloneDX format — saves a second full scan
+    # when both formats are needed (e.g. dashboard-shape JSON for the modal
+    # AND a CycloneDX file for /sbom.json download).
+    if args.also_cyclonedx and fmt != "cyclonedx":
+        cdx = emit_cyclonedx(target, detected)
+        _atomic_write(Path(args.also_cyclonedx), json.dumps(cdx, indent=2))
+        if args.verbose:
+            sys.stderr.write(f"cpp-aibom: also wrote CycloneDX -> {args.also_cyclonedx}\n")
+
     # Exit code: non-zero if there are HIGH/CRITICAL vulns and --fail-on-vuln is set
     if args.fail_on_vuln:
         sev_set = {s.upper() for s in args.fail_on_vuln.split(",")}
@@ -740,6 +749,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--config", help="Override .aibom.json path.")
     sp.add_argument("--no-osv", action="store_true", help="Skip OSV.dev CVE lookups (fast path).")
     sp.add_argument("--fail-on-vuln", help="Exit non-zero if any matching severity found (e.g. HIGH,CRITICAL).")
+    sp.add_argument("--also-cyclonedx", metavar="PATH",
+                    help="Additionally write a CycloneDX 1.6 ML-BOM side-output to PATH. "
+                         "Useful for one-pass dual-format runs (e.g. dashboard JSON + downloadable SBOM).")
     sp.add_argument("-v", "--verbose", action="store_true")
 
     dp = sub.add_parser("diff", help="Compare two aibom-json snapshots.")

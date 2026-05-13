@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""agent-sbom — CycloneDX 1.6 SBOM for the AetherClaude agent infrastructure.
+
+Catalogs the Mac Mini's agent stack across the 7 defense layers visible
+on the dashboard. Run via launchd daily; output is served from the
+dashboard's /agent-sbom.json endpoint.
+
+LAYERS (mapped onto the 9-ring defense model):
+    1-network          pf anchor + cloudflared tunnel
+    2-proxy            tinyproxy + allowlist
+    3-process-audit    eslogger (macOS eBPF-equivalent)
+    4-sandbox          launchd services (com.aetherclaude.*)
+    5-llm              Claude Code CLI + Anthropic OAuth
+    6-ai-defense       DefenseClaw gateway, mcp-scanner, skill-scanner,
+                       cisco-aibom, cpp-aibom (project), agent-sbom (this)
+    7-orchestration    run-agent.sh + helper scripts in bin/
+
+Output schema: CycloneDX 1.6 (https://cyclonedx.org/specification/overview/).
+Properties carry the layer + role for each component so the dashboard can
+group them. purl is set where a recognizable package URL is available
+(brew formulae, GitHub repos for Cisco AI Defense scanners).
+
+USAGE
+    agent-sbom [-o PATH] [--verbose]
+
+    Default output: /Users/aetherclaude/logs/agent-sbom.cdx.json
+
+DESIGN NOTES
+    Stdlib only (matches the cpp-aibom design). No pip deps. The collectors
+    each return a list of dicts; any subprocess that errors out is logged
+    and the component is omitted — partial SBOM > exception.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import json
+import os
+import plistlib
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import uuid
+from pathlib import Path
+from typing import Any
+
+VERSION = "1.0.0"
+
+DEFAULT_OUT = Path("/Users/aetherclaude/logs/agent-sbom.cdx.json")
+LAUNCH_DAEMONS_DIR = Path("/Library/LaunchDaemons")
+AETHERCLAUDE_BIN = Path("/Users/Shared/aetherclaude/bin")
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+def _run(cmd: list[str], timeout: int = 10) -> str:
+    """Run a command, return stdout trimmed. Returns '' on any failure."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        return (r.stdout or "").strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return ""
+
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^a-z0-9-]+", "-", s.lower()).strip("-") or "x"
+
+
+def _ref(name: str) -> str:
+    return f"urn:component:agent-sbom:{_slug(name)}"
+
+
+def _iso_now() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _props(*kvs: tuple[str, str]) -> list[dict[str, str]]:
+    return [{"name": k, "value": str(v)} for k, v in kvs if v not in (None, "")]
+
+
+# ── Layer 1: network egress ────────────────────────────────────────────────────
+def collect_network() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+
+    # cloudflared (brew formula)
+    cf_ver = _run(["/opt/homebrew/bin/cloudflared", "--version"])
+    cf_short = cf_ver.split(" version ")[-1].split()[0] if cf_ver else ""
+    out.append({
+        "bom-ref": _ref("cloudflared"),
+        "type": "application",
+        "name": "cloudflared",
+        "version": cf_short or "unknown",
+        "description": "Cloudflare tunnel daemon — exposes dashboard.aethersdr.com / tui.aethersdr.com / ssh.aethersdr.com",
+        "purl": "pkg:brew/cloudflared" + (f"@{cf_short}" if cf_short else ""),
+        "properties": _props(
+            ("layer", "1-network"),
+            ("role", "tunnel-egress"),
+            ("managed-by", "launchd:com.aetherclaude.cloudflared"),
+        ),
+    })
+
+    # pf firewall anchor (configuration component, not a binary)
+    pf_anchor = Path("/etc/pf.anchors/com.aetherclaude")
+    pf_lines = 0
+    if pf_anchor.exists():
+        try:
+            pf_lines = sum(1 for _ in pf_anchor.read_text().splitlines() if _.strip() and not _.startswith("#"))
+        except OSError:
+            pass
+    out.append({
+        "bom-ref": _ref("pf-anchor"),
+        "type": "data",
+        "name": "pf anchor (com.aetherclaude)",
+        "version": f"{pf_lines}-rules" if pf_lines else "unknown",
+        "description": "macOS packet filter anchor — UID-965 egress allowlist (GitHub, Anthropic, OSV.dev, etc.)",
+        "properties": _props(
+            ("layer", "1-network"),
+            ("role", "firewall"),
+            ("file", str(pf_anchor)),
+        ),
+    })
+    return out
+
+
+# ── Layer 2: HTTP proxy ────────────────────────────────────────────────────────
+def collect_proxy() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    tp_ver = _run(["/opt/homebrew/bin/tinyproxy", "-v"])
+    tp_short = ""
+    m = re.search(r"tinyproxy\s+([0-9.]+)", tp_ver)
+    if m:
+        tp_short = m.group(1)
+    out.append({
+        "bom-ref": _ref("tinyproxy"),
+        "type": "application",
+        "name": "tinyproxy",
+        "version": tp_short or "unknown",
+        "description": "HTTP CONNECT proxy with domain allowlist (FilterDefaultDeny). Timeout=1800s for long Anthropic SSE.",
+        "purl": "pkg:brew/tinyproxy" + (f"@{tp_short}" if tp_short else ""),
+        "properties": _props(
+            ("layer", "2-proxy"),
+            ("role", "domain-filter"),
+            ("managed-by", "launchd:com.aetherclaude.tinyproxy"),
+        ),
+    })
+
+    # The allowlist file is a data component
+    allowlist = Path("/opt/homebrew/etc/tinyproxy/allowlist")
+    n_domains = 0
+    if allowlist.exists():
+        try:
+            n_domains = sum(1 for _ in allowlist.read_text().splitlines()
+                            if _.strip() and not _.startswith("#"))
+        except OSError:
+            pass
+    out.append({
+        "bom-ref": _ref("tinyproxy-allowlist"),
+        "type": "data",
+        "name": "tinyproxy allowlist",
+        "version": f"{n_domains}-domains" if n_domains else "unknown",
+        "description": "Domain regex allowlist — Anthropic, GitHub, PyPI, VirusTotal endpoints.",
+        "properties": _props(
+            ("layer", "2-proxy"),
+            ("role", "domain-list"),
+            ("file", str(allowlist)),
+        ),
+    })
+    return out
+
+
+# ── Layer 3: process audit ─────────────────────────────────────────────────────
+def collect_process_audit() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    # macOS eslogger ships with the OS; capture sw_vers to record the OS version
+    sw_ver = _run(["/usr/bin/sw_vers", "-productVersion"])
+    out.append({
+        "bom-ref": _ref("eslogger"),
+        "type": "application",
+        "name": "eslogger",
+        "version": f"macOS-{sw_ver}" if sw_ver else "macOS-system",
+        "description": "macOS Endpoint Security event logger — process exec/fork/exit audit for UID 965 (Tetragon equivalent).",
+        "properties": _props(
+            ("layer", "3-process-audit"),
+            ("role", "ebpf-equivalent"),
+            ("managed-by", "launchd:com.aetherclaude.eslogger"),
+        ),
+    })
+    return out
+
+
+# ── Layer 4: launchd-managed sandboxed services ────────────────────────────────
+def collect_launchd_services() -> list[dict[str, Any]]:
+    """Each com.aetherclaude.* plist is a sandboxed service component."""
+    out: list[dict[str, Any]] = []
+    if not LAUNCH_DAEMONS_DIR.exists():
+        return out
+    for plist_path in sorted(LAUNCH_DAEMONS_DIR.glob("com.aetherclaude.*.plist")):
+        try:
+            with plist_path.open("rb") as f:
+                data = plistlib.load(f)
+        except (plistlib.InvalidFileException, OSError):
+            continue
+        label = data.get("Label", plist_path.stem)
+        user = data.get("UserName", "")
+        prog = data.get("ProgramArguments", [])
+        prog_str = " ".join(prog[:2]) if prog else ""  # binary + first arg, no payload
+        keep_alive = bool(data.get("KeepAlive", False))
+        run_at_load = bool(data.get("RunAtLoad", False))
+        has_calendar = bool(data.get("StartCalendarInterval"))
+        kind = ("daemon" if keep_alive
+                else "timer" if has_calendar
+                else "one-shot")
+        out.append({
+            "bom-ref": _ref(f"launchd-{label}"),
+            "type": "application",
+            "name": label,
+            "version": kind,
+            "description": f"launchd-managed {kind}: {prog_str[:80]}",
+            "properties": _props(
+                ("layer", "4-sandbox"),
+                ("role", "launchd-managed"),
+                ("user", user),
+                ("kind", kind),
+                ("run-at-load", str(run_at_load).lower()),
+                ("keep-alive", str(keep_alive).lower()),
+                ("file", str(plist_path)),
+            ),
+        })
+    return out
+
+
+# ── Layer 5: LLM / Claude Code ─────────────────────────────────────────────────
+def collect_llm() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    claude_ver = _run(["/opt/homebrew/bin/claude", "--version"])
+    claude_short = ""
+    m = re.search(r"([0-9]+\.[0-9]+\.[0-9]+)", claude_ver)
+    if m:
+        claude_short = m.group(1)
+    out.append({
+        "bom-ref": _ref("claude-code"),
+        "type": "application",
+        "name": "claude-code",
+        "version": claude_short or "unknown",
+        "description": "Anthropic Claude Code CLI — the agent's reasoning engine, sandboxed per run.",
+        "purl": "pkg:npm/%40anthropic-ai/claude-code" + (f"@{claude_short}" if claude_short else ""),
+        "properties": _props(
+            ("layer", "5-llm"),
+            ("role", "agent-runtime"),
+            ("provider", "Anthropic"),
+        ),
+    })
+
+    # Anthropic OAuth — record presence + scopes (no token value)
+    creds = Path("/Users/aetherclaude/.claude/.credentials.json")
+    scopes = ""
+    if creds.exists():
+        try:
+            with creds.open() as f:
+                cd = json.load(f)
+            scopes = " ".join(cd.get("claudeAiOauth", {}).get("scopes", []) or [])
+        except (OSError, json.JSONDecodeError):
+            pass
+    out.append({
+        "bom-ref": _ref("anthropic-oauth"),
+        "type": "data",
+        "name": "anthropic-oauth-token",
+        "version": "scoped" if scopes else "unconfigured",
+        "description": "Anthropic OAuth credential (scopes shown; value never serialized).",
+        "properties": _props(
+            ("layer", "5-llm"),
+            ("role", "credential"),
+            ("scopes", scopes),
+        ),
+    })
+    return out
+
+
+# ── Layer 6: Cisco AI Defense scanners ─────────────────────────────────────────
+def collect_ai_defense() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+
+    # DefenseClaw gateway — primary AI Defense binary on the Mini
+    dc_path = "/Users/aetherclaude/.local/bin/defenseclaw-gateway"
+    dc_ver = _run([dc_path, "--version"])
+    dc_short = ""
+    m = re.search(r"version\s+([0-9.]+)", dc_ver)
+    if m:
+        dc_short = m.group(1)
+    out.append({
+        "bom-ref": _ref("defenseclaw-gateway"),
+        "type": "application",
+        "name": "defenseclaw-gateway",
+        "version": dc_short or "unknown",
+        "description": "Cisco AI Defense gateway — CodeGuard static analysis, OPA/Rego policy engine, audit DB.",
+        "purl": "pkg:github/cisco-ai-defense/defenseclaw" + (f"@{dc_short}" if dc_short else ""),
+        "properties": _props(
+            ("layer", "6-ai-defense"),
+            ("role", "scanner-and-gateway"),
+            ("upstream", "https://github.com/cisco-ai-defense/defenseclaw"),
+        ),
+    })
+
+    # Cisco's cisco-aibom (installed via uv tool install but not invoked by us)
+    if Path("/usr/local/bin/cisco-aibom").exists():
+        ca_ver = _run(["/usr/local/bin/cisco-aibom", "--version"]) or "installed"
+        out.append({
+            "bom-ref": _ref("cisco-aibom"),
+            "type": "application",
+            "name": "cisco-aibom",
+            "version": ca_ver.split()[-1] if ca_ver else "unknown",
+            "description": "Cisco AI Bill of Materials (upstream) — Python/JS/Go AIBOM. Not invoked for AetherSDR (C++ only); kept installed for reference.",
+            "purl": "pkg:pypi/cisco-aibom",
+            "properties": _props(
+                ("layer", "6-ai-defense"),
+                ("role", "scanner"),
+                ("upstream", "https://github.com/cisco-ai-defense/aibom"),
+                ("status", "installed-not-invoked"),
+            ),
+        })
+
+    # cpp-aibom — our custom scanner (the one we built today)
+    cpp_aibom = AETHERCLAUDE_BIN / "cpp-aibom"
+    cpp_ver = _run([str(cpp_aibom), "--version"]) if cpp_aibom.exists() else ""
+    cpp_short = cpp_ver.split()[-1] if cpp_ver else ""
+    out.append({
+        "bom-ref": _ref("cpp-aibom"),
+        "type": "application",
+        "name": "cpp-aibom",
+        "version": cpp_short or "unknown",
+        "description": "Custom C++ AIBOM scanner with OSV.dev CVE lookups. Generates aibom-latest.json + sbom.cdx.json.",
+        "properties": _props(
+            ("layer", "6-ai-defense"),
+            ("role", "scanner"),
+            ("target", "AetherSDR Qt6 codebase"),
+            ("managed-by", "launchd:com.aetherclaude.cpp-aibom"),
+        ),
+    })
+
+    # agent-sbom (this very tool — self-referential, useful for verification)
+    out.append({
+        "bom-ref": _ref("agent-sbom"),
+        "type": "application",
+        "name": "agent-sbom",
+        "version": VERSION,
+        "description": "AetherClaude agent infrastructure SBOM generator (this tool). Produces agent-sbom.cdx.json.",
+        "properties": _props(
+            ("layer", "6-ai-defense"),
+            ("role", "sbom-generator"),
+            ("managed-by", "launchd:com.aetherclaude.agent-sbom"),
+        ),
+    })
+
+    return out
+
+
+# ── Layer 7: orchestration scripts ─────────────────────────────────────────────
+def collect_orchestration() -> list[dict[str, Any]]:
+    """Inventory the AetherClaude helper scripts that drive each run."""
+    out: list[dict[str, Any]] = []
+    if not AETHERCLAUDE_BIN.exists():
+        return out
+    # Skip per-tool-already-listed-in-other-layers files
+    skip = {"cpp-aibom", "agent-sbom"}
+    descriptions = {
+        "run-agent.sh": "Orchestrator — webhook-driven state machine per issue",
+        "validate-diff.sh": "Validation gate — paths, credentials, CodeGuard, AIBOM",
+        "commit-signed.js": "GraphQL createCommitOnBranch — produces GitHub-key-signed commits",
+        "create-pr.js": "GraphQL enablePullRequestAutoMerge — auto-squash on green CI",
+        "github-mcp-server.js": "MCP server — sole GitHub API surface for Claude",
+        "github-app-token.sh": "JWT minter — App-installation token for orchestrator",
+        "gh-request.py": "Generic GitHub HTTPS-via-tinyproxy helper",
+        "git-credential-app-token.py": "Git credential helper backed by App token",
+        "refresh-claude-token.sh": "Anthropic OAuth refresh helper",
+        "tetragon-dashboard.py": "Dashboard — single-file stdlib HTTP server + UI",
+        "eslogger-bridge.py": "Bridges eslogger telemetry into events.db",
+        "skill-scanner-with-packs.sh": "Skill Scanner wrapper",
+        "skills-to-prompts-json.py": "Skill -> prompt converter for dashboard preview",
+        "batch-triage.sh": "Periodic stale-issue triage",
+        "scan-prompts-pd.py": "Prompt-defense scanner",
+        "scan-security.sh": "Repo security scan",
+        "run-stale-triage.sh": "Stale-issue runner (separate from main agent)",
+        "run-release-notes.sh": "Release notes generator",
+        "run-defenseclaw-gateway.sh": "DefenseClaw gateway launcher",
+        "run-defenseclaw-rotate.sh": "DC token rotation",
+        "run-vt-scan.sh": "VirusTotal scan",
+        "migrate-state-to-db.py": "One-shot state migration (kept for archaeology)",
+    }
+    for f in sorted(AETHERCLAUDE_BIN.iterdir()):
+        if not f.is_file() or f.name in skip or f.name.startswith("."):
+            continue
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        # Use mtime as version proxy (we sign-commit, so this is roughly per-deploy)
+        mtime_iso = _dt.datetime.fromtimestamp(st.st_mtime, _dt.timezone.utc).strftime("%Y-%m-%d")
+        out.append({
+            "bom-ref": _ref(f"script-{f.name}"),
+            "type": "application",
+            "name": f.name,
+            "version": mtime_iso,
+            "description": descriptions.get(f.name, "AetherClaude helper script"),
+            "properties": _props(
+                ("layer", "7-orchestration"),
+                ("role", "helper-script"),
+                ("size-bytes", str(st.st_size)),
+            ),
+        })
+    return out
+
+
+# ── Assemble CycloneDX 1.6 BOM ─────────────────────────────────────────────────
+def build_bom() -> dict[str, Any]:
+    components: list[dict[str, Any]] = []
+    components.extend(collect_network())
+    components.extend(collect_proxy())
+    components.extend(collect_process_audit())
+    components.extend(collect_launchd_services())
+    components.extend(collect_llm())
+    components.extend(collect_ai_defense())
+    components.extend(collect_orchestration())
+
+    host = socket.gethostname()
+    target_ref = "urn:component:agent-sbom:root"
+    return {
+        "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "serialNumber": f"urn:uuid:{uuid.uuid4()}",
+        "version": 1,
+        "metadata": {
+            "timestamp": _iso_now(),
+            "tools": {
+                "components": [{
+                    "type": "application",
+                    "name": "agent-sbom",
+                    "version": VERSION,
+                }],
+            },
+            "component": {
+                "bom-ref": target_ref,
+                "type": "application",
+                "name": "AetherClaude agent infrastructure",
+                "description": f"Defense-in-depth agent stack on {host}",
+                "properties": _props(
+                    ("host", host),
+                    ("layers", "7"),
+                    ("component-count", str(len(components))),
+                ),
+            },
+        },
+        "components": components,
+    }
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+def main() -> int:
+    p = argparse.ArgumentParser(prog="agent-sbom",
+                                description="CycloneDX 1.6 SBOM for the AetherClaude agent infrastructure.")
+    p.add_argument("-o", "--output", default=str(DEFAULT_OUT),
+                   help=f"Output path (default: {DEFAULT_OUT}). Use '-' for stdout.")
+    p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--version", action="version", version=f"agent-sbom {VERSION}")
+    args = p.parse_args()
+
+    bom = build_bom()
+    rendered = json.dumps(bom, indent=2)
+    if args.output == "-":
+        sys.stdout.write(rendered + "\n")
+    else:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out_path.with_suffix(out_path.suffix + ".tmp")
+        tmp.write_text(rendered)
+        tmp.replace(out_path)
+        if args.verbose:
+            sys.stderr.write(f"agent-sbom: {len(bom['components'])} components -> {out_path}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
