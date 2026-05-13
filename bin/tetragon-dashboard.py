@@ -2124,7 +2124,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 .rings{display:grid;grid-template-columns:repeat(9,1fr);gap:8px;padding:12px 24px}
 .ring{background:#101028;border:1px solid #203040;border-radius:8px;padding:10px;text-align:center;position:relative}
 .ring .num{font-size:10px;color:#404060;position:absolute;top:4px;left:8px}
-.ring .name{font-size:10px;color:#8090a0;margin-bottom:4px}
+.ring .name{font-family:'CiscoSans',inherit;font-size:10px;font-weight:500;color:#8090a0;margin-bottom:4px}
 .ring .value{font-size:22px;font-weight:bold;color:#00b4d8}
 .ring .detail{font-size:10px;color:#8898a8;margin-top:2px}
 .ring.ok{border-color:#00ff8844}
@@ -2145,7 +2145,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 
 .main{display:grid;grid-template-columns:2fr 1fr;gap:10px;padding:0 24px 12px;height:calc(100vh - 310px)}
 .panel{background:#101028;border:1px solid #203040;border-radius:8px;overflow:hidden;display:flex;flex-direction:column}
-.phdr{padding:6px 10px;background:#181830;border-bottom:1px solid #203040;font-size:11px;color:#00b4d8;font-weight:bold;display:flex;justify-content:space-between}
+.phdr{font-family:'CiscoSans',inherit;padding:6px 10px;background:#181830;border-bottom:1px solid #203040;font-size:11px;color:#00b4d8;font-weight:600;letter-spacing:0.3px;display:flex;justify-content:space-between}
 .pbody{overflow-y:auto;flex:1;padding:2px}
 
 .ev{padding:2px 8px;border-bottom:1px solid #0f0f20;display:flex;gap:6px;font-size:11px}
@@ -2196,7 +2196,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 .modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:1000;justify-content:center;align-items:center}
 .modal-overlay.show{display:flex}
 .modal{background:#101028;border:1px solid #304050;border-radius:12px;padding:20px;max-width:700px;width:90%;max-height:80vh;overflow-y:auto;color:#c8d8e8}
-.modal h2{color:#00b4d8;margin-bottom:12px;font-size:16px;text-transform:uppercase;letter-spacing:2px}
+.modal h2{font-family:'CiscoSans',inherit;color:#00b4d8;margin-bottom:12px;font-size:17px;letter-spacing:0.5px;font-weight:500}
 .modal-close{float:right;cursor:pointer;color:#607080;font-size:20px;border:none;background:none}
 .modal-close:hover{color:#ff4444}
 .modal-finding{padding:8px 12px;margin:6px 0;border-radius:6px;font-size:12px}
@@ -2211,7 +2211,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 .modal-overlay.wp .modal{max-width:900px;max-height:90vh}
 .wp-content{line-height:1.7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;color:#c8d8e8}
 .wp-content h1{color:#00b4d8;font-size:22px;margin:24px 0 8px;letter-spacing:1px;text-align:center}
-.wp-content h2{color:#00b4d8;font-size:17px;margin:20px 0 8px;border-bottom:1px solid #203040;padding-bottom:4px}
+.wp-content h2{font-family:'CiscoSans',inherit;color:#00b4d8;font-size:17px;font-weight:600;margin:20px 0 8px;border-bottom:1px solid #203040;padding-bottom:4px}
 .wp-content h3{color:#4090d0;font-size:14px;margin:16px 0 6px}
 .wp-content p{margin:8px 0}
 .wp-content ul,ol{margin:8px 0 8px 20px}
@@ -3135,7 +3135,7 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
  * space so the swimlane (A) above keeps its natural height. */
 #bottom-pane{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#20304a;border-top:1px solid #20304a;min-height:340px;height:42vh}
 #log-stream,#detail{padding:12px 20px;background:#0e0e22;font-size:11px;line-height:1.5;overflow-y:auto}
-#log-stream h3,#detail h3{margin:0 0 8px 0;font-size:12px;color:#00bceb;font-weight:normal;letter-spacing:1px;position:sticky;top:0;background:#0e0e22;padding-bottom:6px;border-bottom:1px solid #20304a;z-index:1}
+#log-stream h3,#detail h3{font-family:'CiscoSans',inherit;margin:0 0 8px 0;font-size:13px;color:#00bceb;font-weight:500;letter-spacing:0.3px;position:sticky;top:0;background:#0e0e22;padding-bottom:6px;border-bottom:1px solid #20304a;z-index:1}
 #detail .row{display:flex;margin-bottom:4px}
 #detail .k{color:#607080;width:120px;flex-shrink:0}
 #detail .v{color:#c8d8e8;font-family:'SF Mono',monospace;word-break:break-all}
