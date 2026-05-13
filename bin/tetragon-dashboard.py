@@ -2258,7 +2258,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 <div class="name">OS Isolation</div><div class="value" id="r3v">0</div><div class="detail" id="r3d">agent cmds · rbash</div></div>
 
 <div class="ring ok clickable" id="ring4" onclick="showRing4()"><span class="num">4 &gt;</span><span class="status green"></span>
-<div class="name">systemd Sandbox</div><div class="value" id="r4v">0</div><div class="detail" id="r4d">sandboxed runs</div></div>
+<div class="name">Agent Sandbox</div><div class="value" id="r4v">0</div><div class="detail" id="r4d">sandboxed runs</div></div>
 
 <div class="ring ok clickable" id="ring5" onclick="showRingEvents('claude-code','Ring 5: Claude Code Permissions','Tool calls tracked — per-tool type breakdown')"><span class="num">5 &gt;</span><span class="status green"></span>
 <div class="name">Claude Code</div><div class="value" id="r5v">0</div><div class="detail" id="r5d">tool calls</div></div>
@@ -2722,7 +2722,7 @@ const r=lastData.rings||{};
 let h='<p style="color:#607080;margin-bottom:12px">Each agent run executes inside a UID-965 process tree managed by launchd. NoNewPrivileges, sandboxed PATH, restricted file access.</p>';
 h+=`<div class="modal-finding SAFE"><span class="sev SAFE">RUNS</span> ${r.r4_sandboxed_runs||0} sandboxed agent runs completed</div>`;
 h+=`<div id="ring4-traces" style="margin-top:12px"><p style="color:#607080">Loading recent runs...</p></div>`;
-document.getElementById('modal-title').textContent='Ring 4: systemd Sandbox';
+document.getElementById('modal-title').textContent='Ring 4: Agent Sandbox';
 document.getElementById('modal-body').innerHTML=h;
 document.getElementById('modal').classList.add('show');
 // Each /api/agent-walk-traces row is one webhook-triggered sandboxed
