@@ -270,53 +270,98 @@ run_claude() {
     # full code-writing surface for backward compat with all existing
     # callers; the @Mention path passes CLAUDE_ALLOWED_TOOLS_MENTION.
     local allowed_tools="${3:-$CLAUDE_ALLOWED_TOOLS_DEFAULT}"
-    local claude_pid
+    local claude_pid watchdog_pid
+    local exit_code=0
+    # Up to 3 attempts (1 initial + 2 retries) on transient Anthropic API
+    # socket drops. Trace 42301770 (#2624) hit this: Claude was 7 min
+    # into legitimate implement work when the API socket closed mid-
+    # stream, leaving a 135-byte log with just
+    # "API Error: The socket connection was closed unexpectedly".
+    # Not a code/config issue, not a firewall block — just transient
+    # network flakiness. Auto-retry instead of marking the issue
+    # 'failed' on the first hiccup. Other errors (auth, validation,
+    # timeout) still fail immediately on the first attempt.
+    local max_attempts=3
+    local attempt=1
 
-    # Run claude in the caller's cwd. The orch chooses the right working
-    # directory per case: $WORKSPACE for triage/welcome (read-only paths),
-    # /tmp/aetherclaude/issue-N for IMPLEMENT (the orch's per-issue git
-    # worktree). Forcing cd into a separate worktree here would override
-    # the implement case's worktree choice and Claude's commits would land
-    # in the wrong tree.
-    env \
-        -u GH_TOKEN -u GITHUB_TOKEN -u GH_APP_TOKEN -u GITHUB_APP_ID \
-        HOME="$HOME" PATH="$PATH" \
-        HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" NO_PROXY="$NO_PROXY" \
-        claude -p "$prompt" \
-            --model opus \
-            --setting-sources user \
-            --strict-mcp-config \
-            --permission-mode bypassPermissions \
-            --allowedTools "$allowed_tools" \
-            --disallowedTools "Bash(sudo *),Bash(curl *),Bash(wget *),Bash(rm -rf *),Bash(ssh *),Bash(scp *),Bash(nc *),Bash(ncat *),Bash(dd *),Bash(mount *),Bash(chmod *),Bash(chown *),Bash(chsh *),Bash(passwd *),Bash(brew *),Bash(npm *),Bash(pip *),Bash(nft *),Bash(systemctl *),Bash(cat /Users/aetherclaude/.env),Bash(cat /Users/aetherclaude/.git-credentials),Bash(cat /Users/aetherclaude/.github-app-key.pem),Bash(echo \$*),Bash(env),Bash(printenv),Bash(set),WebFetch,WebSearch,Agent" \
-            --mcp-config /Users/aetherclaude/.claude/mcp-servers.json \
-        > "$logfile" 2>&1 &
-    claude_pid=$!
-
-    # Watchdog: kill Claude if it exceeds timeout
-    (
-        sleep "$CLAUDE_TIMEOUT"
-        if kill -0 "$claude_pid" 2>/dev/null; then
-            log "TIMEOUT: Claude Code stuck for ${CLAUDE_TIMEOUT}s (PID $claude_pid), killing"
-            kill -TERM "$claude_pid" 2>/dev/null
-            sleep 5
-            kill -9 "$claude_pid" 2>/dev/null
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if [ "$attempt" -gt 1 ]; then
+            local backoff=$((attempt * 5))
+            log "Retrying Claude (attempt $attempt/$max_attempts) after ${backoff}s — previous attempt hit a socket-close error"
+            sleep "$backoff"
         fi
-    ) &
-    local watchdog_pid=$!
+        # Marker delimits per-attempt log content for the retry-trigger
+        # grep below; without it, finding "socket connection was closed"
+        # in attempt 2's log could be a stale match from attempt 1.
+        echo "--- ATTEMPT $attempt of $max_attempts at $(date "+%Y-%m-%dT%H:%M:%S") ---" >> "$logfile"
 
-    wait "$claude_pid"
-    local exit_code=$?
+        # Run claude in the caller's cwd. The orch chooses the right
+        # working directory per case: $WORKSPACE for triage/welcome,
+        # /tmp/aetherclaude/issue-N for IMPLEMENT. We do not force a cd.
+        env \
+            -u GH_TOKEN -u GITHUB_TOKEN -u GH_APP_TOKEN -u GITHUB_APP_ID \
+            HOME="$HOME" PATH="$PATH" \
+            HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" NO_PROXY="$NO_PROXY" \
+            claude -p "$prompt" \
+                --model opus \
+                --setting-sources user \
+                --strict-mcp-config \
+                --permission-mode bypassPermissions \
+                --allowedTools "$allowed_tools" \
+                --disallowedTools "Bash(sudo *),Bash(curl *),Bash(wget *),Bash(rm -rf *),Bash(ssh *),Bash(scp *),Bash(nc *),Bash(ncat *),Bash(dd *),Bash(mount *),Bash(chmod *),Bash(chown *),Bash(chsh *),Bash(passwd *),Bash(brew *),Bash(npm *),Bash(pip *),Bash(nft *),Bash(systemctl *),Bash(cat /Users/aetherclaude/.env),Bash(cat /Users/aetherclaude/.git-credentials),Bash(cat /Users/aetherclaude/.github-app-key.pem),Bash(echo \$*),Bash(env),Bash(printenv),Bash(set),WebFetch,WebSearch,Agent" \
+                --mcp-config /Users/aetherclaude/.claude/mcp-servers.json \
+            >> "$logfile" 2>&1 &
+        claude_pid=$!
 
-    # Clean up watchdog
-    kill "$watchdog_pid" 2>/dev/null
-    wait "$watchdog_pid" 2>/dev/null
+        # Watchdog: kill Claude if it exceeds timeout
+        (
+            sleep "$CLAUDE_TIMEOUT"
+            if kill -0 "$claude_pid" 2>/dev/null; then
+                log "TIMEOUT: Claude Code stuck for ${CLAUDE_TIMEOUT}s (PID $claude_pid), killing"
+                kill -TERM "$claude_pid" 2>/dev/null
+                sleep 5
+                kill -9 "$claude_pid" 2>/dev/null
+            fi
+        ) &
+        watchdog_pid=$!
 
-    if [ $exit_code -eq 143 ] || [ $exit_code -eq 137 ]; then
-        log "ERROR: Claude Code was killed by stuck timer (exit $exit_code)"
-        return 1
-    fi
-    return $exit_code
+        wait "$claude_pid"
+        exit_code=$?
+
+        # Clean up watchdog
+        kill "$watchdog_pid" 2>/dev/null
+        wait "$watchdog_pid" 2>/dev/null
+
+        # Success → done.
+        if [ "$exit_code" -eq 0 ]; then
+            return 0
+        fi
+
+        # Timeout (SIGTERM / SIGKILL from watchdog) → don't retry. The
+        # process was almost certainly making genuinely slow progress;
+        # retrying would just burn another 600s.
+        if [ "$exit_code" -eq 143 ] || [ "$exit_code" -eq 137 ]; then
+            log "ERROR: Claude Code was killed by stuck timer (exit $exit_code)"
+            return 1
+        fi
+
+        # Retryable? Check only the log content from THIS attempt — awk
+        # splits on the ATTEMPT marker, prints the last record. Patterns
+        # cover Node's fetch errors plus Anthropic SDK's own wording.
+        local last_attempt_log
+        last_attempt_log=$(awk 'BEGIN{RS=""} /--- ATTEMPT [0-9]+ /{out=$0} END{print out}' "$logfile" 2>/dev/null)
+        if echo "$last_attempt_log" | grep -qE "socket connection was closed|ECONNRESET|fetch failed|terminated.*ENOTFOUND|stream.*aborted"; then
+            log "Claude Code attempt $attempt/$max_attempts failed with transient network error (exit $exit_code) — will retry"
+            attempt=$((attempt + 1))
+            continue
+        fi
+
+        # Non-retryable error (auth, MCP validation, real exception, etc.)
+        return "$exit_code"
+    done
+
+    log "ERROR: Claude Code failed after $max_attempts attempts (last exit: $exit_code, transient network errors throughout)"
+    return "$exit_code"
 }
 
 # --- Skill loader: reads prompt template from skills directory ---
