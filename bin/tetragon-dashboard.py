@@ -2201,6 +2201,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 <div style="flex:1"><h1>AetherClaude Defense-in-Depth Dashboard</h1>
 <div class="sub">Cisco Isovalent (Tetragon) &middot; Cisco DefenseClaw CodeGuard &middot; Cisco AI Defense &middot; MCP Token Isolation</div></div>
 <a href="#" onclick="showWhitepaper();return false" style="color:#607080;font-size:11px;text-decoration:none;margin-right:8px;border:1px solid #304050;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#00b4d8';this.style.borderColor='#00b4d8'" onmouseout="this.style.color='#607080';this.style.borderColor='#304050'">Agent Defense-in-Depth Whitepaper</a>
+<a href="#" onclick="showConstitution();return false" style="color:#bb88ff;font-size:11px;text-decoration:none;margin-right:8px;border:1px solid #443060;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#ccaaff';this.style.borderColor='#ccaaff'" onmouseout="this.style.color='#bb88ff';this.style.borderColor='#443060'">Constitution &harr; Rings</a>
 <a href="/agent-walk" target="_blank" style="color:#00ff88;font-size:11px;text-decoration:none;margin-right:8px;border:1px solid #205040;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#88ffaa';this.style.borderColor='#88ffaa'" onmouseout="this.style.color='#00ff88';this.style.borderColor='#205040'">Agent Walk &#x2197;</a>
 <a href="#" onclick="openOperatorTui();return false" style="color:#6688ff;font-size:11px;text-decoration:none;margin-right:16px;border:1px solid #303860;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#88aaff';this.style.borderColor='#88aaff'" onmouseout="this.style.color='#6688ff';this.style.borderColor='#303860'">Operator TUI &#x2197;</a>
 <div class="live" id="agent-status">&#9679; LIVE</div>
@@ -2784,6 +2785,35 @@ fh+=`</div>`}
 document.getElementById('val-list').innerHTML=fh;
 }).catch(()=>{document.getElementById('val-list').innerHTML='<p style="color:#604040">Failed to load validation data.</p>'})}
 function showWhitepaper(){document.getElementById('wp-modal').classList.add('show')}
+function showConstitution(){
+const principles=[
+{n:'I',t:'Evidence Over Assertion',s:'PARTIAL',a:'validate-diff.sh + CodeGuard gate; commits required before any verdict change'},
+{n:'II',t:'Surface Only What Survives',s:'MEDIUM',a:'zero-effort auto-close, 7-day stale-close, one-comment-per-triage'},
+{n:'III',t:'Liveness By Heartbeat, Never By Clock',s:'PARTIAL',a:'webhook-driven (spirit) but CLAUDE_TIMEOUT=1800s wall-clock kill'},
+{n:'IV',t:'Claims Are Atomic And Mortal',s:'STRONG',a:'per-issue lockfiles + issue-actions.db ledger with mortal run_id'},
+{n:'V',t:'The Provider Is The Rate Arbiter',s:'STRONG',a:'webhook-paced cadence + adaptive auto-retry on Anthropic backpressure'},
+{n:'VI',t:'Coverage Before Yield',s:'N/A',a:'event-driven; no termination decision to make'},
+{n:'VII',t:'Exploited Means Demonstrated',s:'MEDIUM',a:'validate-diff runs independently of Claude; human review on every merge'},
+{n:'VIII',t:'Fingerprints Are Stable Under Edit',s:'N/A',a:'no finding domain (GitHub issue # is the stable identifier)'},
+{n:'IX',t:'Sandbox By Infrastructure, Not By Prompt',s:'STRONG',a:'pf + tinyproxy + launchd UID-965 + Claude permission system'},
+{n:'X',t:'The Operator Outranks Every Agent',s:'STRONG',a:'aetherclaude-eligible label is maintainer-only; Override A/B/C gates'},
+{n:'XI',t:'Persist Atomically',s:'STRONG',a:'SQLite ACID + temp-then-rename for every JSON artifact'},
+];
+let h='<p style="color:#607080;margin-bottom:12px">11 inviolable principles from <a href="https://github.com/CiscoDevNet/foundry-security-spec/blob/main/constitution.md" target="_blank" style="color:#00b4d8">CiscoDevNet/foundry-security-spec</a> mapped to AetherClaude rings and files. Strong&times;5, Partial&times;4, N/A&times;2 (domain mismatch).</p>';
+for(const p of principles){
+const cls=p.s==='STRONG'?'SAFE':(p.s==='MEDIUM'||p.s==='PARTIAL')?'MEDIUM':'SAFE';
+const chipColor=p.s==='STRONG'?'#80ffaa':(p.s==='PARTIAL'||p.s==='MEDIUM')?'#ffaa00':'#607080';
+h+=`<div class="modal-finding ${cls}" style="margin-bottom:4px">`;
+h+=`<span style="display:inline-block;min-width:54px;font-size:9px;padding:1px 5px;background:#1a2030;color:${chipColor};border:1px solid ${chipColor}40;border-radius:3px;text-align:center;margin-right:6px">${p.s}</span>`;
+h+=`<span style="color:#a0a8b0;margin-right:6px;font-weight:bold">${p.n}.</span>`;
+h+=`<strong>${p.t}</strong>`;
+h+=`<div class="detail" style="margin-top:2px;color:#90a0b8;font-size:11px;margin-left:60px">${p.a}</div>`;
+h+=`</div>`;}
+h+='<div class="detail" style="margin-top:12px;color:#607080;font-size:10px">Full mapping with source-file links: <a href="https://github.com/ten9876/aetherclaude/blob/main/docs/constitution-mapping.md" target="_blank" style="color:#00b4d8">docs/constitution-mapping.md</a>. Pinned at foundry-security-spec @ <code>c770bf77</code>.</div>';
+document.getElementById('modal-title').textContent='Foundry Constitution ↔ AetherClaude Mapping';
+document.getElementById('modal-body').innerHTML=h;
+document.getElementById('modal').classList.add('show');
+}
 function closeWp(){document.getElementById('wp-modal').classList.remove('show')}
 // Pick the right TUI URL based on how the dashboard itself was reached:
 // when accessed via the cloudflared tunnel the dashboard is on HTTPS but
