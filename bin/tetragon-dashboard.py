@@ -2649,7 +2649,7 @@ fetch('/api/ring-events?source='+encodeURIComponent(source)+'&limit=100').then(r
 const shown=d.events.length, total=d.total||0;
 let fh=`<div class="modal-finding SAFE"><span class="sev SAFE">EVENTS</span> Showing ${shown} of ${total} persisted events</div>`;
 if(shown===0){
-fh+='<p style="color:#607080;margin-top:12px">No events recorded yet for this source. The ring counter aggregates a periodic poll; individual events appear here once they\\'re ingested into events.db.</p>';
+fh+='<p style="color:#607080;margin-top:12px">No events recorded yet for this source. The ring counter aggregates a periodic poll; individual events appear here once ingested into events.db.</p>';
 }else{
 fh+='<div style="margin-top:12px;max-height:50vh;overflow-y:auto;font-family:monospace;font-size:11px">';
 for(const e of d.events){
