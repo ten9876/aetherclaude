@@ -1,0 +1,22 @@
+# Claude Code auth and API
+^api\.anthropic\.com$
+^claude\.ai$
+^platform\.claude\.com$
+^downloads\.claude\.ai$
+^storage\.googleapis\.com$
+^claude\.com$
+
+# GitHub
+^api\.github\.com$
+^github\.com$
+^.*\.githubusercontent\.com$
+^uploads\.github\.com$
+^objects\.githubusercontent\.com$
+
+# pip endpoints — added 2026-05-07 to allow mcp-scanner / Cisco AI scanners upgrades
+^pypi\.org$
+^files\.pythonhosted\.org$
+
+# VirusTotal API — added 2026-05-07 for mcp-scanner virustotal subcommand
+^www\.virustotal\.com$
+^virustotal\.com$

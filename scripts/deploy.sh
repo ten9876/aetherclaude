@@ -58,6 +58,21 @@ if ! sudo diff -q "$REPO_DIR/config/cloudflared/config.yml" /Users/aetherclaude/
     [ "$RESTART" = true ] && sudo launchctl kickstart -k system/com.aetherclaude.cloudflared
 fi
 
+echo "==> Syncing tinyproxy config + allowlist"
+tinyproxy_changed=false
+if ! sudo diff -q "$REPO_DIR/config/tinyproxy/tinyproxy.conf" /opt/homebrew/etc/tinyproxy/tinyproxy.conf >/dev/null 2>&1; then
+    sudo cp "$REPO_DIR/config/tinyproxy/tinyproxy.conf" /opt/homebrew/etc/tinyproxy/tinyproxy.conf
+    tinyproxy_changed=true
+fi
+if ! sudo diff -q "$REPO_DIR/config/tinyproxy/allowlist" /opt/homebrew/etc/tinyproxy/allowlist >/dev/null 2>&1; then
+    sudo cp "$REPO_DIR/config/tinyproxy/allowlist" /opt/homebrew/etc/tinyproxy/allowlist
+    tinyproxy_changed=true
+fi
+if [ "$tinyproxy_changed" = true ] && [ "$RESTART" = true ]; then
+    sudo launchctl kickstart -k system/com.aetherclaude.tinyproxy
+    echo "   tinyproxy reloaded"
+fi
+
 echo "==> Syncing launchd plists"
 for f in "$REPO_DIR"/config/launchd/*.plist; do
     name=$(basename "$f")
