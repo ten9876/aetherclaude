@@ -2296,7 +2296,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 
 <div class="main">
 <div class="panel">
-<div class="phdr"><span>Event Stream &middot; <span style="color:#00ff88">&#9632;</span> Agent <span style="color:#ff4444">&#9632;</span> Firewall <span style="color:#44ddaa">&#9632;</span> Proxy <span style="color:#ff6688">&#9632;</span> CodeGuard <span style="color:#aa88ff">&#9632;</span> MCP <span style="color:#00ddff">&#9632;</span> Scanners <span style="color:#ffdd44">&#9632;</span> Skills <span style="color:#ff88cc">&#9632;</span> Claude</span><span class="muted" id="sup"></span></div>
+<div class="phdr"><span>Event Stream &middot; <span style="margin-right:4px"><span style="color:#00ff88">&#9632;</span> Agent</span> <span style="margin-right:4px"><span style="color:#ff4444">&#9632;</span> Firewall</span> <span style="margin-right:4px"><span style="color:#44ddaa">&#9632;</span> Proxy</span> <span style="margin-right:4px"><span style="color:#ff6688">&#9632;</span> CodeGuard</span> <span style="margin-right:4px"><span style="color:#aa88ff">&#9632;</span> MCP</span> <span style="margin-right:4px"><span style="color:#00ddff">&#9632;</span> Scanners</span> <span style="margin-right:4px"><span style="color:#ffdd44">&#9632;</span> Skills</span> <span><span style="color:#ff88cc">&#9632;</span> Claude</span></span><span class="muted" id="sup"></span></div>
 <div class="pbody" id="evts"></div>
 </div>
 <div class="rpanels">
