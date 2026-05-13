@@ -964,6 +964,29 @@ skill_process_issues() {
             set_state "issue_${number}_state" "implement"
         fi
 
+        # State override C: failed issue gets 'aetherclaude-eligible' re-applied —
+        # transition to implement. Treating the label re-apply as a tacit
+        # "please retry" from the maintainer, distinct from any other webhook
+        # (comment, push, …) on the same issue. The conditions ensure ONLY a
+        # label-add webhook for THIS specific label fires the retry — a stray
+        # comment on a failed issue, or another label being added/removed,
+        # MUST NOT bypass the parked state.
+        #
+        # Typical use: a previous implement run died on a transient Anthropic
+        # socket close or the like. Maintainer toggles aetherclaude-eligible
+        # off-then-on; the re-add fires this override; the case below picks
+        # up `implement` and runs a fresh attempt.
+        if [ "$issue_state" = "failed" ] \
+           && [ "$TRIGGER_EVENT" = "issues" ] \
+           && [ "$TRIGGER_ACTION" = "labeled" ] \
+           && [ "$TRIGGER_LABEL" = "aetherclaude-eligible" ] \
+           && echo "$issue_data" | jq -e '[.labels[].name] | any(. == "aetherclaude-eligible")' >/dev/null; then
+            log "Issue #${number} — maintainer re-applied aetherclaude-eligible after failure; retrying"
+            record_action "$number" "retry_requested" "implement" "success" "Maintainer re-applied aetherclaude-eligible after failed run"
+            issue_state="implement"
+            set_state "issue_${number}_state" "implement"
+        fi
+
         local out_of_scope=false
         for label in github_actions ci cd release build docker workflow; do
             echo "$issue_labels_str" | grep -qi "$label" && out_of_scope=true
