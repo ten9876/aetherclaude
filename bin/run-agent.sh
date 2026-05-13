@@ -251,8 +251,25 @@ except:
 # --- Run Claude Code (shared helper) ---
 CLAUDE_TIMEOUT=${CLAUDE_TIMEOUT:-600}  # 10 minutes default
 
+# Default tool surface — used by all skills that legitimately write code
+# (triage, continue-triage, implement-fix, review-pr, explain-ci).
+CLAUDE_ALLOWED_TOOLS_DEFAULT="Read,Glob,Grep,Edit,Write,Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git diff *),Bash(git log *),Bash(git status),Bash(git checkout *),Bash(ls *),Bash(head *),Bash(tail *),mcp__aetherclaude-github__*"
+
+# @Mention tool surface — strictly conversational. No code mutation, no git
+# write, no PR creation, no label management. Claude can read code and
+# explain, propose fixes inline in a comment, and post that comment. Any
+# actual implementation must come through the eligibility-label path,
+# which routes to implement-fix with the full default tool surface.
+# Lesson learned: trace 91e3b290 showed an @Mention going off-script
+# to push a branch and 422 itself trying to open a PR.
+CLAUDE_ALLOWED_TOOLS_MENTION="Read,Glob,Grep,Bash(git log *),Bash(git status),Bash(git diff *),Bash(git branch *),Bash(ls *),Bash(head *),Bash(tail *),mcp__aetherclaude-github__read_issue,mcp__aetherclaude-github__list_issue_comments,mcp__aetherclaude-github__comment_on_issue,mcp__aetherclaude-github__search_issues"
+
 run_claude() {
     local prompt="$1" logfile="$2"
+    # Optional 3rd arg overrides the allowedTools list. Defaults to the
+    # full code-writing surface for backward compat with all existing
+    # callers; the @Mention path passes CLAUDE_ALLOWED_TOOLS_MENTION.
+    local allowed_tools="${3:-$CLAUDE_ALLOWED_TOOLS_DEFAULT}"
     local claude_pid
 
     # Run claude in the caller's cwd. The orch chooses the right working
@@ -270,7 +287,7 @@ run_claude() {
             --setting-sources user \
             --strict-mcp-config \
             --permission-mode bypassPermissions \
-            --allowedTools "Read,Glob,Grep,Edit,Write,Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git diff *),Bash(git log *),Bash(git status),Bash(git checkout *),Bash(ls *),Bash(head *),Bash(tail *),mcp__aetherclaude-github__*" \
+            --allowedTools "$allowed_tools" \
             --disallowedTools "Bash(sudo *),Bash(curl *),Bash(wget *),Bash(rm -rf *),Bash(ssh *),Bash(scp *),Bash(nc *),Bash(ncat *),Bash(dd *),Bash(mount *),Bash(chmod *),Bash(chown *),Bash(chsh *),Bash(passwd *),Bash(brew *),Bash(npm *),Bash(pip *),Bash(nft *),Bash(systemctl *),Bash(cat /Users/aetherclaude/.env),Bash(cat /Users/aetherclaude/.git-credentials),Bash(cat /Users/aetherclaude/.github-app-key.pem),Bash(echo \$*),Bash(env),Bash(printenv),Bash(set),WebFetch,WebSearch,Agent" \
             --mcp-config /Users/aetherclaude/.claude/mcp-servers.json \
         > "$logfile" 2>&1 &
@@ -1695,9 +1712,14 @@ if [ -f "$MENTION_FILE" ]; then
         mention_log="$LOGDIR/mention-${MENTION_NUMBER}-$(date +%Y%m%d-%H%M%S).log"
 
         cd "$WORKSPACE"
+        # @Mention is conversational only. Tool surface is restricted to
+        # read + comment via CLAUDE_ALLOWED_TOOLS_MENTION — no Edit/Write/
+        # git-write/create_pull_request even if the user asks for them.
+        # Implementation goes through the eligibility-label path, which
+        # routes to implement-fix with the full default tool surface.
         run_claude "You are AetherClaude. You were @mentioned in issue/PR #${MENTION_NUMBER}: ${mention_title}
 
-Someone has specifically asked for your attention. Read the full conversation below and respond to whatever they are asking. This overrides all rate limits and state guards.
+Read the full conversation below and respond with ONE helpful comment.
 
 Issue body:
 ${mention_body}
@@ -1705,9 +1727,35 @@ ${mention_body}
 Comments:
 ${mention_comments}
 
-Respond with ONE helpful comment on issue #${MENTION_NUMBER} addressing the user's request. Stay within AetherSDR project guardrails. If they ask you to fix something, analyze the code and propose a fix. If they ask a question, answer it. If it's outside your scope, explain why politely.
+YOUR ONLY ALLOWED ACTION IS TO POST A SINGLE COMMENT via
+mcp__aetherclaude-github__comment_on_issue.
 
-Working directory: ${WORKSPACE}" "$mention_log" || {
+You CANNOT edit files, push code, create branches, or open pull
+requests in this conversational path — those tools are not available
+to you. Do not attempt them. Implementation of any fix happens through
+a separate orchestrator path that the maintainer authorizes by adding
+the 'aetherclaude-eligible' label to the issue.
+
+Respond appropriately:
+
+  - Question about the code/project: answer it. You may use Read,
+    Glob, Grep to investigate the code first.
+
+  - Request for a code fix or PR:
+      * Analyze the relevant code (Read/Glob/Grep).
+      * In your single comment, propose the fix as a code snippet
+        inside a fenced block, explaining the change.
+      * Tell them: 'A maintainer can authorize the orchestrator to
+        land this fix by adding the \`aetherclaude-eligible\` label.'
+      * If the label is already present on the issue (visible in the
+        labels above), say so — the orchestrator will handle the PR
+        on the next webhook cycle.
+
+  - Out of scope: explain why politely.
+
+End with the project signature: '73, Jeremy KK7GWY & Claude (AI dev partner)'.
+
+Working directory: ${WORKSPACE}" "$mention_log" "$CLAUDE_ALLOWED_TOOLS_MENTION" || {
             log "ERROR: @Mention response failed for #${MENTION_NUMBER}"
         }
         log "--- @Mention Response complete for #${MENTION_NUMBER} ---"
