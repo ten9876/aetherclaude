@@ -2125,7 +2125,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 .ring{background:#101028;border:1px solid #203040;border-radius:8px;padding:10px;text-align:center;position:relative}
 .ring .num{font-size:10px;color:#404060;position:absolute;top:4px;left:8px}
 .ring .name{font-family:'CiscoSans',system-ui,sans-serif;font-size:10px;font-weight:500;color:#8090a0;margin-bottom:4px}
-.ring .value{font-size:22px;font-weight:bold;color:#00b4d8}
+.ring .value{font-family:'CiscoSans',system-ui,sans-serif;font-size:24px;font-weight:700;color:#00b4d8;letter-spacing:-0.5px}
 .ring .detail{font-size:10px;color:#8898a8;margin-top:2px}
 .ring.ok{border-color:#00ff8844}
 .ring.warn{border-color:#ffaa0044}
