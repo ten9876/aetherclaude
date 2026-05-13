@@ -3099,7 +3099,7 @@ AGENT_WALK_HTML = r"""<!DOCTYPE html>
 <style>
 body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospace;font-size:12px;margin:0;padding:0}
 header{background:#0e0e22;padding:10px 20px;border-bottom:1px solid #20304a;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
-header h1{margin:0;font-size:14px;color:#00bceb;font-weight:normal;letter-spacing:1px}
+header h1{margin:0;font-family:'CiscoSans',system-ui,sans-serif;font-size:16px;color:#00bceb;font-weight:500;letter-spacing:0.5px}
 header .picker{display:flex;align-items:center;gap:6px}
 header select,header input{background:#0a0a1a;color:#c8d8e8;border:1px solid #304050;padding:4px 8px;font-family:inherit;font-size:11px;border-radius:3px;min-width:200px}
 header select{min-width:340px}
@@ -3190,7 +3190,7 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
 }
 </style></head><body>
 <header>
-  <h1>AGENT WALK</h1>
+  <h1>Agent Walk</h1>
   <div class="picker">
     <span style="color:#607080">trace:</span>
     <select id="trace-select"></select>
