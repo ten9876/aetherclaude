@@ -2213,7 +2213,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 <div class="ring ok clickable" id="ring2" onclick="showRingEvents('tinyproxy','Ring 2: tinyproxy — denied connections','Last 100 HTTPS connections rejected by the domain allowlist (allowed connections omitted)',{policy:'domain-filter'})"><span class="num">2 &gt;</span><span class="status green"></span>
 <div class="name">tinyproxy</div><div class="value" id="r2v">0</div><div class="detail" id="r2d">allowed · 0 denied</div></div>
 
-<div class="ring ok clickable" id="ring3" onclick="showRingEvents('tetragon','Ring 3: OS Isolation (Tetragon eBPF)','Process exec, syscalls, network connections for UID 965')"><span class="num">3 &gt;</span><span class="status green"></span>
+<div class="ring ok clickable" id="ring3" onclick="showRingEvents('eslogger','Ring 3: OS Isolation (Tetragon eBPF)','Last 100 process executions under UID 965 — what the agent has been running',{type:'EXEC'})"><span class="num">3 &gt;</span><span class="status green"></span>
 <div class="name">OS Isolation</div><div class="value" id="r3v">0</div><div class="detail" id="r3d">agent cmds · rbash</div></div>
 
 <div class="ring ok clickable" id="ring4" onclick="showRing4()"><span class="num">4 &gt;</span><span class="status green"></span>
@@ -2661,10 +2661,17 @@ fh+='<div style="margin-top:12px;max-height:50vh;overflow-y:auto;font-family:mon
 for(const e of d.events){
 const isAlert=e.policy&&e.policy.length>0;
 const cls=isAlert?'HIGH':'SAFE';
+// Truncate args at 200 chars and collapse whitespace — EXEC args often
+// embed multi-line Python heredocs that would blow out the modal.
+let args=(e.args||'').replace(/\s+/g,' ').trim();
+if(args.length>200)args=args.slice(0,200)+'…';
+// Pull just the basename of binary for compact display.
+const bin=e.binary?(e.binary.split('/').pop()||e.binary):'';
 fh+=`<div class="modal-finding ${cls}" style="margin-bottom:2px;padding:4px 8px">`;
 fh+=`<span style="color:#607080;margin-right:8px">${fmtTime(e.time||'')}</span>`;
 if(e.type)fh+=`<span style="color:#ffaa00;margin-right:6px;font-weight:bold">${esc(e.type)}</span>`;
-fh+=`${esc(e.args||'')}`;
+if(bin)fh+=`<span style="color:#80c0ff;margin-right:6px">${esc(bin)}</span>`;
+fh+=`${esc(args)}`;
 if(e.policy)fh+=` <span style="color:#ff6688;font-size:10px">[${esc(e.policy)}]</span>`;
 fh+=`</div>`}
 fh+='</div>';}
