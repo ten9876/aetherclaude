@@ -249,7 +249,10 @@ except:
 }
 
 # --- Run Claude Code (shared helper) ---
-CLAUDE_TIMEOUT=${CLAUDE_TIMEOUT:-600}  # 10 minutes default
+CLAUDE_TIMEOUT=${CLAUDE_TIMEOUT:-1800}  # 30 minutes default — bumped from 600s after #2624
+                                        # was killed mid-implementation on a multi-file
+                                        # feature; non-trivial issues need real budget,
+                                        # and runaway runs are still bounded.
 
 # Default tool surface — used by all skills that legitimately write code
 # (triage, continue-triage, implement-fix, review-pr, explain-ci).
