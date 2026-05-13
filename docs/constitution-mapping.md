@@ -19,10 +19,19 @@ already in place.
 
 | | Count |
 |---|---|
-| **Strong** — AetherClaude implements the principle as the constitution describes | 5 |
-| **Partial** — AetherClaude implements the spirit but differs on a detail | 4 |
+| **Strong** — AetherClaude implements the principle as the constitution describes | 7 |
+| **Partial** — AetherClaude implements the spirit but differs on a detail | 2 |
 | **Not applicable** — different problem domain (vulnerability findings vs. code changes) | 2 |
 | **Total** | 11 |
+
+The 7 STRONG entries cover II (surface-filtering), III (heartbeat liveness), and
+IV/V/IX/X/XI (atomic-and-mortal claims, provider-as-arbiter, infrastructure-
+enforced sandbox, operator-outranks-agent, atomic persistence). PARTIAL: I
+(evidence — implemented as a non-blocking citation-resolution footnote rather
+than a verdict-gating demotion) and VII (independent grading — same shape,
+different domain than "exploited"). N/A: VI (no termination decision in our
+event-driven model) and VIII (no finding-fingerprint domain — issue numbers
+are stable by definition).
 
 ## The mapping
 
@@ -31,69 +40,94 @@ already in place.
 > A finding's verdict is determined by checkable evidence, not by model
 > confidence.
 
-**AetherClaude analog**: Claude's claims about a fix are gated on
-machine-checkable evidence. The state machine cannot mark an issue
-`done` without (a) a real commit produced in the worktree, (b) a passing
-`validate-diff.sh` (allowed paths, no credentials, no protected files,
-no binary additions, no suspicious patterns, plus per-file CodeGuard
-static analysis), and (c) a successful signed-commit push. Claude
-posting a comment that says "I fixed it" is not enough; the orchestrator
-requires the diff itself.
+**AetherClaude analog**: Two layers, one per claim type.
+
+For "this fix is correct" claims: the state machine cannot mark an
+issue `done` without (a) a real commit produced in the worktree, (b)
+a passing `validate-diff.sh` (allowed paths, no credentials, no
+protected files, no binary additions, no suspicious patterns, plus
+per-file CodeGuard static analysis), and (c) a successful signed-
+commit push.
+
+For "this code lives at path:line" claims in the triage comment:
+`check_citations()` (in `bin/run-agent.sh`) runs after every triage
+completes, parses every `path:line` and `path:line-line` token from
+the agent's comment, and verifies each against the workspace clone of
+AetherSDR at `origin/main`. Resolved counts and unresolved-citation
+tables are PATCHed onto the comment itself as a footnote so a human
+reading the issue can see which citations to trust.
 
 **Where**:
-[`bin/run-agent.sh`](../bin/run-agent.sh) state machine + CodeGuard +
-[`bin/validate-diff.sh`](../bin/validate-diff.sh) checks 1–8.
+[`bin/run-agent.sh`](../bin/run-agent.sh) `check_citations()` + state
+machine + [`bin/validate-diff.sh`](../bin/validate-diff.sh) checks 1–8.
 
-**Why partial**: Foundry's principle is specifically about vulnerability
-verdicts (`true-positive` requires structural reachability evidence).
-AetherClaude doesn't have a verdict concept — its analog is "is this
-implementation correct," gated through a different evidence pipeline.
+**Why still partial**: per operator decision in this session, the
+citation footnote is **non-blocking** — unresolved claims are
+annotated, not retracted. Foundry's principle demotes the claim;
+ours surfaces it. Same evidence, different consequence.
 
 ---
 
-### II. Surface Only What Survives — *medium*
+### II. Surface Only What Survives — *strong*
 
 > Humans see findings that have passed the gates. Everything else stays
 > in the internal store.
 
 **AetherClaude analog**: Issues are filtered *before* a maintainer sees
-agent output. The zero-effort guard auto-closes issues with body
-<200 chars + no required fields + no images or code blocks, posting a
-template comment instead of running triage. The 7-day stale-close path
-fires before a maintainer is asked to review. Most importantly: the
-triage step posts **one** comment per issue — not a stream of
-intermediate observations from Claude's reasoning trace.
+agent output, at four distinct gates:
+
+1. The zero-effort guard auto-closes issues with body <200 chars + no
+   required fields + no images or code blocks, posting a template
+   comment instead of running triage.
+2. The 7-day stale-close path retires waiting issues that never got a
+   user reply.
+3. The triage step posts **one** comment per issue — never a stream of
+   Claude's intermediate observations.
+4. The `aetherclaude-eligible` label is the maintainer's explicit
+   "this survived the gates, surface it for implementation" signal;
+   without that label, an issue stays parked in `maintainer-review`.
+
+The shape matches Foundry's principle even though the architecture
+differs (event-driven per-issue runs instead of a continuous detection
+store): the operator-facing surface only ever shows promoted output.
 
 **Where**:
-[`bin/run-agent.sh`](../bin/run-agent.sh) `skill_process_issues` zero-effort
-guard, 7-day stale-close path, and the
-[`run-stale-triage.sh`](../bin/run-stale-triage.sh) periodic stale runner.
+[`bin/run-agent.sh`](../bin/run-agent.sh) `skill_process_issues` zero-
+effort guard, 7-day stale-close path, the `aetherclaude-eligible`
+label gate, and the [`run-stale-triage.sh`](../bin/run-stale-triage.sh)
+periodic stale runner.
 
 ---
 
-### III. Liveness By Heartbeat, Never By Clock — *partial*
+### III. Liveness By Heartbeat, Never By Clock — *strong*
 
 > An agent is alive if it heartbeated recently. Wall-clock runtime says
 > nothing about health.
 
-**AetherClaude analog (the spirit)**: AetherClaude is webhook-driven,
-not polling-driven. Each run is initiated by an external event (GitHub
-webhook, label change, comment). No wall-clock scheduler decides when
-work is "done" or needs to be reclaimed — work begins when a webhook
-arrives and ends when that handler exits. This matches Foundry's
-critique of timeout-based liveness.
+**AetherClaude analog**: The Claude watchdog polls the active session
+JSONL's mtime — Claude appends to that file on every `tool_use` /
+`tool_result` / `text` block, so a fresh mtime is proof of life.
+Kill only fires when:
 
-**Why partial**: AetherClaude still has a hard `CLAUDE_TIMEOUT=1800s`
-wall-clock watchdog that SIGTERM's a long-running Claude process. The
-constitution would prefer this be heartbeat-based (was Claude producing
-tool calls within the last N seconds?). We bumped from 600s to 1800s
-specifically because the principle is right — short wall-clock
-timeouts kill healthy work — but the implementation is still a clock,
-not a heartbeat.
+- The JSONL has been quiet for more than `CLAUDE_MAX_IDLE` seconds
+  (default **180**), AND total elapsed > 60s (startup grace).
+- OR the absolute `CLAUDE_HARD_CEILING` (default **3600s** / 60 min)
+  is hit — a runaway loop that produces output indefinitely still
+  gets stopped, but a productive 25-minute implement run keeps going.
+
+The previous fixed wall-clock kill (`CLAUDE_TIMEOUT=1800s`) was
+explicitly the failure mode the principle warns about — trace
+`50f9d8d0` on #2624 was actively making tool calls at the 18-min
+mark when the old watchdog SIGTERM'd it. Heartbeat-based liveness
+lets that exact run keep going.
+
+`CLAUDE_TIMEOUT` is retained as a backward-compat alias for
+`CLAUDE_HARD_CEILING` so existing env overrides still take effect.
 
 **Where**:
-[`bin/run-agent.sh`](../bin/run-agent.sh) `CLAUDE_TIMEOUT=${CLAUDE_TIMEOUT:-1800}`
-+ the webhook-driven invocation pattern.
+[`bin/run-agent.sh`](../bin/run-agent.sh) `run_claude()` heartbeat
+watchdog (`session_dir` derived from `pwd -P`; polls `stat -f %m` on
+the newest JSONL every 10s).
 
 ---
 
