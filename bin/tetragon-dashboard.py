@@ -68,6 +68,16 @@ SESSION_DIR = '/Users/aetherclaude/.claude/projects'
 VALIDATION_LOG = '/Users/aetherclaude/logs/validation.log'
 MCP_AUDIT_LOG = '/Users/aetherclaude/logs/mcp-audit.log'
 ORCHESTRATOR_LOG = '/Users/aetherclaude/logs/orchestrator.log'
+
+# Private fonts directory — for proprietary/branded font files that are
+# NOT committed to the repo. Drop a .woff2/.woff/.otf/.ttf file here and
+# it'll be served at /fonts/<filename>. CSS falls back to the system
+# stack when the file is absent, so an empty dir is a no-op. Override
+# with the env var if you want to keep fonts somewhere else on the box.
+PRIVATE_FONTS_DIR = os.environ.get(
+    'AETHERCLAUDE_PRIVATE_FONTS_DIR',
+    '/Users/aetherclaude/private/fonts'
+)
 CLAUDE_PROJECTS_DIR = '/Users/aetherclaude/.claude/projects'
 # How many chars of prompt/response text to surface in the args column.
 # Long enough to be informative for the SE demo (the first paragraph of an
@@ -2081,6 +2091,20 @@ def process_event(event):
 HTML = r"""<!DOCTYPE html>
 <html><head><title>AetherClaude Defense-in-Depth Dashboard</title><meta charset="utf-8">
 <style>
+/* Optional proprietary brand font — served from PRIVATE_FONTS_DIR
+   (default /Users/aetherclaude/private/fonts/, NOT in the git tree).
+   Drop any of the listed filenames there and it'll be used; otherwise
+   the system stack below kicks in. Apply by adding 'AetherClaude
+   Brand' to any element's font-family stack, e.g.:
+     h1 { font-family: 'AetherClaude Brand', 'SF Mono', monospace; } */
+@font-face {
+    font-family: 'AetherClaude Brand';
+    src: url('/fonts/brand.woff2') format('woff2'),
+         url('/fonts/brand.woff')  format('woff'),
+         url('/fonts/brand.otf')   format('opentype'),
+         url('/fonts/brand.ttf')   format('truetype');
+    font-display: swap;
+}
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospace;font-size:13px}
 .header{background:#101028;padding:12px 24px;border-bottom:1px solid #203040;display:flex;justify-content:space-between;align-items:center}
@@ -3622,6 +3646,39 @@ class H(BaseHTTPRequestHandler):
             except:
                 self.send_response(404)
                 self.end_headers()
+        elif self.path.startswith('/fonts/'):
+            # Serve proprietary/branded fonts from PRIVATE_FONTS_DIR
+            # (outside the git tree). 404 if the file is missing — CSS
+            # @font-face declarations fall back to the system stack, so
+            # an empty dir is a no-op.
+            name = self.path[len('/fonts/'):].split('?', 1)[0]
+            # Path-safety: reject empty, anything with separators or
+            # parent-dir traversal, anything not a recognized font ext.
+            font_types = {
+                'woff2': 'font/woff2',
+                'woff':  'font/woff',
+                'otf':   'font/otf',
+                'ttf':   'font/ttf',
+                'eot':   'application/vnd.ms-fontobject',
+            }
+            ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+            if not name or '/' in name or '..' in name or ext not in font_types:
+                self.send_response(400); self.end_headers()
+            else:
+                font_path = os.path.join(PRIVATE_FONTS_DIR, name)
+                try:
+                    if not os.path.isfile(font_path):
+                        raise FileNotFoundError(font_path)
+                    with open(font_path, 'rb') as ff:
+                        data = ff.read()
+                    self.send_response(200)
+                    self.send_header('Content-Type', font_types[ext])
+                    self.send_header('Cache-Control', 'public, max-age=3600')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    self.wfile.write(data)
+                except (FileNotFoundError, OSError):
+                    self.send_response(404); self.end_headers()
         elif self.path == '/whitepaper.pdf':
             # Serve whitepaper as print-friendly HTML page (browser Print > Save as PDF)
             # Extract the whitepaper content from the main HTML
