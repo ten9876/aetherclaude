@@ -2292,7 +2292,6 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 <button class="fbtn" data-types="DEFENSE" style="border-color:#6688ff" onclick="toggleFilter(this)">AI-Defense</button>
 <label style="margin-left:8px">Search:</label>
 <input class="finput" id="search" placeholder="grep pattern..." oninput="debouncedRefresh()" style="width:250px">
-<span class="muted" id="sc"></span>
 </div>
 
 <div class="main">
@@ -2370,7 +2369,7 @@ const p=e.policy?`<span class="pol">[${e.policy}]</span>`:'';
 const st=e.source||'tetragon';
 h+=`<div class="${c}"><span class="tm">${t}</span><span class="tp ${e.type}">${e.type}</span><span class="uid">${e.uid}</span><span class="bin">${e.binary.split('/').pop()}</span><span class="args">${esc(e.args)} ${p} <span class="stag ${st}">${st}</span></span></div>`}
 document.getElementById('evts').innerHTML=h;
-document.getElementById('sc').textContent=filtered<total?`${events.length} shown · ${filtered} matched · ${total} total`:`${events.length} / ${total}`}
+}
 function refresh(){
 const q=document.getElementById('search').value;
 const types=new Set();
