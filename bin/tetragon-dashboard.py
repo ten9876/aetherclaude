@@ -2091,25 +2091,33 @@ def process_event(event):
 HTML = r"""<!DOCTYPE html>
 <html><head><title>AetherClaude Defense-in-Depth Dashboard</title><meta charset="utf-8">
 <style>
-/* Optional proprietary brand font — served from PRIVATE_FONTS_DIR
-   (default /Users/aetherclaude/private/fonts/, NOT in the git tree).
-   Drop any of the listed filenames there and it'll be used; otherwise
-   the system stack below kicks in. Apply by adding 'AetherClaude
-   Brand' to any element's font-family stack, e.g.:
-     h1 { font-family: 'AetherClaude Brand', 'SF Mono', monospace; } */
-@font-face {
-    font-family: 'AetherClaude Brand';
-    src: url('/fonts/brand.woff2') format('woff2'),
-         url('/fonts/brand.woff')  format('woff'),
-         url('/fonts/brand.otf')   format('opentype'),
-         url('/fonts/brand.ttf')   format('truetype');
-    font-display: swap;
-}
+/* CiscoSans (Cisco's official brand typeface) — served from
+   PRIVATE_FONTS_DIR (NOT in the git tree). Full family with seven
+   weights × Roman+Oblique. Files: CiscoSansTT{Thin,ExtraLight,Light,
+   Regular,Medium,Bold,Heavy}{,Oblique}.ttf. Apply by adding 'CiscoSans'
+   to any element's font-family stack; weights resolve naturally
+   (font-weight:300 → Light, 400 → Regular, 500 → Medium, 700 → Bold,
+   etc.). Falls back to the existing system stack if the files aren't
+   present. */
+@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTThin.ttf')              format('truetype'); font-weight: 100; font-style: normal;  font-display: swap; }
+@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTThinOblique.ttf')       format('truetype'); font-weight: 100; font-style: italic;  font-display: swap; }
+@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTExtraLight.ttf')        format('truetype'); font-weight: 200; font-style: normal;  font-display: swap; }
+@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTExtraLightOblique.ttf') format('truetype'); font-weight: 200; font-style: italic;  font-display: swap; }
+@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTLight.ttf')             format('truetype'); font-weight: 300; font-style: normal;  font-display: swap; }
+@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTLightOblique.ttf')      format('truetype'); font-weight: 300; font-style: italic;  font-display: swap; }
+@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTRegular.ttf')           format('truetype'); font-weight: 400; font-style: normal;  font-display: swap; }
+@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTRegularOblique.ttf')    format('truetype'); font-weight: 400; font-style: italic;  font-display: swap; }
+@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTMedium.ttf')            format('truetype'); font-weight: 500; font-style: normal;  font-display: swap; }
+@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTMediumOblique.ttf')     format('truetype'); font-weight: 500; font-style: italic;  font-display: swap; }
+@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTBold.ttf')              format('truetype'); font-weight: 700; font-style: normal;  font-display: swap; }
+@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTBoldOblique.ttf')       format('truetype'); font-weight: 700; font-style: italic;  font-display: swap; }
+@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTHeavy.ttf')             format('truetype'); font-weight: 800; font-style: normal;  font-display: swap; }
+@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTHeavyOblique.ttf')      format('truetype'); font-weight: 800; font-style: italic;  font-display: swap; }
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospace;font-size:13px}
 .header{background:#101028;padding:12px 24px;border-bottom:1px solid #203040;display:flex;justify-content:space-between;align-items:center}
-.header h1{font-size:18px;color:#00b4d8;text-transform:uppercase;letter-spacing:4px;font-weight:300}
-.header .sub{color:#607080;font-size:11px}
+.header h1{font-family:'CiscoSans','SF Mono',monospace;font-size:18px;color:#00b4d8;text-transform:uppercase;letter-spacing:4px;font-weight:300}
+.header .sub{font-family:'CiscoSans',system-ui,sans-serif;color:#607080;font-size:11px}
 .header .live{color:#00ff88;font-size:12px;animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 
