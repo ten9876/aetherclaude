@@ -2210,7 +2210,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 <div class="ring ok clickable" id="ring1" onclick="showRingEvents('nftables','Ring 1: nftables','Kernel-level packet filtering by UID — blocked outbound connections')"><span class="num">1 &gt;</span><span class="status green"></span>
 <div class="name">nftables</div><div class="value" id="r1v">0</div><div class="detail">packets blocked</div></div>
 
-<div class="ring ok clickable" id="ring2" onclick="showRingEvents('tinyproxy','Ring 2: tinyproxy','Domain-level HTTPS filtering — allowed and denied connections')"><span class="num">2 &gt;</span><span class="status green"></span>
+<div class="ring ok clickable" id="ring2" onclick="showRingEvents('tinyproxy','Ring 2: tinyproxy — denied connections','Last 100 HTTPS connections rejected by the domain allowlist (allowed connections omitted)',{policy:'domain-filter'})"><span class="num">2 &gt;</span><span class="status green"></span>
 <div class="name">tinyproxy</div><div class="value" id="r2v">0</div><div class="detail" id="r2d">allowed · 0 denied</div></div>
 
 <div class="ring ok clickable" id="ring3" onclick="showRingEvents('tetragon','Ring 3: OS Isolation (Tetragon eBPF)','Process exec, syscalls, network connections for UID 965')"><span class="num">3 &gt;</span><span class="status green"></span>
@@ -2637,7 +2637,8 @@ h+=`<div class="detail" style="margin-top:12px;color:#607080">Monitors: tcp_conn
 document.getElementById('modal-title').textContent='Tetragon eBPF Status';
 document.getElementById('modal-body').innerHTML=h;
 document.getElementById('modal').classList.add('show')}
-function showRingEvents(source,title,desc){
+function showRingEvents(source,title,desc,extra){
+extra=extra||{};
 let h=`<p style="color:#607080;margin-bottom:12px">${desc}</p>`;
 h+=`<div id="ring-events-list"><p style="color:#607080">Loading events...</p></div>`;
 document.getElementById('modal-title').textContent=title;
@@ -2645,7 +2646,12 @@ document.getElementById('modal-body').innerHTML=h;
 document.getElementById('modal').classList.add('show');
 // Query the persistent events.db (not the in-memory ring buffer, which
 // empties on dashboard restart). Last 100 rows per source, newest first.
-fetch('/api/ring-events?source='+encodeURIComponent(source)+'&limit=100').then(r=>r.json()).then(d=>{
+// Optional `extra` adds policy/type filters (e.g. ring 2 passes
+// {policy:'domain-filter'} to keep only tinyproxy denials).
+let url='/api/ring-events?source='+encodeURIComponent(source)+'&limit=100';
+if(extra.policy)url+='&policy='+encodeURIComponent(extra.policy);
+if(extra.type)url+='&type='+encodeURIComponent(extra.type);
+fetch(url).then(r=>r.json()).then(d=>{
 const shown=d.events.length, total=d.total||0;
 let fh=`<div class="modal-finding SAFE"><span class="sev SAFE">EVENTS</span> Showing ${shown} of ${total} persisted events</div>`;
 if(shown===0){
@@ -3837,11 +3843,17 @@ a{{color:#0a6aba}}
             # Per-ring "show me recent events" endpoint backing the
             # showRingEvents() modal. Queries events.db directly (not the
             # in-memory ring buffer) so a dashboard restart doesn't clear
-            # the modal contents — the original /api/events?q=source path
-            # hit the empty memory_buffer after every kickstart.
+            # the modal contents.
+            #
+            # Optional filters (added to keep modal focused per ring):
+            #   policy=X    exact match on events.policy (e.g. 'domain-filter'
+            #               for tinyproxy denials — strips the ALLOWED noise)
+            #   type=X      exact match on events.type
             from urllib.parse import urlparse, parse_qs
             params = parse_qs(urlparse(self.path).query)
             source = params.get('source', [''])[0].strip()
+            policy_filter = params.get('policy', [''])[0].strip()
+            type_filter = params.get('type', [''])[0].strip()
             try:
                 limit = min(int(params.get('limit', ['100'])[0]), 1000)
             except ValueError:
@@ -3851,14 +3863,23 @@ a{{color:#0a6aba}}
                 self._send_json({'events': [], 'total': 0, 'error': 'source param required'})
             else:
                 try:
+                    where_parts = ['source = ?']
+                    sql_args = [source]
+                    if policy_filter:
+                        where_parts.append('policy = ?')
+                        sql_args.append(policy_filter)
+                    if type_filter:
+                        where_parts.append('type = ?')
+                        sql_args.append(type_filter)
+                    where_sql = ' AND '.join(where_parts)
                     conn = sqlite3.connect(EVENTS_DB)
                     rows = conn.execute(
                         'SELECT timestamp, type, uid, binary_name, args, policy, is_agent, source, trace_id '
-                        'FROM events WHERE source = ? ORDER BY id DESC LIMIT ?',
-                        (source, limit)
+                        f'FROM events WHERE {where_sql} ORDER BY id DESC LIMIT ?',
+                        sql_args + [limit]
                     ).fetchall()
                     total = conn.execute(
-                        'SELECT COUNT(*) FROM events WHERE source = ?', (source,)
+                        f'SELECT COUNT(*) FROM events WHERE {where_sql}', sql_args
                     ).fetchone()[0]
                     conn.close()
                     events = [{
