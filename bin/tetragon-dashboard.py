@@ -2200,16 +2200,19 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 <img src="/logo.png" style="height:48px;margin-right:16px;border-radius:50%">
 <div style="flex:1"><h1>AetherClaude Defense-in-Depth Dashboard</h1>
 <div class="sub">Cisco Isovalent (Tetragon) &middot; Cisco DefenseClaw CodeGuard &middot; Cisco AI Defense &middot; MCP Token Isolation</div></div>
-<a href="#" onclick="showConstitution();return false" style="color:#bb88ff;font-size:11px;text-decoration:none;margin-right:8px;border:1px solid #443060;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#ccaaff';this.style.borderColor='#ccaaff'" onmouseout="this.style.color='#bb88ff';this.style.borderColor='#443060'">Constitution &harr; Rings</a>
-<a href="/agent-walk" target="_blank" style="color:#00ff88;font-size:11px;text-decoration:none;margin-right:8px;border:1px solid #205040;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#88ffaa';this.style.borderColor='#88ffaa'" onmouseout="this.style.color='#00ff88';this.style.borderColor='#205040'">Agent Walk &#x2197;</a>
-<a href="#" onclick="openOperatorTui();return false" style="color:#6688ff;font-size:11px;text-decoration:none;margin-right:16px;border:1px solid #303860;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#88aaff';this.style.borderColor='#88aaff'" onmouseout="this.style.color='#6688ff';this.style.borderColor='#303860'">Operator TUI &#x2197;</a>
-<div class="live" id="agent-status">&#9679; LIVE</div>
+<!-- Button stack: two rows of children inside the same header.
+     Top row = primary nav + LIVE indicator. Bottom row = the wider
+     Whitepaper link, right-aligned under the others so the title row
+     keeps its full flex budget. -->
+<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+  <div style="display:flex;align-items:center;gap:8px">
+    <a href="#" onclick="showConstitution();return false" style="color:#bb88ff;font-size:11px;text-decoration:none;border:1px solid #443060;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#ccaaff';this.style.borderColor='#ccaaff'" onmouseout="this.style.color='#bb88ff';this.style.borderColor='#443060'">Constitution &harr; Rings</a>
+    <a href="/agent-walk" target="_blank" style="color:#00ff88;font-size:11px;text-decoration:none;border:1px solid #205040;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#88ffaa';this.style.borderColor='#88ffaa'" onmouseout="this.style.color='#00ff88';this.style.borderColor='#205040'">Agent Walk &#x2197;</a>
+    <a href="#" onclick="openOperatorTui();return false" style="color:#6688ff;font-size:11px;text-decoration:none;border:1px solid #303860;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#88aaff';this.style.borderColor='#88aaff'" onmouseout="this.style.color='#6688ff';this.style.borderColor='#303860'">Operator TUI &#x2197;</a>
+    <div class="live" id="agent-status">&#9679; LIVE</div>
+  </div>
+  <a href="#" onclick="showWhitepaper();return false" style="color:#607080;font-size:11px;text-decoration:none;border:1px solid #304050;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#00b4d8';this.style.borderColor='#00b4d8'" onmouseout="this.style.color='#607080';this.style.borderColor='#304050'">Agent Defense-in-Depth Whitepaper</a>
 </div>
-
-<!-- Second utility row, right-aligned below the main header — keeps the
-     widest link out of the title row's flex budget. -->
-<div style="display:flex;justify-content:flex-end;align-items:center;padding:4px 16px 8px">
-<a href="#" onclick="showWhitepaper();return false" style="color:#607080;font-size:11px;text-decoration:none;border:1px solid #304050;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#00b4d8';this.style.borderColor='#00b4d8'" onmouseout="this.style.color='#607080';this.style.borderColor='#304050'">Agent Defense-in-Depth Whitepaper</a>
 </div>
 
 <div class="rings">
