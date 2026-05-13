@@ -2643,10 +2643,16 @@ h+=`<div id="ring-events-list"><p style="color:#607080">Loading events...</p></d
 document.getElementById('modal-title').textContent=title;
 document.getElementById('modal-body').innerHTML=h;
 document.getElementById('modal').classList.add('show');
-fetch('/api/events?q='+encodeURIComponent(source)).then(r=>r.json()).then(d=>{
-let fh=`<div class="modal-finding SAFE"><span class="sev SAFE">EVENTS</span> ${d.filtered} events matched</div>`;
+// Query the persistent events.db (not the in-memory ring buffer, which
+// empties on dashboard restart). Last 100 rows per source, newest first.
+fetch('/api/ring-events?source='+encodeURIComponent(source)+'&limit=100').then(r=>r.json()).then(d=>{
+const shown=d.events.length, total=d.total||0;
+let fh=`<div class="modal-finding SAFE"><span class="sev SAFE">EVENTS</span> Showing ${shown} of ${total} persisted events</div>`;
+if(shown===0){
+fh+='<p style="color:#607080;margin-top:12px">No events recorded yet for this source. The ring counter aggregates a periodic poll; individual events appear here once they\\'re ingested into events.db.</p>';
+}else{
 fh+='<div style="margin-top:12px;max-height:50vh;overflow-y:auto;font-family:monospace;font-size:11px">';
-for(const e of d.events.slice(0,200)){
+for(const e of d.events){
 const isAlert=e.policy&&e.policy.length>0;
 const cls=isAlert?'HIGH':'SAFE';
 fh+=`<div class="modal-finding ${cls}" style="margin-bottom:2px;padding:4px 8px">`;
@@ -2655,8 +2661,7 @@ if(e.type)fh+=`<span style="color:#ffaa00;margin-right:6px;font-weight:bold">${e
 fh+=`${esc(e.args||'')}`;
 if(e.policy)fh+=` <span style="color:#ff6688;font-size:10px">[${esc(e.policy)}]</span>`;
 fh+=`</div>`}
-if(d.filtered>200)fh+=`<p style="color:#607080;margin-top:8px">Showing 200 of ${d.filtered} events</p>`;
-fh+='</div>';
+fh+='</div>';}
 document.getElementById('ring-events-list').innerHTML=fh;
 }).catch(()=>{document.getElementById('ring-events-list').innerHTML='<p style="color:#604040">Failed to load events.</p>'})}
 function showRing4(){
@@ -3828,6 +3833,44 @@ a{{color:#0a6aba}}
                      'stats':{'total_events':stats['total_events'],'exec_count':stats['exec_count'],'kprobe_count':stats['kprobe_count'],'exit_count':stats['exit_count'],'aetherclaude_events':stats['aetherclaude_events'],'network_connections':stats['network_connections'],'alert_count':len(stats['alerts']),'policy_hits':dict(stats['policy_hits']),'binaries_seen':dict(stats['binaries_seen']),'alerts':list(stats['alerts']),'suppressed':stats['suppressed'],'tokens':{'input':token_stats['input'],'output':token_stats['output'],'cache_read':token_stats['cache_read'],'cache_create':token_stats['cache_create'],'messages':token_stats['messages'],'total':token_stats['input']+token_stats['output'],'estimated_cost_usd':round(token_stats['input']/1e6*15+token_stats['output']/1e6*75,2)},'tools':{'total':tool_stats['total'],'breakdown':tool_stats['breakdown']}},'mcp_scan_details':ring_stats.get('r6_mcp_details',[]),'rings':dict(ring_stats)}
             self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Access-Control-Allow-Origin','*');self.end_headers()
             self._send_json(d)
+        elif self.path.startswith('/api/ring-events'):
+            # Per-ring "show me recent events" endpoint backing the
+            # showRingEvents() modal. Queries events.db directly (not the
+            # in-memory ring buffer) so a dashboard restart doesn't clear
+            # the modal contents — the original /api/events?q=source path
+            # hit the empty memory_buffer after every kickstart.
+            from urllib.parse import urlparse, parse_qs
+            params = parse_qs(urlparse(self.path).query)
+            source = params.get('source', [''])[0].strip()
+            try:
+                limit = min(int(params.get('limit', ['100'])[0]), 1000)
+            except ValueError:
+                limit = 100
+            if not source:
+                self.send_response(400); self.send_header('Content-Type', 'application/json'); self.end_headers()
+                self._send_json({'events': [], 'total': 0, 'error': 'source param required'})
+            else:
+                try:
+                    conn = sqlite3.connect(EVENTS_DB)
+                    rows = conn.execute(
+                        'SELECT timestamp, type, uid, binary_name, args, policy, is_agent, source, trace_id '
+                        'FROM events WHERE source = ? ORDER BY id DESC LIMIT ?',
+                        (source, limit)
+                    ).fetchall()
+                    total = conn.execute(
+                        'SELECT COUNT(*) FROM events WHERE source = ?', (source,)
+                    ).fetchone()[0]
+                    conn.close()
+                    events = [{
+                        'time': r[0], 'type': r[1], 'uid': r[2], 'binary': r[3],
+                        'args': r[4], 'policy': r[5], 'is_agent': bool(r[6]),
+                        'source': r[7], 'trace_id': r[8],
+                    } for r in rows]
+                    self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Access-Control-Allow-Origin', '*'); self.end_headers()
+                    self._send_json({'events': events, 'total': total, 'source': source})
+                except Exception as ex:
+                    self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+                    self._send_json({'events': [], 'total': 0, 'error': str(ex)})
         elif self.path.startswith('/api/agent-walk-traces'):
             # List recent traces for the picker dropdown. One row per
             # distinct trace_id, with summary (event count, time bounds,
