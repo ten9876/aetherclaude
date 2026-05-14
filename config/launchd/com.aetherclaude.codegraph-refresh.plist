@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aetherclaude.codegraph-refresh</string>
+
+  <!--
+    Nightly rebuild of the codegraph SQLite database read by the
+    dashboard's /codegraph route. Two steps:
+
+      1. codegraph-extract.py  — ctags-driven C++ symbol+edge extraction
+                                 from /Users/aetherclaude/workspace/AetherSDR/src
+                                 (~1 second wall time)
+      2. codegraph-analyze.py  — Louvain community detection + labeling
+                                 (~1.5 second wall time)
+
+    Total budget < 5 s, well within an off-hours window. We schedule at
+    03:00 local so it never overlaps an orchestrator run (those fire
+    when webhooks arrive — bunched in business hours).
+
+    Output: /Users/aetherclaude/data/codegraph.db (atomically replaced).
+    Dashboard reads it lazily on /api/codegraph/data requests, so no
+    daemon restart is needed; the next page load picks up the new db.
+  -->
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>/opt/homebrew/bin/python3 /Users/aetherclaude/bin/codegraph-extract.py /Users/aetherclaude/workspace/AetherSDR/src /Users/aetherclaude/data/codegraph.db &amp;&amp; /opt/homebrew/bin/python3 /Users/aetherclaude/bin/codegraph-analyze.py /Users/aetherclaude/data/codegraph.db</string>
+  </array>
+
+  <key>UserName</key>
+  <string>aetherclaude</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/aetherclaude</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <!--
+    Run once at load too, so a fresh deploy (no codegraph.db yet)
+    produces a usable db within seconds rather than waiting until the
+    next 03:00 window. Set false if you'd rather wait.
+  -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/aetherclaude/logs/codegraph-refresh.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/aetherclaude/logs/codegraph-refresh.log</string>
+
+  <!--
+    Not KeepAlive — this is a periodic one-shot. We want launchd to
+    invoke it at 03:00 and let it exit. If it crashes immediately on
+    load, ThrottleInterval prevents tight restart loops.
+  -->
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+</dict>
+</plist>
