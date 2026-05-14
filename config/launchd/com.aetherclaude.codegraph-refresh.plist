@@ -7,17 +7,26 @@
 
   <!--
     Nightly rebuild of the codegraph SQLite database read by the
-    dashboard's /codegraph route. Two steps:
+    dashboard's /codegraph route. Three steps, all inside a Linux
+    container (Colima or Docker Desktop on the Mac Mini):
 
-      1. codegraph-extract.py  — ctags-driven C++ symbol+edge extraction
-                                 from /Users/aetherclaude/workspace/AetherSDR/src
-                                 (~1 second wall time)
-      2. codegraph-analyze.py  — Louvain community detection + labeling
-                                 (~1.5 second wall time)
+      1. cmake configure        — produces compile_commands.json
+                                  (~10 s — no actual build)
+      2. codegraph-extract-clangd.py — libclang-driven AST extraction
+                                  (~2-4 min on 10 perf cores)
+      3. codegraph-analyze.py   — Louvain community detection
+                                  (~0.5 s)
 
-    Total budget < 5 s, well within an off-hours window. We schedule at
-    03:00 local so it never overlaps an orchestrator run (those fire
-    when webhooks arrive — bunched in business hours).
+    Why containerized: AetherSDR is Linux-native and its ccdb references
+    Linux include paths (Qt6 from apt, PipeWire/ALSA dev headers). The
+    aetherclaude-codegraph image is a thin layer over the AetherSDR CI
+    image, adding clang + libclang + python3-clang. Build once with:
+        docker build -t aetherclaude-codegraph:latest \
+                     /Users/Shared/aetherclaude/docker/codegraph
+
+    Total budget ~3 min. Schedule at 03:00 local so it never overlaps
+    an orchestrator run (those fire when webhooks arrive — bunched in
+    business hours).
 
     Output: /Users/aetherclaude/data/codegraph.db (atomically replaced).
     Dashboard reads it lazily on /api/codegraph/data requests, so no
@@ -28,7 +37,7 @@
   <array>
     <string>/bin/bash</string>
     <string>-c</string>
-    <string>/opt/homebrew/bin/python3 /Users/aetherclaude/bin/codegraph-extract.py /Users/aetherclaude/workspace/AetherSDR/src /Users/aetherclaude/data/codegraph.db &amp;&amp; /opt/homebrew/bin/python3 /Users/aetherclaude/bin/codegraph-analyze.py /Users/aetherclaude/data/codegraph.db</string>
+    <string>/usr/local/bin/docker run --rm --name codegraph-refresh -v /Users/aetherclaude/workspace/AetherSDR:/src:ro -v /Users/Shared/aetherclaude/bin:/tools:ro -v /Users/aetherclaude/data:/out aetherclaude-codegraph:latest /codegraph-run.sh</string>
   </array>
 
   <key>UserName</key>
