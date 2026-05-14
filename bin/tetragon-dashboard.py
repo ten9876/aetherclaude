@@ -3132,6 +3132,17 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
   #empty-state { padding:20px; text-align:center; color:#607080; font-size:12px; line-height:1.6; }
   .loading-spinner { display:inline-block; width:12px; height:12px; border:2px solid #203050; border-top-color:#00bceb; border-radius:50%; animation:spin 0.8s linear infinite; vertical-align:middle; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  /* Phase-3 live overlay. The .live-dot pulses while the SSE stream
+   * is connected. Per-trace rows list the active claude runs and the
+   * file they last touched. */
+  #live-status { display:flex; align-items:center; gap:6px; color:#607080; font-size:11px; }
+  .live-dot { width:8px; height:8px; border-radius:50%; background:#404050; display:inline-block; }
+  .live-dot.on { background:#00ff88; box-shadow:0 0 6px #00ff88; animation:livepulse 1.5s ease-in-out infinite; }
+  @keyframes livepulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+  .trace-row { display:flex; align-items:center; gap:6px; padding:3px 6px; font-family:'SF Mono', monospace; font-size:10px; color:#a0b0c0; }
+  .trace-swatch { width:8px; height:8px; border-radius:50%; flex:0 0 8px; }
+  .trace-row .tfile { color:#809090; flex:1; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; }
+  .trace-row .tact { color:#607080; }
 </style>
 </head>
 <body>
@@ -3148,6 +3159,8 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
 <aside id="side">
   <h3>Node detail</h3>
   <div id="node-info"><div id="empty-state">Click a node to inspect.<br>Drag to pan, scroll to zoom.</div></div>
+  <h3>Live activity <span id="live-status"><span class="live-dot" id="live-dot"></span><span id="live-text">offline</span></span></h3>
+  <div id="trace-list"><div id="empty-state" style="padding:8px 0">Idle. Symbol pulses appear here when claude runs touch the codebase.</div></div>
   <h3>Top communities</h3>
   <div id="community-list">—</div>
   <h3>Metadata</h3>
@@ -3192,6 +3205,9 @@ async function fetchMeta() {
 
 function rebuildGraph(data) {
   if (_state.sigma) { _state.sigma.kill(); _state.sigma = null; }
+  // The old graph and its node IDs are gone — drop any active pulses so
+  // stale origColor/origSize references don't bleed into the new graph.
+  if (typeof _live !== 'undefined') { _live.pulses.clear(); }
   const g = new graphology.Graph({ type: 'undirected', multi: false });
   for (const n of data.nodes) {
     g.addNode(n.id, {
@@ -3348,6 +3364,152 @@ document.getElementById('search').addEventListener('input', e => {
   }
 });
 
+// ---------------------------------------------------------------
+// Phase-3 live agent activity overlay.
+// Subscribes to /api/codegraph/stream (Server-Sent Events) and
+// pulses graph nodes corresponding to files claude is actively
+// reading/editing. One color per trace_id so concurrent runs are
+// visually distinguishable.
+// ---------------------------------------------------------------
+
+const _live = {
+  es: null,
+  pulses: new Map(),    // nodeId -> {origColor, origSize, color, expires}
+  traces: new Map(),    // trace_id -> {color, lastFile, lastAction, lastTs}
+  tickTimer: null,
+  retryDelay: 1000,
+};
+
+function traceColor(tid) {
+  // Stable hash of trace_id (any string) -> HSL hue.
+  let h = 0;
+  const s = String(tid || 'unknown');
+  for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
+  const hue = ((h % 360) + 360) % 360;
+  return `hsl(${hue}, 90%, 62%)`;
+}
+
+const PULSE_MS = 3500;
+const MAX_PULSE_SIZE_BOOST = 8;
+
+function pulseNode(nodeId, color) {
+  const g = _state.graph;
+  if (!g || !g.hasNode(nodeId)) return;
+  let p = _live.pulses.get(nodeId);
+  if (!p) {
+    const origColor = g.getNodeAttribute(nodeId, 'color');
+    const origSize = g.getNodeAttribute(nodeId, 'size');
+    p = { origColor, origSize, color, expires: 0 };
+    _live.pulses.set(nodeId, p);
+  }
+  p.color = color;
+  p.expires = performance.now() + PULSE_MS;
+  g.setNodeAttribute(nodeId, 'color', color);
+  g.setNodeAttribute(nodeId, 'size', Math.min(40, (p.origSize || 4) + MAX_PULSE_SIZE_BOOST));
+}
+
+function pulseTick() {
+  const g = _state.graph;
+  if (!g) return;
+  const now = performance.now();
+  let dirty = false;
+  for (const [nid, p] of _live.pulses) {
+    if (now >= p.expires) {
+      if (g.hasNode(nid)) {
+        g.setNodeAttribute(nid, 'color', p.origColor);
+        g.setNodeAttribute(nid, 'size', p.origSize);
+      }
+      _live.pulses.delete(nid);
+      dirty = true;
+    } else {
+      // Decay: fade size back toward original linearly with remaining time.
+      const remaining = (p.expires - now) / PULSE_MS;  // 1..0
+      if (g.hasNode(nid)) {
+        const boost = MAX_PULSE_SIZE_BOOST * remaining;
+        g.setNodeAttribute(nid, 'size', Math.min(40, (p.origSize || 4) + boost));
+      }
+      dirty = true;
+    }
+  }
+  // Prune traces idle > 30 s.
+  for (const [tid, t] of _live.traces) {
+    if (now - t.lastSeen > 30000) {
+      _live.traces.delete(tid);
+      dirty = true;
+    }
+  }
+  if (dirty) {
+    if (_state.sigma) _state.sigma.refresh();
+    renderTraceList();
+  }
+}
+
+function renderTraceList() {
+  const el = document.getElementById('trace-list');
+  if (!el) return;
+  if (_live.traces.size === 0) {
+    el.innerHTML = '<div id="empty-state" style="padding:8px 0">Idle. Symbol pulses appear here when claude runs touch the codebase.</div>';
+    return;
+  }
+  const rows = [..._live.traces.entries()]
+    .sort((a, b) => b[1].lastSeen - a[1].lastSeen)
+    .slice(0, 8)
+    .map(([tid, t]) =>
+      `<div class="trace-row"><span class="trace-swatch" style="background:${t.color}"></span>` +
+      `<span class="tfile">${escapeHtml(t.lastFile || '—')}</span>` +
+      `<span class="tact">${escapeHtml(t.lastAction || '')}</span></div>`
+    ).join('');
+  el.innerHTML = rows;
+}
+
+function setLiveStatus(on) {
+  const dot = document.getElementById('live-dot');
+  const txt = document.getElementById('live-text');
+  if (dot) dot.classList.toggle('on', !!on);
+  if (txt) txt.textContent = on ? 'live' : 'offline';
+}
+
+function connectLiveStream() {
+  if (_live.es) { try { _live.es.close(); } catch (e) {} _live.es = null; }
+  let es;
+  try { es = new EventSource('/api/codegraph/stream'); }
+  catch (e) { setLiveStatus(false); return; }
+  _live.es = es;
+  es.onopen = () => { setLiveStatus(true); _live.retryDelay = 1000; };
+  es.onerror = () => {
+    setLiveStatus(false);
+    try { es.close(); } catch (e) {}
+    _live.es = null;
+    // Backoff and reconnect.
+    setTimeout(connectLiveStream, _live.retryDelay);
+    _live.retryDelay = Math.min(_live.retryDelay * 2, 30000);
+  };
+  es.onmessage = ev => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    if (!msg || !Array.isArray(msg.symbol_ids)) return;
+    const tid = msg.trace_id || 'unknown';
+    const color = traceColor(tid);
+    _live.traces.set(tid, {
+      color,
+      lastFile: msg.file || '',
+      lastAction: msg.action || '',
+      lastSeen: performance.now(),
+    });
+    for (const sid of msg.symbol_ids) {
+      pulseNode(sid, color);
+    }
+    if (_state.sigma) _state.sigma.refresh();
+    renderTraceList();
+  };
+}
+
+function startLiveOverlay() {
+  if (_live.tickTimer) clearInterval(_live.tickTimer);
+  _live.tickTimer = setInterval(pulseTick, 200);
+  connectLiveStream();
+}
+
 async function init() {
   try {
     _state.meta = await fetchMeta();
@@ -3355,6 +3517,7 @@ async function init() {
       `<div class="field"><div class="k">${escapeHtml(k)}</div><div class="v">${escapeHtml(v)}</div></div>`
     ).join('');
     rebuildGraph(await fetchData(_state.minDegree));
+    startLiveOverlay();
   } catch (e) {
     setStats('error: ' + e.message);
     document.getElementById('node-info').innerHTML = '<div id="empty-state" style="color:#ff6b6b">' + escapeHtml(e.message) + '<br><br>Has codegraph-extract.py been run? Run:<br><code>bin/codegraph-extract.py; bin/codegraph-analyze.py</code></div>';
@@ -3969,6 +4132,103 @@ class H(BaseHTTPRequestHandler):
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps({'error': f'codegraph db unavailable: {ex}'}).encode())
+        elif self.path == '/api/codegraph/stream':
+            # Phase-3 live agent-activity overlay. Server-Sent Events
+            # stream of claude:Read/Edit/Write tool events mapped to
+            # codegraph symbol IDs via the file_to_symbols table.
+            #
+            # Mapping is by file basename (e.g. "RadioModel.h") because
+            # tail_sessions stores only the basename in args. That works
+            # for AetherSDR where each filename is unique. Multiple-symbol
+            # matches across files with the same basename would pulse all
+            # of them, which is the correct visual.
+            #
+            # Polls events.db every 500 ms, sends a heartbeat comment
+            # every 30 s to keep the connection alive through reverse
+            # proxies.
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Cache-Control', 'no-cache')
+            self.send_header('Connection', 'keep-alive')
+            self.send_header('X-Accel-Buffering', 'no')
+            self.end_headers()
+            try:
+                last_seen_id = -1
+                last_hb = time.time()
+                # Open codegraph.db once and reuse — file_to_symbols
+                # only changes on the nightly refresh, no need to reopen.
+                try:
+                    cg_conn = sqlite3.connect(CODEGRAPH_DB)
+                except sqlite3.Error:
+                    cg_conn = None
+                while True:
+                    try:
+                        conn = sqlite3.connect(EVENTS_DB)
+                        conn.row_factory = sqlite3.Row
+                        if last_seen_id < 0:
+                            # First poll — seed from now, don't replay history.
+                            row = conn.execute('SELECT MAX(id) FROM events').fetchone()
+                            last_seen_id = (row[0] or 0)
+                        rows = conn.execute(
+                            "SELECT id, timestamp AS time, trace_id, "
+                            "       binary_name, args FROM events "
+                            " WHERE id > ? AND source='claude-code' "
+                            "   AND (binary_name LIKE 'claude:Read%' "
+                            "     OR binary_name LIKE 'claude:Edit%' "
+                            "     OR binary_name LIKE 'claude:Write%' "
+                            "     OR binary_name LIKE 'claude:Glob%' "
+                            "     OR binary_name LIKE 'claude:Grep%') "
+                            " ORDER BY id ASC LIMIT 50",
+                            (last_seen_id,)
+                        ).fetchall()
+                        conn.close()
+                        for r in rows:
+                            last_seen_id = r['id']
+                            basename = (r['args'] or '').strip()
+                            if not basename:
+                                continue
+                            binary = r['binary_name'] or ''
+                            if 'Edit' in binary or 'Write' in binary:
+                                action = 'edit'
+                            else:
+                                action = 'read'
+                            sym_ids = []
+                            if cg_conn is not None:
+                                try:
+                                    sym_ids = [
+                                        sid for (sid,) in cg_conn.execute(
+                                            'SELECT DISTINCT symbol_id '
+                                            '  FROM file_to_symbols '
+                                            ' WHERE file_path LIKE ? '
+                                            ' LIMIT 200',
+                                            (f'%/{basename}',)
+                                        ).fetchall()
+                                    ]
+                                except sqlite3.Error:
+                                    pass
+                            evt = {
+                                'trace_id': r['trace_id'] or '',
+                                'action': action,
+                                'file': basename,
+                                'symbol_ids': sym_ids,
+                                'ts': r['time'],
+                            }
+                            self.wfile.write(
+                                f'data: {json.dumps(evt)}\n\n'.encode()
+                            )
+                            self.wfile.flush()
+                        if time.time() - last_hb > 30:
+                            self.wfile.write(b': hb\n\n')
+                            self.wfile.flush()
+                            last_hb = time.time()
+                        time.sleep(0.5)
+                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                        break
+                if cg_conn is not None:
+                    cg_conn.close()
+            except Exception:
+                pass
+            return
         elif self.path == '/api/codegraph/meta':
             # Returns the metadata table as a flat {key: value} JSON.
             try:
