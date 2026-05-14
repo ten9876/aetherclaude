@@ -1,11 +1,11 @@
-# Codegraph extractor image — derived from the AetherSDR CI image,
-# adds clang/libclang/python-clang so codegraph-extract-clangd.py can
-# run libclang against AetherSDR's compile_commands.json.
+# Codegraph extractor image — self-contained Ubuntu 24.04 with the
+# dev headers AetherSDR uses + clang/libclang/python-clang.
 #
-# The base image already has every dev header AetherSDR's CMakeLists
-# can find_package(), which is exactly what libclang's TU parser needs
-# to resolve includes. Adding clang lets us parse those TUs without
-# pulling LLVM's full toolchain ourselves.
+# We use Ubuntu directly (not the ghcr.io aethersdr-ci base) because
+# that base is published as amd64-only — on the Mac Mini M4 it would
+# run under qemu emulation at ~10x slowdown (~45 min full extraction
+# vs ~3 min native). Ubuntu's multi-arch manifest pulls arm64 natively
+# on Apple Silicon.
 #
 # Build (locally on the Mac Mini):
 #   docker build -t aetherclaude-codegraph:latest \
@@ -18,16 +18,44 @@
 #     -v /Users/aetherclaude/data:/out \
 #     aetherclaude-codegraph:latest \
 #     /codegraph-run.sh
-#
-# A wrapper /codegraph-run.sh is provided so the launchd plist stays
-# a one-liner — it cmake-configures the build dir, runs the extractor,
-# and runs the analyzer.
 
-FROM ghcr.io/ten9876/aethersdr-ci:latest
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# AetherSDR dev headers (mirrors .github/docker/Dockerfile in the
+# AetherSDR repo) + clang/libclang/python-clang for the extractor.
+# Kept as a single layer so the docker build cache stays compact.
 RUN apt-get update && apt-get install -y \
+    cmake \
+    ninja-build \
+    pkg-config \
+    g++ \
+    git \
+    patch \
+    curl \
+    make \
+    python3 \
+    qt6-base-dev \
+    qt6-multimedia-dev \
+    qt6-websockets-dev \
+    qt6-serialport-dev \
+    qt6-base-private-dev \
+    qt6-shader-baker \
+    qt6-shadertools-dev \
+    libgl1-mesa-dev \
+    libasound2-dev \
+    libfftw3-dev \
+    libhidapi-dev \
+    qtkeychain-qt6-dev \
+    portaudio19-dev \
+    libpipewire-0.3-dev \
+    autoconf \
+    automake \
+    libtool \
+    libssl-dev \
+    libmosquitto-dev \
+    ca-certificates \
     clang \
     libclang-dev \
     python3-clang \
