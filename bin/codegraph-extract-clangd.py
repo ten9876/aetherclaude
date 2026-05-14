@@ -147,22 +147,33 @@ SYMBOL_KINDS = {
 }
 
 
+def _safe_kind(cursor):
+    """Return cursor.kind or None on unknown-kind ValueError. The
+    python-clang bindings in Ubuntu 24.04 (18.1.3) raise when the
+    underlying libclang reports kinds the bindings don't know about
+    (e.g. ConceptDecl from C++20). Skipping the cursor is fine —
+    we can't extract semantic info we don't have a mapping for."""
+    try:
+        return cursor.kind
+    except ValueError:
+        return None
+
+
 def _kind_for(cursor):
     """Map a libclang cursor to our schema's kind string, with Qt
     signal/slot detection. Signals/slots are CXX_METHOD with an
     annotation comment or located inside a `signals:` / `slots:`
     section. libclang doesn't expose the access-specifier kind
-    directly, so we approximate by checking the cursor's raw
-    extent for the surrounding access label. Cheap-ish because we
-    only do this for CXX_METHOD."""
-    base = SYMBOL_KINDS.get(cursor.kind)
+    directly, so we approximate via ANNOTATE_ATTR children."""
+    k = _safe_kind(cursor)
+    if k is None:
+        return None
+    base = SYMBOL_KINDS.get(k)
     if base != 'method':
         return base
-    # Try to detect Qt signal/slot via attribute. clang's MOC-aware
-    # builds annotate signals with `__attribute__((annotate("qt_signal")))`
-    # — we just look for child ANNOTATE_ATTR cursors.
     for child in cursor.get_children():
-        if child.kind == CursorKind.ANNOTATE_ATTR:
+        ck = _safe_kind(child)
+        if ck == CursorKind.ANNOTATE_ATTR:
             sp = child.spelling
             if 'qt_signal' in sp:
                 return 'signal'
@@ -312,8 +323,9 @@ def _process_tu(args_tuple):
         then the slot. Lambda slots leave only the signal — skipped."""
         refs = []
         for child in c.walk_preorder():
-            if child.kind == CursorKind.DECL_REF_EXPR and child.referenced is not None:
-                rk = child.referenced.kind
+            ck = _safe_kind(child)
+            if ck == CursorKind.DECL_REF_EXPR and child.referenced is not None:
+                rk = _safe_kind(child.referenced)
                 if rk in (CursorKind.CXX_METHOD, CursorKind.FUNCTION_DECL):
                     if child.referenced.spelling == 'connect':
                         continue
@@ -330,6 +342,16 @@ def _process_tu(args_tuple):
     # so we maintain our own enclosing-function AND enclosing-class
     # stacks for attribution.
     def walk(c, enc_func_usr, enc_class_usr):
+        # Catch unknown CursorKind IDs from the libclang binary that
+        # python-clang doesn't have entries for. Common when running
+        # ubuntu's python3-clang 18.1.3 against a newer libclang
+        # binary (kind 154 = ConceptDecl / OMP*, etc.). Skipping the
+        # cursor entirely is the right call — it can't carry semantic
+        # info we know how to use anyway.
+        try:
+            cur_kind = c.kind
+        except ValueError:
+            return
         if c.location.file is None:
             for child in c.get_children():
                 walk(child, enc_func_usr, enc_class_usr)
@@ -339,7 +361,7 @@ def _process_tu(args_tuple):
 
         new_func = enc_func_usr
         new_class = enc_class_usr
-        if c.kind in SYMBOL_KINDS:
+        if cur_kind in SYMBOL_KINDS:
             if in_src:
                 # Record declarations as well as definitions. Qt signals
                 # are declared but never defined in C++ source (MOC
@@ -350,11 +372,11 @@ def _process_tu(args_tuple):
                 # location if we see it; otherwise the decl is fine.
                 is_def = c.is_definition()
                 usr = record_symbol(c, fpath, prefer_overwrite=is_def)
-                if c.kind in _FUNC_KINDS and usr:
+                if cur_kind in _FUNC_KINDS and usr:
                     new_func = usr
-                elif c.kind in _CLASS_KINDS and usr:
+                elif cur_kind in _CLASS_KINDS and usr:
                     new_class = usr
-        elif c.kind == CursorKind.CALL_EXPR and in_src and enc_func_usr:
+        elif cur_kind == CursorKind.CALL_EXPR and in_src and enc_func_usr:
             ref = c.referenced
             if ref is not None:
                 callee_usr = ref.get_usr()
@@ -363,7 +385,7 @@ def _process_tu(args_tuple):
                         handle_connect_call(c)
                     else:
                         edges.append((enc_func_usr, callee_usr, 'calls'))
-        elif c.kind == CursorKind.CXX_BASE_SPECIFIER and in_src and enc_class_usr:
+        elif cur_kind == CursorKind.CXX_BASE_SPECIFIER and in_src and enc_class_usr:
             base = c.referenced
             if base is not None:
                 base_usr = base.get_usr()
