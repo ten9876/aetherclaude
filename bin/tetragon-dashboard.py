@@ -78,6 +78,13 @@ PRIVATE_FONTS_DIR = os.environ.get(
     'AETHERCLAUDE_PRIVATE_FONTS_DIR',
     '/Users/aetherclaude/private/fonts'
 )
+
+# Codegraph (AetherSDR knowledge-graph viz) — read by /codegraph and
+# /api/codegraph/* routes. Built by bin/codegraph-extract.py +
+# codegraph-analyze.py on a nightly launchd schedule. Static JS assets
+# (Sigma.js + graphology) are vendored under the repo's assets/codegraph/.
+CODEGRAPH_DB = '/Users/aetherclaude/data/codegraph.db'
+CODEGRAPH_ASSETS_DIR = '/Users/Shared/aetherclaude/assets/codegraph'
 CLAUDE_PROJECTS_DIR = '/Users/aetherclaude/.claude/projects'
 # How many chars of prompt/response text to surface in the args column.
 # Long enough to be informative for the SE demo (the first paragraph of an
@@ -3094,6 +3101,270 @@ setInterval(refresh,REFRESH_MS);refresh();
 </div>
 </body></html>""".replace('REFRESH_MS',str(REFRESH_INTERVAL_MS))
 
+CODEGRAPH_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AetherSDR Codegraph</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#0a0a1a; color:#d0d8e0; font-family:'SF Pro Text', system-ui, sans-serif; }
+  header { position:fixed; top:0; left:0; right:0; height:48px; background:#101020; border-bottom:1px solid #203050; display:flex; align-items:center; padding:0 16px; gap:16px; z-index:10; }
+  header h1 { margin:0; font-size:14px; font-weight:600; color:#00bceb; letter-spacing:0.5px; text-transform:uppercase; }
+  header a.back { color:#607080; text-decoration:none; font-size:11px; border:1px solid #203050; padding:4px 10px; border-radius:4px; }
+  header a.back:hover { color:#00bceb; border-color:#00bceb; }
+  .controls { display:flex; align-items:center; gap:14px; font-size:11px; color:#809090; }
+  .controls label { display:flex; align-items:center; gap:6px; }
+  .controls input[type=range] { width:120px; }
+  .controls input[type=text] { background:#0a0a1a; color:#d0d8e0; border:1px solid #203050; padding:3px 8px; border-radius:3px; width:200px; font-family:inherit; font-size:11px; }
+  #stats { color:#607080; font-size:11px; margin-left:auto; }
+  #sigma-container { position:fixed; top:48px; left:0; right:320px; bottom:0; background:#08081a; }
+  aside#side { position:fixed; top:48px; right:0; bottom:0; width:320px; background:#0f0f22; border-left:1px solid #203050; overflow-y:auto; padding:16px; box-sizing:border-box; font-size:11px; }
+  aside h3 { color:#00bceb; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; margin:18px 0 8px 0; border-bottom:1px solid #203050; padding-bottom:4px; }
+  aside h3:first-child { margin-top:0; }
+  .field { display:flex; gap:6px; margin:4px 0; }
+  .field .k { color:#607080; min-width:80px; }
+  .field .v { color:#d0d8e0; word-break:break-all; font-family:'SF Mono', monospace; font-size:10px; }
+  .neighbor { padding:3px 6px; margin:2px 0; border:1px solid #203050; border-radius:3px; cursor:pointer; font-family:'SF Mono', monospace; font-size:10px; color:#a0b0c0; }
+  .neighbor:hover { border-color:#00bceb; color:#00bceb; }
+  .community-row { display:flex; justify-content:space-between; padding:3px 6px; cursor:pointer; border-radius:3px; }
+  .community-row:hover { background:#1a1a2a; }
+  .community-swatch { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:middle; margin-right:6px; }
+  #empty-state { padding:20px; text-align:center; color:#607080; font-size:12px; line-height:1.6; }
+  .loading-spinner { display:inline-block; width:12px; height:12px; border:2px solid #203050; border-top-color:#00bceb; border-radius:50%; animation:spin 0.8s linear infinite; vertical-align:middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>AetherSDR Codegraph</h1>
+  <a class="back" href="/">&larr; Dashboard</a>
+  <div class="controls">
+    <label>min degree: <input type="range" id="min-degree" min="0" max="50" value="5"><span id="min-degree-val">5</span></label>
+    <label>search: <input type="text" id="search" placeholder="symbol name..."></label>
+  </div>
+  <span id="stats"><span class="loading-spinner"></span> loading...</span>
+</header>
+<div id="sigma-container"></div>
+<aside id="side">
+  <h3>Node detail</h3>
+  <div id="node-info"><div id="empty-state">Click a node to inspect.<br>Drag to pan, scroll to zoom.</div></div>
+  <h3>Top communities</h3>
+  <div id="community-list">—</div>
+  <h3>Metadata</h3>
+  <div id="meta">—</div>
+</aside>
+
+<script src="/codegraph/assets/graphology.umd.min.js"></script>
+<script src="/codegraph/assets/graphology-library.min.js"></script>
+<script src="/codegraph/assets/sigma.min.js"></script>
+<script>
+'use strict';
+
+// Deterministic color-per-community via HSL hash.
+function communityColor(cid) {
+  const h = ((cid * 137) % 360 + 360) % 360;
+  return `hsl(${h}, 65%, 60%)`;
+}
+
+const _state = {
+  sigma: null,
+  graph: null,
+  minDegree: 5,
+  rawNodes: [],
+  rawEdges: [],
+  meta: {},
+  highlightedId: null,
+};
+
+function setStats(text) { document.getElementById('stats').textContent = text; }
+
+async function fetchData(minDegree) {
+  const r = await fetch('/api/codegraph/data?min_degree=' + minDegree);
+  if (!r.ok) throw new Error('fetch failed: ' + r.status);
+  return r.json();
+}
+
+async function fetchMeta() {
+  const r = await fetch('/api/codegraph/meta');
+  if (!r.ok) return {};
+  return r.json();
+}
+
+function rebuildGraph(data) {
+  if (_state.sigma) { _state.sigma.kill(); _state.sigma = null; }
+  const g = new graphology.Graph({ type: 'undirected', multi: false });
+  for (const n of data.nodes) {
+    g.addNode(n.id, {
+      label: n.label,
+      kind: n.kind,
+      file: n.file,
+      line: n.line,
+      community: n.community,
+      community_label: n.community_label,
+      degree: n.degree,
+      // Random initial positions in a unit disk — forceAtlas2 spreads them out.
+      x: (Math.random() - 0.5) * 1000,
+      y: (Math.random() - 0.5) * 1000,
+      size: Math.max(2, Math.min(20, Math.sqrt(n.degree) * 1.5)),
+      color: communityColor(n.community || 0),
+    });
+  }
+  for (const e of data.edges) {
+    if (g.hasNode(e.source) && g.hasNode(e.target) && !g.hasEdge(e.source, e.target)) {
+      g.addEdge(e.source, e.target, { kind: e.kind, size: 0.5, color: '#1a2030' });
+    }
+  }
+  _state.graph = g;
+  _state.rawNodes = data.nodes;
+  _state.rawEdges = data.edges;
+
+  setStats(`${g.order} nodes · ${g.size} edges · running layout…`);
+
+  // Client-side ForceAtlas2 — graphologyLibrary.layoutForceAtlas2
+  const layoutFa2 = graphologyLibrary.layoutForceAtlas2;
+  const t0 = performance.now();
+  layoutFa2.assign(g, {
+    iterations: 200,
+    settings: {
+      barnesHutOptimize: true,
+      gravity: 1,
+      scalingRatio: 10,
+      slowDown: 1,
+      strongGravityMode: false,
+    },
+  });
+  const layoutMs = performance.now() - t0;
+
+  // Render
+  const container = document.getElementById('sigma-container');
+  _state.sigma = new Sigma(g, container, {
+    renderEdgeLabels: false,
+    defaultEdgeColor: '#1a2030',
+    labelRenderedSizeThreshold: 8,
+    labelColor: { color: '#a0b0c0' },
+    labelFont: 'SF Mono, monospace',
+    labelSize: 11,
+    minCameraRatio: 0.05,
+    maxCameraRatio: 10,
+  });
+  _state.sigma.on('clickNode', e => selectNode(e.node));
+  _state.sigma.on('clickStage', () => selectNode(null));
+
+  setStats(`${g.order} nodes · ${g.size} edges · layout in ${(layoutMs/1000).toFixed(1)}s`);
+
+  // Build community list
+  renderCommunityList();
+}
+
+function renderCommunityList() {
+  const counts = {};
+  const labels = {};
+  for (const n of _state.rawNodes) {
+    const c = n.community || 0;
+    counts[c] = (counts[c] || 0) + 1;
+    labels[c] = n.community_label || ('cid:'+c);
+  }
+  const sorted = Object.keys(counts).map(c => [c, counts[c], labels[c]]).sort((a,b) => b[1]-a[1]).slice(0, 20);
+  const el = document.getElementById('community-list');
+  el.innerHTML = sorted.map(([cid, n, label]) =>
+    `<div class="community-row" data-cid="${cid}"><span><span class="community-swatch" style="background:${communityColor(parseInt(cid,10))}"></span>${escapeHtml(label)}</span><span>${n}</span></div>`
+  ).join('');
+  el.querySelectorAll('.community-row').forEach(row => {
+    row.addEventListener('click', () => highlightCommunity(parseInt(row.dataset.cid, 10)));
+  });
+}
+
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function selectNode(nodeId) {
+  _state.highlightedId = nodeId;
+  if (!nodeId) {
+    document.getElementById('node-info').innerHTML = '<div id="empty-state">Click a node to inspect.<br>Drag to pan, scroll to zoom.</div>';
+    return;
+  }
+  const g = _state.graph;
+  const attr = g.getNodeAttributes(nodeId);
+  const neighborIds = g.neighbors(nodeId).slice(0, 12);
+  const neighborsHtml = neighborIds.map(nid => {
+    const na = g.getNodeAttributes(nid);
+    return `<div class="neighbor" data-node="${nid}">${escapeHtml(na.label)}</div>`;
+  }).join('');
+  document.getElementById('node-info').innerHTML = `
+    <div class="field"><div class="k">name</div><div class="v">${escapeHtml(attr.label)}</div></div>
+    <div class="field"><div class="k">kind</div><div class="v">${escapeHtml(attr.kind)}</div></div>
+    <div class="field"><div class="k">file</div><div class="v">${escapeHtml(attr.file||'?')}${attr.line?':'+attr.line:''}</div></div>
+    <div class="field"><div class="k">degree</div><div class="v">${attr.degree}</div></div>
+    <div class="field"><div class="k">community</div><div class="v"><span class="community-swatch" style="background:${attr.color}"></span>${escapeHtml(attr.community_label||'?')}</div></div>
+    <h3 style="margin-top:14px">Neighbors (top ${neighborIds.length}/${g.degree(nodeId)})</h3>
+    ${neighborsHtml || '<div class="field"><div class="v">(no edges visible at current degree filter)</div></div>'}
+  `;
+  document.getElementById('node-info').querySelectorAll('.neighbor').forEach(el => {
+    el.addEventListener('click', () => {
+      const nid = el.dataset.node;
+      _state.sigma.getCamera().animate({ x: _state.graph.getNodeAttribute(nid, 'x'), y: _state.graph.getNodeAttribute(nid, 'y'), ratio: 0.3 }, { duration: 400 });
+      selectNode(nid);
+    });
+  });
+}
+
+function highlightCommunity(cid) {
+  const g = _state.graph;
+  g.forEachNode((nid, attr) => {
+    const matches = (attr.community === cid);
+    g.setNodeAttribute(nid, 'color', matches ? attr.color : '#152035');
+  });
+  _state.sigma.refresh();
+}
+
+let _refetchTimer = null;
+document.getElementById('min-degree').addEventListener('input', e => {
+  const v = parseInt(e.target.value, 10);
+  document.getElementById('min-degree-val').textContent = v;
+  _state.minDegree = v;
+  if (_refetchTimer) clearTimeout(_refetchTimer);
+  _refetchTimer = setTimeout(async () => {
+    setStats('<span class="loading-spinner"></span> reloading…');
+    try { rebuildGraph(await fetchData(v)); } catch (e) { setStats('error: ' + e.message); }
+  }, 250);
+});
+
+document.getElementById('search').addEventListener('input', e => {
+  const q = e.target.value.toLowerCase().trim();
+  if (!_state.graph) return;
+  const g = _state.graph;
+  let firstMatch = null;
+  g.forEachNode((nid, attr) => {
+    const matches = q && attr.label.toLowerCase().includes(q);
+    if (q && matches) {
+      g.setNodeAttribute(nid, 'highlighted', true);
+      if (!firstMatch) firstMatch = nid;
+    } else {
+      g.removeNodeAttribute(nid, 'highlighted');
+    }
+  });
+  _state.sigma.refresh();
+  if (firstMatch && q.length >= 3) {
+    _state.sigma.getCamera().animate({ x: g.getNodeAttribute(firstMatch, 'x'), y: g.getNodeAttribute(firstMatch, 'y'), ratio: 0.2 }, { duration: 400 });
+  }
+});
+
+async function init() {
+  try {
+    _state.meta = await fetchMeta();
+    document.getElementById('meta').innerHTML = Object.entries(_state.meta).map(([k,v]) =>
+      `<div class="field"><div class="k">${escapeHtml(k)}</div><div class="v">${escapeHtml(v)}</div></div>`
+    ).join('');
+    rebuildGraph(await fetchData(_state.minDegree));
+  } catch (e) {
+    setStats('error: ' + e.message);
+    document.getElementById('node-info').innerHTML = '<div id="empty-state" style="color:#ff6b6b">' + escapeHtml(e.message) + '<br><br>Has codegraph-extract.py been run? Run:<br><code>bin/codegraph-extract.py; bin/codegraph-analyze.py</code></div>';
+  }
+}
+init();
+</script>
+</body>
+</html>"""
+
 AGENT_WALK_HTML = r"""<!DOCTYPE html>
 <html><head><title>AetherClaude Agent Walk</title><meta charset="utf-8">
 <style>
@@ -3629,6 +3900,88 @@ class H(BaseHTTPRequestHandler):
         elif self.path == '/agent-walk' or self.path.startswith('/agent-walk?'):
             self.send_response(200); self.send_header('Content-Type', 'text/html'); self.end_headers()
             self.wfile.write(AGENT_WALK_HTML.encode())
+        elif self.path == '/codegraph' or self.path.startswith('/codegraph?'):
+            # AetherSDR codebase knowledge-graph viz. Loads vendored
+            # Sigma.js + graphology from /codegraph/assets/, fetches
+            # /api/codegraph/data for nodes+edges, runs ForceAtlas2
+            # client-side. See bin/codegraph-extract.py + analyze.py.
+            self.send_response(200); self.send_header('Content-Type', 'text/html'); self.end_headers()
+            self.wfile.write(CODEGRAPH_HTML.encode())
+        elif self.path.startswith('/codegraph/assets/'):
+            # Static-file serve for the vendored Sigma+graphology JS.
+            # Tight path-safety: name must be a known JS asset.
+            name = self.path[len('/codegraph/assets/'):].split('?', 1)[0]
+            ALLOWED = {
+                'sigma.min.js': 'application/javascript',
+                'graphology.umd.min.js': 'application/javascript',
+                'graphology-library.min.js': 'application/javascript',
+            }
+            if name not in ALLOWED:
+                self.send_response(404); self.end_headers(); return
+            asset_path = os.path.join(CODEGRAPH_ASSETS_DIR, name)
+            try:
+                with open(asset_path, 'rb') as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', ALLOWED[name])
+                self.send_header('Cache-Control', 'public, max-age=86400')
+                self.end_headers()
+                self.wfile.write(data)
+            except (FileNotFoundError, OSError):
+                self.send_response(404); self.end_headers()
+        elif self.path.startswith('/api/codegraph/data'):
+            # Returns {nodes, edges} as JSON. Filters by min_degree query
+            # param (default 1) so the page doesn't ship the cloud of
+            # isolated nodes whose call sites our Phase-1 name-matcher
+            # missed.
+            from urllib.parse import urlparse, parse_qs
+            try:
+                qs = parse_qs(urlparse(self.path).query)
+                min_degree = max(0, int(qs.get('min_degree', ['1'])[0]))
+            except (ValueError, TypeError):
+                min_degree = 1
+            try:
+                conn = sqlite3.connect(CODEGRAPH_DB)
+                conn.row_factory = sqlite3.Row
+                cur = conn.execute(
+                    'SELECT id, qualified_name AS label, kind, file_path AS file, '
+                    'line_number AS line, community_id AS community, '
+                    'community_label, degree FROM symbols WHERE degree >= ?',
+                    (min_degree,),
+                )
+                nodes = [dict(r) for r in cur.fetchall()]
+                node_ids = {n['id'] for n in nodes}
+                # Edges where BOTH endpoints survived the degree filter
+                edges = []
+                for src, dst, kind in conn.execute(
+                    'SELECT src_id, dst_id, kind FROM edges'
+                ):
+                    if src in node_ids and dst in node_ids:
+                        edges.append({'source': src, 'target': dst, 'kind': kind})
+                conn.close()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Cache-Control', 'no-cache')
+                self.end_headers()
+                self.wfile.write(json.dumps({'nodes': nodes, 'edges': edges}).encode())
+            except sqlite3.Error as ex:
+                self.send_response(503)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': f'codegraph db unavailable: {ex}'}).encode())
+        elif self.path == '/api/codegraph/meta':
+            # Returns the metadata table as a flat {key: value} JSON.
+            try:
+                conn = sqlite3.connect(CODEGRAPH_DB)
+                meta = dict(conn.execute('SELECT key, value FROM metadata').fetchall())
+                conn.close()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(meta).encode())
+            except sqlite3.Error as ex:
+                self.send_response(503); self.end_headers()
+                self.wfile.write(json.dumps({'error': str(ex)}).encode())
         elif self.path == '/agent-sbom.json':
             try:
                 with open('/Users/aetherclaude/logs/agent-sbom.cdx.json', 'r') as sf:
