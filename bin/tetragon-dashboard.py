@@ -3173,10 +3173,20 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
 <script>
 'use strict';
 
-// Deterministic color-per-community via HSL hash.
+// Sigma.js WebGL node program parses hex/rgb, NOT hsl(). Convert.
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const k = n => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  const toHex = x => Math.round(255 * x).toString(16).padStart(2, '0');
+  return `#${toHex(f(0))}${toHex(f(8))}${toHex(f(4))}`;
+}
+
+// Deterministic color-per-community via HSL hash → hex.
 function communityColor(cid) {
   const h = ((cid * 137) % 360 + 360) % 360;
-  return `hsl(${h}, 65%, 60%)`;
+  return hslToHex(h, 65, 60);
 }
 
 const _state = {
@@ -3381,12 +3391,13 @@ const _live = {
 };
 
 function traceColor(tid) {
-  // Stable hash of trace_id (any string) -> HSL hue.
+  // Stable hash of trace_id (any string) -> hex. Hex (not hsl) because
+  // Sigma's WebGL node program only parses hex/rgb.
   let h = 0;
   const s = String(tid || 'unknown');
   for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
   const hue = ((h % 360) + 360) % 360;
-  return `hsl(${hue}, 90%, 62%)`;
+  return hslToHex(hue, 90, 62);
 }
 
 const PULSE_MS = 3500;
