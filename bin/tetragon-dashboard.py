@@ -89,6 +89,10 @@ PRIVATE_FONTS_DIR = os.environ.get(
 # aetherclaude-owned data dir write access.
 CODEGRAPH_DB = '/Users/Shared/aetherclaude/data/codegraph.db'
 CODEGRAPH_ASSETS_DIR = '/Users/Shared/aetherclaude/assets/codegraph'
+# graphify writes its self-contained viz inside the source tree it
+# analyzes. We serve it via /codegraph/graphify so the dashboard's
+# "Graphify" view mode can load it in an iframe.
+GRAPHIFY_OUT_DIR = '/Users/aetherclaude/workspace/AetherSDR/src/graphify-out'
 CLAUDE_PROJECTS_DIR = '/Users/aetherclaude/.claude/projects'
 # How many chars of prompt/response text to surface in the args column.
 # Long enough to be informative for the SE demo (the first paragraph of an
@@ -3181,6 +3185,7 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
         <option value="communities">Communities</option>
         <option value="symbols">Symbols (2D)</option>
         <option value="symbols3d" selected>Symbols (3D)</option>
+        <option value="graphify">Graphify</option>
       </select>
     </label>
     <label id="min-degree-label">min degree: <input type="range" id="min-degree" min="0" max="50" value="5"><span id="min-degree-val">5</span></label>
@@ -3196,6 +3201,11 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
      #threed-container by JS each frame; pointer-events:none so the
      WebGL canvas still gets all the orbit/zoom mouse events. -->
 <div id="threed-label-layer" style="position:fixed;top:48px;left:0;right:320px;bottom:0;pointer-events:none;display:none;overflow:hidden"></div>
+<!-- Graphify view — third-party vis-network HTML served as-is in an
+     iframe so its CSS/JS doesn't fight our Sigma + 3d-force-graph
+     stack. Sandboxed for safety; graphify's HTML loads vis-network
+     from unpkg, so we have to allow same-origin scripts. -->
+<iframe id="graphify-frame" src="about:blank" style="position:fixed;top:48px;left:0;right:320px;bottom:0;display:none;background:#0f0f1a;width:calc(100% - 320px);border:0"></iframe>
 <aside id="side">
   <h3>Node detail</h3>
   <div id="node-info"><div id="empty-state">Click a node to inspect.<br>Drag to pan, scroll to zoom.</div></div>
@@ -3643,6 +3653,7 @@ function refresh3DHighlight() {
 
 function show3DContainer() {
   document.getElementById('sigma-container').style.display = 'none';
+  document.getElementById('graphify-frame').style.display = 'none';
   document.getElementById('threed-container').style.display = '';
   document.getElementById('threed-label-layer').style.display = '';
   // 3d-force-graph caches width/height at construction time and
@@ -3650,6 +3661,20 @@ function show3DContainer() {
   // the container changed dimensions while hidden) and on every
   // future window resize / container resize.
   resize3D();
+}
+
+function showGraphifyContainer() {
+  document.getElementById('sigma-container').style.display = 'none';
+  document.getElementById('threed-container').style.display = 'none';
+  document.getElementById('threed-label-layer').style.display = 'none';
+  const frame = document.getElementById('graphify-frame');
+  // Lazy-load the iframe src so we don't fetch the 4 MB graph.html
+  // until the user actually picks the Graphify view.
+  if (!frame.dataset.loaded) {
+    frame.src = '/codegraph/graphify';
+    frame.dataset.loaded = '1';
+  }
+  frame.style.display = '';
 }
 
 function resize3D() {
@@ -3664,8 +3689,18 @@ function resize3D() {
 function show2DContainer() {
   document.getElementById('threed-container').style.display = 'none';
   document.getElementById('threed-label-layer').style.display = 'none';
+  document.getElementById('graphify-frame').style.display = 'none';
   document.getElementById('sigma-container').style.display = '';
   stop3DLabelLoop();
+}
+
+async function switchToGraphifyView() {
+  _state.viewMode = 'graphify';
+  document.getElementById('view-mode').value = 'graphify';
+  document.getElementById('back-to-dirs').style.display = 'none';
+  document.getElementById('min-degree-label').style.display = 'none';
+  showGraphifyContainer();
+  setStats('Graphify viz · vis-network · 5125 nodes / 8417 edges / 451 communities');
 }
 
 // HTML-overlay labels for 3D mode. We don't use SpriteText (needs an
@@ -4518,6 +4553,7 @@ document.getElementById('view-mode').addEventListener('change', e => {
   if (e.target.value === 'dirs') switchToDirectoryView();
   else if (e.target.value === 'communities') switchToCommunityView();
   else if (e.target.value === 'symbols3d') switchTo3DView();
+  else if (e.target.value === 'graphify') switchToGraphifyView();
   else switchToSymbolView();
 });
 document.getElementById('back-to-dirs').addEventListener('click', () => {
@@ -5136,6 +5172,36 @@ class H(BaseHTTPRequestHandler):
             # client-side. See bin/codegraph-extract.py + analyze.py.
             self.send_response(200); self.send_header('Content-Type', 'text/html'); self.end_headers()
             self.wfile.write(CODEGRAPH_HTML.encode())
+        elif self.path == '/codegraph/graphify' or self.path == '/codegraph/graphify.html':
+            # Serve graphify's self-contained graph.html as a fallback
+            # view mode. We render it inside an iframe so its vis-network
+            # CSS / JS doesn't fight our Sigma + 3d-force-graph stack.
+            try:
+                with open(os.path.join(GRAPHIFY_OUT_DIR, 'graph.html'), 'rb') as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                # Cache for the day; graphify writes a new file when
+                # the nightly job re-runs.
+                self.send_header('Cache-Control', 'public, max-age=300')
+                self.end_headers()
+                self.wfile.write(data)
+            except (FileNotFoundError, OSError) as ex:
+                self.send_response(503)
+                self.send_header('Content-Type', 'text/html')
+                self.end_headers()
+                self.wfile.write(
+                    f'<html><body style="background:#0a0a1a;color:#c0c8d0;font-family:sans-serif;padding:40px;text-align:center">'
+                    f'<h2>Graphify output not built yet</h2>'
+                    f'<p>{GRAPHIFY_OUT_DIR}/graph.html does not exist.</p>'
+                    f'<p>Run on the Mac Mini:</p>'
+                    f'<pre style="text-align:left;display:inline-block;background:#1a1a2a;padding:12px;border-radius:6px">'
+                    f'sudo -u aetherclaude bash -lc \\\n'
+                    f'  &quot;GRAPHIFY_VIZ_NODE_LIMIT=10000 graphify cluster-only \\\n'
+                    f'   /Users/aetherclaude/workspace/AetherSDR/src&quot;</pre>'
+                    f'<p style="color:#607080;font-size:11px;margin-top:20px">Error: {ex}</p>'
+                    f'</body></html>'.encode())
+            return
         elif self.path.startswith('/codegraph/assets/'):
             # Static-file serve for the vendored Sigma+graphology JS.
             # Tight path-safety: name must be a known JS asset.
