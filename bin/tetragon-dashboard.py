@@ -3170,9 +3170,9 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
   <div class="controls">
     <label>view:
       <select id="view-mode">
-        <option value="dirs" selected>Directories</option>
+        <option value="dirs">Directories</option>
         <option value="communities">Communities</option>
-        <option value="symbols">Symbols</option>
+        <option value="symbols" selected>Symbols</option>
       </select>
     </label>
     <label id="min-degree-label">min degree: <input type="range" id="min-degree" min="0" max="50" value="5"><span id="min-degree-val">5</span></label>
@@ -3274,7 +3274,7 @@ const _state = {
   meta: {},
   highlightedId: null,
   searchMatches: new Set(),  // node IDs matching the current search query
-  viewMode: 'dirs',          // 'dirs' (default) | 'symbols'
+  viewMode: 'symbols',       // 'symbols' (default) | 'dirs' | 'communities'
   drilledDir: null,          // path of the directory the user clicked into
 };
 
@@ -4134,11 +4134,9 @@ async function init() {
     document.getElementById('meta').innerHTML = Object.entries(_state.meta).map(([k,v]) =>
       `<div class="field"><div class="k">${escapeHtml(k)}</div><div class="v">${escapeHtml(v)}</div></div>`
     ).join('');
-    // Default landing view: directories. The 7K-node symbol hairball
-    // is one click away via the dropdown, but the bubble overview is
-    // far more useful as an architectural starting point.
-    document.getElementById('min-degree-label').style.display = 'none';
-    rebuildDirGraph(await fetchDirectories());
+    // Default landing view: symbols at the current min-degree.
+    // Directories / Communities are one dropdown click away.
+    rebuildGraph(await fetchData(_state.minDegree));
     startLiveOverlay();
     fetchBridges(20).then(renderBridgeList).catch(() => {});
     checkStaleness();
