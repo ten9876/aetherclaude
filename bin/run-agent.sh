@@ -668,9 +668,11 @@ skill_review_prs() {
         pr_title=$(echo "$pr" | jq -r '.title')
         head_sha=$(echo "$pr" | jq -r '.head.sha')
 
-        # Skip: self, maintainer, drafts
+        # Skip: self bot PRs, drafts. Maintainer PRs ARE reviewed —
+        # same flow as community PRs. Routine maintainer GitHub
+        # activity is filtered at the webhook layer; once a PR is
+        # accepted there, this skill runs uniformly.
         [ "$pr_author" = "AetherClaude" ] && continue
-        [ "$pr_author" = "ten9876" ] && continue
         [ "$pr_draft" = "true" ] && continue
 
         # Skip if already reviewed
@@ -742,9 +744,9 @@ skill_explain_ci_failures() {
         pr_author=$(echo "$pr" | jq -r '.user.login')
         head_sha=$(echo "$pr" | jq -r '.head.sha')
 
-        # Skip self and maintainer
+        # Skip self bot PRs; maintainer PRs get CI-failure explanations
+        # too (same as community PRs).
         [ "$pr_author" = "AetherClaude" ] && continue
-        [ "$pr_author" = "ten9876" ] && continue
 
         # Check for failed checks
         local failed_checks

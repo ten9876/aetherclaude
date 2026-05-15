@@ -6462,9 +6462,17 @@ a{{color:#0a6aba}}
             maint_issue_opened = (
                 event_type == 'issues' and action == 'opened'
             )
+            # Maintainer-opened PRs (and pushes to them) should also
+            # reach the orchestrator so the review skill can run on
+            # them — same code path community contributors get.
+            maint_pr_actionable = (
+                event_type == 'pull_request'
+                and action in ('opened', 'synchronize', 'reopened', 'ready_for_review')
+            )
             if (sender == 'ten9876' and not is_mention
                     and not maint_eligibility_signal
-                    and not maint_issue_opened):
+                    and not maint_issue_opened
+                    and not maint_pr_actionable):
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (maintainer)'); return
             # Skip irrelevant actions
             if event_type == 'issues' and action not in ('opened', 'edited', 'labeled', 'reopened', 'closed'):
