@@ -4024,23 +4024,6 @@ function rebuildGraph(data) {
   // The old graph and its node IDs are gone — drop any active pulses so
   // stale origColor/origSize references don't bleed into the new graph.
   if (typeof _live !== 'undefined') { _live.pulses.clear(); }
-  // Filter singleton + size-2 communities. They're 90% of our 2094
-  // communities and add visual noise without revealing structure.
-  // Dropping them gets us to ~234 communities — same as the
-  // reference knowledge-graph viz of AetherSDR.
-  const commCount = new Map();
-  for (const n of data.nodes) {
-    const c = n.community || 0;
-    commCount.set(c, (commCount.get(c) || 0) + 1);
-  }
-  const keepIds = new Set(
-    data.nodes.filter(n => (commCount.get(n.community || 0) || 0) >= 3)
-              .map(n => n.id)
-  );
-  data = {
-    nodes: data.nodes.filter(n => keepIds.has(n.id)),
-    edges: data.edges.filter(e => keepIds.has(e.source) && keepIds.has(e.target)),
-  };
   const g = new graphology.Graph({ type: 'undirected', multi: false });
   for (const n of data.nodes) {
     g.addNode(n.id, {
@@ -4079,22 +4062,32 @@ function rebuildGraph(data) {
 
   setStats(`${g.order} nodes · ${g.size} edges · running layout…`);
 
-  // Layout: graphology's inferSettings picks scalingRatio + gravity
-  // + slowDown experimentally tuned for the graph size, which beats
-  // my manual guesses. Combined with the singleton-community filter
-  // above this produces the hub-and-spoke "knowledge graph" shape
-  // the reference viz shows.
+  // Layout: ForceAtlas2 with linLogMode + adjustSizes for the
+  // hub-and-spoke "knowledge graph" look. linLog uses log(distance)
+  // forces which produce far better cluster separation. adjustSizes
+  // makes node radius (sqrt-degree) a layout mass, so high-degree
+  // hubs (MainWindow @ 482, AppSettings::instance @ 322) pull their
+  // neighborhoods toward themselves and end up at the center of
+  // their respective rosettes. Lower scalingRatio than before so
+  // clusters don't fling apart into an archipelago.
   const layoutFa2 = graphologyLibrary.layoutForceAtlas2;
   const t0 = performance.now();
-  const inferred = layoutFa2.inferSettings ? layoutFa2.inferSettings(g) : {};
   layoutFa2.assign(g, {
-    iterations: 600,
+    iterations: 800,
     settings: {
-      ...inferred,
       barnesHutOptimize: true,
+      gravity: 1,
+      scalingRatio: 10,
+      slowDown: 3,
+      strongGravityMode: false,
+      linLogMode: true,
       adjustSizes: true,
+      edgeWeightInfluence: 1,
     },
   });
+  // No noverlap post-pass — adjustSizes already enforces non-overlap
+  // proportional to node mass, and the noverlap step was previously
+  // shoving isolated nodes into corners.
   const layoutMs = performance.now() - t0;
 
   const container = document.getElementById('sigma-container');
