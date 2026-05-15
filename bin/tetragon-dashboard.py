@@ -4267,6 +4267,26 @@ function highlightCommunity(cid) {
   _state.sigma.refresh();
 }
 
+// Mouse-wheel adjustment for the min-degree slider. Native range
+// inputs ignore the wheel; this hooks it up so hovering and scrolling
+// nudges the value by ±1. preventDefault stops the page from also
+// scrolling. passive:false is required by Chrome to honor preventDefault
+// on wheel events.
+document.getElementById('min-degree').addEventListener('wheel', e => {
+  e.preventDefault();
+  const slider = e.currentTarget;
+  const min = parseInt(slider.min, 10) || 0;
+  const max = parseInt(slider.max, 10) || 50;
+  const cur = parseInt(slider.value, 10);
+  // Scroll up (negative deltaY) increases the value — matches the
+  // visual intuition of "slide right when wheel goes up".
+  const next = Math.max(min, Math.min(max, cur + (e.deltaY < 0 ? 1 : -1)));
+  if (next !== cur) {
+    slider.value = String(next);
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+}, { passive: false });
+
 let _refetchTimer = null;
 document.getElementById('min-degree').addEventListener('input', e => {
   const v = parseInt(e.target.value, 10);
