@@ -3723,7 +3723,20 @@ function rebuildGraph(data) {
       const isSel = (node === sel);
       const isNeighbor = g.hasEdge(sel, node) || g.hasEdge(node, sel);
       if (isSel) return { ...data, size: (data.size || 2) * 2.2, forceLabel: true, zIndex: 2 };
-      if (isNeighbor) return { ...data, forceLabel: true, zIndex: 1 };
+      if (isNeighbor) {
+        // Progressive label disclosure for neighbors. At low zoom
+        // (camera ratio ~1) only the largest hubs in the neighborhood
+        // get labels; as the user zooms in, more neighbors light up.
+        // At max zoom every neighbor shows its label.
+        // threshold = ratio * 6 means:
+        //   ratio 1.0 (zoomed out) → label only nodes with size >= 6
+        //   ratio 0.5 (medium)     → label only nodes with size >= 3
+        //   ratio 0.15 (zoomed in) → label all (size >= ~0.9)
+        const ratio = (_state.sigma && _state.sigma.getCamera().ratio) || 1;
+        const threshold = ratio * 6;
+        const showLabel = (data.size || 2) >= threshold;
+        return { ...data, forceLabel: showLabel, zIndex: 1 };
+      }
       return { ...data, color: '#1a2030', zIndex: 0 };
     },
     edgeReducer: (edge, data) => {
