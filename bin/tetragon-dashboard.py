@@ -3172,8 +3172,8 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
       <select id="view-mode">
         <option value="dirs">Directories</option>
         <option value="communities">Communities</option>
-        <option value="symbols" selected>Symbols (2D)</option>
-        <option value="symbols3d">Symbols (3D)</option>
+        <option value="symbols">Symbols (2D)</option>
+        <option value="symbols3d" selected>Symbols (3D)</option>
       </select>
     </label>
     <label id="min-degree-label">min degree: <input type="range" id="min-degree" min="0" max="50" value="5"><span id="min-degree-val">5</span></label>
@@ -3281,7 +3281,7 @@ const _state = {
   meta: {},
   highlightedId: null,
   searchMatches: new Set(),  // node IDs matching the current search query
-  viewMode: 'symbols',       // 'symbols' (default) | 'dirs' | 'communities'
+  viewMode: 'symbols3d',     // 'symbols3d' (default) | 'symbols' | 'dirs' | 'communities'
   drilledDir: null,          // path of the directory the user clicked into
 };
 
@@ -4353,9 +4353,10 @@ async function init() {
     document.getElementById('meta').innerHTML = Object.entries(_state.meta).map(([k,v]) =>
       `<div class="field"><div class="k">${escapeHtml(k)}</div><div class="v">${escapeHtml(v)}</div></div>`
     ).join('');
-    // Default landing view: symbols at the current min-degree.
-    // Directories / Communities are one dropdown click away.
-    rebuildGraph(await fetchData(_state.minDegree));
+    // Default landing view: 3D symbols. Directories / Communities /
+    // 2D symbols are one dropdown click away.
+    show3DContainer();
+    rebuild3DGraph(await fetchData(_state.minDegree));
     startLiveOverlay();
     fetchBridges(20).then(renderBridgeList).catch(() => {});
     checkStaleness();
