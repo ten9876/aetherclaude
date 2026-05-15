@@ -13,6 +13,8 @@ ${ISSUE_BODY}
 Issue comments:
 ${ISSUE_COMMENTS}
 
+${ATTACHMENTS}
+
 ## Your job: triage this issue
 
 Read the issue carefully and the relevant source files. For SmartSDR

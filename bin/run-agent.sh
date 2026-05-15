@@ -537,6 +537,41 @@ render_skill() {
     echo "$template"
 }
 
+# --- Attachment download helper ---
+# Pre-fetches every GitHub-hosted image / log / file referenced in
+# the issue body or comments to a local dir under the working tree,
+# so Claude (sandboxed; no WebFetch) can Read them via the
+# filesystem. Returns a formatted prompt-section on stdout (empty
+# string if no attachments). dest_dir defaults to ./attachments
+# under cwd.
+prepare_attachments() {
+    local issue_number="$1" issue_body="$2" issue_comments="$3" dest_root="${4:-$WORKSPACE}"
+    local dest="${dest_root}/attachments-${issue_number}"
+    local mapping
+    # Concatenate body + comments and pipe through the helper. The
+    # helper writes <local_path>\t<url> per line on stdout; per-file
+    # status on stderr (which we let through to the orchestrator log).
+    mapping=$(printf '%s\n\n%s\n' "$issue_body" "$issue_comments" \
+        | GH_TOKEN="$GH_TOKEN" GITHUB_TOKEN="$GITHUB_TOKEN" \
+          /Users/Shared/aetherclaude/bin/download-issue-attachments.py "$dest" 2>>"$LOGDIR/orchestrator.log")
+    if [ -z "$mapping" ]; then
+        echo ""
+        return 0
+    fi
+    # Build a markdown section the skill prompt can splice in.
+    {
+        echo "## Local attachments (downloaded for you)"
+        echo ""
+        echo "Each issue attachment was fetched to a local file you can"
+        echo "Read. URLs in the issue body / comments map to:"
+        echo ""
+        while IFS=$'\t' read -r local_path url; do
+            [ -z "$local_path" ] && continue
+            echo "- \`${local_path}\` ← ${url}"
+        done <<< "$mapping"
+    }
+}
+
 # --- Label management helpers ---
 add_label() {
     local issue_number="$1" label="$2" token="$3"
@@ -1222,12 +1257,17 @@ skill_process_issues() {
             issue_body=$(sanitize_input "$(echo "$issue_data" | jq -r '.body // "No body"')")
             issue_comments=$(sanitize_input "$(github_api GET "/repos/${REPO}/issues/${number}/comments" "$token" | jq -r '.[] | "[\(.user.login)] \(.body)"' 2>/dev/null || echo "No comments")")
 
+            # Pre-download any GitHub-hosted attachments so Claude can
+            # Read them locally — its sandbox blocks WebFetch outbound.
+            local attachments_section
+            attachments_section=$(prepare_attachments "$number" "$issue_body" "$issue_comments" "$WORKSPACE")
+
             local triage_log="$LOGDIR/triage-${number}-$(date +%Y%m%d-%H%M%S).log"
 
             local skill_template
             skill_template=$(load_skill "triage-issue")
             local prompt
-            prompt=$(render_skill "$skill_template"                 "ISSUE_NUMBER" "$number"                 "ISSUE_TITLE" "$title"                 "ISSUE_BODY" "$issue_body"                 "ISSUE_COMMENTS" "$issue_comments"                 "WORKSPACE" "$WORKSPACE")
+            prompt=$(render_skill "$skill_template"                 "ISSUE_NUMBER" "$number"                 "ISSUE_TITLE" "$title"                 "ISSUE_BODY" "$issue_body"                 "ISSUE_COMMENTS" "$issue_comments"                 "ATTACHMENTS" "$attachments_section"                 "WORKSPACE" "$WORKSPACE")
 
             cd "$WORKSPACE"
             run_claude "$prompt" "$triage_log" || {
@@ -1331,12 +1371,14 @@ skill_process_issues() {
                 local issue_body issue_comments
                 issue_body=$(sanitize_input "$(echo "$issue_data" | jq -r '.body // "No body"')")
                 issue_comments=$(sanitize_input "$(github_api GET "/repos/${REPO}/issues/${number}/comments?per_page=50" "$token" | jq -r '.[] | "[\(.user.login) \(.created_at)] \(.body)"' 2>/dev/null || echo "No comments")")
+                local attachments_section
+                attachments_section=$(prepare_attachments "$number" "$issue_body" "$issue_comments" "$WORKSPACE")
 
                 local triage_log="$LOGDIR/continue-triage-${number}-$(date +%Y%m%d-%H%M%S).log"
                 local skill_template
                 skill_template=$(load_skill "continue-triage")
                 local prompt
-                prompt=$(render_skill "$skill_template"                     "ISSUE_NUMBER" "$number"                     "ISSUE_TITLE" "$title"                     "ISSUE_BODY" "$issue_body"                     "ISSUE_COMMENTS" "$issue_comments")
+                prompt=$(render_skill "$skill_template"                     "ISSUE_NUMBER" "$number"                     "ISSUE_TITLE" "$title"                     "ISSUE_BODY" "$issue_body"                     "ISSUE_COMMENTS" "$issue_comments"                     "ATTACHMENTS" "$attachments_section")
 
                 cd "$WORKSPACE"
                 if ! run_claude "$prompt" "$triage_log"; then
@@ -1497,10 +1539,16 @@ ${rejected_pr_comments:-No comments}"
             }
             log "Created worktree at ${WORKTREE}"
 
+            # Pre-download attachments into the worktree so the
+            # implement pass can Read screenshots / log files / etc.
+            # Claude's sandbox blocks WebFetch outbound.
+            local attachments_section
+            attachments_section=$(prepare_attachments "$number" "$issue_body" "$issue_comments" "$WORKTREE")
+
             local skill_template
             skill_template=$(load_skill "implement-fix")
             local prompt
-            prompt=$(render_skill "$skill_template" "ISSUE_NUMBER" "$number" "ISSUE_TITLE" "$title" "ISSUE_BODY" "$issue_body" "ISSUE_COMMENTS" "$issue_comments" "RETRY_CONTEXT" "$retry_context" "BRANCH" "$branch" "WORKSPACE" "$WORKTREE")
+            prompt=$(render_skill "$skill_template" "ISSUE_NUMBER" "$number" "ISSUE_TITLE" "$title" "ISSUE_BODY" "$issue_body" "ISSUE_COMMENTS" "$issue_comments" "ATTACHMENTS" "$attachments_section" "RETRY_CONTEXT" "$retry_context" "BRANCH" "$branch" "WORKSPACE" "$WORKTREE")
 
             record_action "$number" "implement" "implement" "started"
             log "Running Claude Code for issue #${number}"

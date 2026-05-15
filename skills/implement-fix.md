@@ -15,6 +15,8 @@ ${ISSUE_BODY}
 
 Issue comments (includes your earlier analysis):
 ${ISSUE_COMMENTS}
+
+${ATTACHMENTS}
 ${RETRY_CONTEXT}
 
 Your task for this pass (IMPLEMENT):

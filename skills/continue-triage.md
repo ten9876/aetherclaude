@@ -13,6 +13,8 @@ ${ISSUE_BODY}
 Full conversation so far (oldest to newest, includes your earlier comments):
 ${ISSUE_COMMENTS}
 
+${ATTACHMENTS}
+
 The most recent comment in this thread is from the user (a non-bot reply).
 That is the message you are responding to.
 
