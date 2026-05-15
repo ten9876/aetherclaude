@@ -3613,9 +3613,14 @@ const _3d = {
   // 3D view doesn't go through selectNode for the highlighting path).
   selectedId: null,
   neighborSet: new Set(),
+  // Search-match set — populated by the header search input when the
+  // 3D view is active. Behaves like a selection: matches highlight,
+  // everything else dims.
+  searchSet: new Set(),
 };
 
 function _3dIsHighlighted(nodeId) {
+  if (_3d.searchSet.size > 0) return _3d.searchSet.has(nodeId);
   if (_3d.selectedId == null) return true;  // nothing selected → all bright
   if (nodeId === _3d.selectedId) return true;
   return _3d.neighborSet.has(nodeId);
@@ -3753,6 +3758,56 @@ function stop3DLabelLoop() {
   clear3DLabels();
 }
 
+function apply3DSearch(q) {
+  // Mirror of the 2D search behaviour but driven against
+  // _3d.searchSet. Empty query restores the default render
+  // (everything bright, all edges visible). A non-empty query
+  // populates the set and refreshes; matches stay bright +
+  // labeled, others dim and shrink, edges between non-matches
+  // hide.
+  if (!_3d.graph) return;
+  _3d.searchSet.clear();
+  if (q) {
+    const data = _3d.graph.graphData();
+    for (const n of data.nodes) {
+      if (n.label && n.label.toLowerCase().includes(q)) {
+        _3d.searchSet.add(n.id);
+      }
+    }
+    setStats(`${_3d.searchSet.size} match${_3d.searchSet.size===1?'':'es'} for "${q}" · 3D`);
+  } else {
+    const data = _3d.graph.graphData();
+    setStats(`${data.nodes.length} nodes · ${data.links.length} edges · 3D · drag to rotate, scroll to zoom`);
+  }
+  refresh3DHighlight();
+  // Build labels for matches (or clear them if no query). Reuses
+  // the same label loop we use for click-selection.
+  if (_3d.searchSet.size > 0) {
+    build3DLabelsForSet(_3d.searchSet);
+    start3DLabelLoop();
+  } else if (_3d.selectedId == null) {
+    stop3DLabelLoop();
+  }
+}
+
+function build3DLabelsForSet(idSet) {
+  // Variant of build3DLabels() that draws labels for an arbitrary
+  // node-id set instead of the current selection.
+  clear3DLabels();
+  if (!_3d.graph) return;
+  const layer = document.getElementById('threed-label-layer');
+  const data = _3d.graph.graphData();
+  for (const n of data.nodes) {
+    if (!idSet.has(n.id)) continue;
+    const div = document.createElement('div');
+    div.className = 'threed-label';
+    div.textContent = n.label || '';
+    div.style.borderColor = communityColor(n.community || 0);
+    layer.appendChild(div);
+    _3dLabels.divs.set(n.id, div);
+  }
+}
+
 async function switchTo3DView() {
   _state.viewMode = 'symbols3d';
   document.getElementById('view-mode').value = 'symbols3d';
@@ -3802,13 +3857,18 @@ function rebuild3DGraph(data) {
       })
       .linkOpacity(0.55)
       .linkWidth(l => _3d.selectedId == null ? 0.4 : 1.2)
-      // Hide every edge that doesn't touch the selected node, so the
-      // visible graph collapses to the local neighborhood on click.
-      // No selection → show all edges.
+      // Hide every edge whose endpoints aren't in the current
+      // highlight set, so the visible edge graph collapses to:
+      //   - selection mode: edges touching _3d.selectedId
+      //   - search mode:    edges between two search matches
+      //   - default:        all edges
       .linkVisibility(l => {
-        if (_3d.selectedId == null) return true;
         const srcId = (l.source && l.source.id !== undefined) ? l.source.id : l.source;
         const dstId = (l.target && l.target.id !== undefined) ? l.target.id : l.target;
+        if (_3d.searchSet.size > 0) {
+          return _3d.searchSet.has(srcId) && _3d.searchSet.has(dstId);
+        }
+        if (_3d.selectedId == null) return true;
         return srcId === _3d.selectedId || dstId === _3d.selectedId;
       })
       // Click → set selection, recompute neighbor set, mutate every
@@ -4222,6 +4282,11 @@ document.getElementById('min-degree').addEventListener('input', e => {
 
 document.getElementById('search').addEventListener('input', e => {
   const q = e.target.value.toLowerCase().trim();
+  // 3D mode has its own match-set + render path; route there if active.
+  if (_state.viewMode === 'symbols3d') {
+    apply3DSearch(q);
+    return;
+  }
   _state.searchMatches.clear();
   if (!_state.graph) return;
   const g = _state.graph;
