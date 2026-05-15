@@ -3307,8 +3307,8 @@ function rebuildGraph(data) {
       const srcColor = g.getNodeAttribute(e.source, 'color');
       g.addEdge(e.source, e.target, {
         kind: e.kind,
-        size: 0.3,
-        color: hexWithAlpha(srcColor, 0.35),
+        size: 0.2,
+        color: hexWithAlpha(srcColor, 0.18),
       });
     }
   }
@@ -3318,24 +3318,31 @@ function rebuildGraph(data) {
 
   setStats(`${g.order} nodes · ${g.size} edges · running layout…`);
 
-  // Layout: ForceAtlas2 with linLog (better cluster separation than
-  // standard FA2 for graphs that have a few high-degree hubs +
-  // long tail). High scalingRatio + strongGravity keep the whole
-  // thing from drifting apart; iterations bumped to 500 for crisp
-  // cluster boundaries like the reference viz.
+  // Layout: classic ForceAtlas2 (no linLog, no strongGravity) with
+  // very high scalingRatio so communities push hard against each
+  // other and end up as visually distinct regions, then a noverlap
+  // pass so individual nodes within a cluster don't sit on top of
+  // each other. Matches the reference viz's "exploded archipelago"
+  // shape rather than the dense ball linLog produces.
   const layoutFa2 = graphologyLibrary.layoutForceAtlas2;
   const t0 = performance.now();
   layoutFa2.assign(g, {
-    iterations: 500,
+    iterations: 600,
     settings: {
       barnesHutOptimize: true,
       gravity: 1,
-      scalingRatio: 8,
-      slowDown: 1,
-      strongGravityMode: true,
-      linLogMode: true,
+      scalingRatio: 50,
+      slowDown: 10,
+      strongGravityMode: false,
+      linLogMode: false,
     },
   });
+  if (graphologyLibrary.layoutNoverlap) {
+    graphologyLibrary.layoutNoverlap.assign(g, {
+      maxIterations: 100,
+      settings: { ratio: 3, margin: 2, expansion: 1.1, speed: 3 },
+    });
+  }
   const layoutMs = performance.now() - t0;
 
   const container = document.getElementById('sigma-container');
