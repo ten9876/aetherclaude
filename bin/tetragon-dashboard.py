@@ -3147,6 +3147,13 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
   .trace-swatch { width:8px; height:8px; border-radius:50%; flex:0 0 8px; }
   .trace-row .tfile { color:#809090; flex:1; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; }
   .trace-row .tact { color:#607080; }
+  /* Refactor watch-list — high-betweenness symbols. Click jumps the
+   * camera to the node and selects it in the detail panel. */
+  .bridge-row { display:flex; align-items:baseline; gap:6px; padding:3px 6px; font-family:'SF Mono', monospace; font-size:10px; cursor:pointer; border-radius:3px; border-left:2px solid transparent; }
+  .bridge-row:hover { background:#1a1a2a; border-left-color:#00bceb; }
+  .bridge-row .bname { color:#d0d8e0; flex:1; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; }
+  .bridge-row .bscope { color:#607080; }
+  .bridge-row .bscore { color:#ffaa00; min-width:46px; text-align:right; }
 </style>
 </head>
 <body>
@@ -3165,6 +3172,8 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
   <div id="node-info"><div id="empty-state">Click a node to inspect.<br>Drag to pan, scroll to zoom.</div></div>
   <h3>Live activity <span id="live-status"><span class="live-dot" id="live-dot"></span><span id="live-text">offline</span></span></h3>
   <div id="trace-list"><div id="empty-state" style="padding:8px 0">Idle. Symbol pulses appear here when claude runs touch the codebase.</div></div>
+  <h3>Refactor watch-list <span style="color:#607080;font-weight:normal">(high betweenness)</span></h3>
+  <div id="bridge-list">—</div>
   <h3>Top communities</h3>
   <div id="community-list">—</div>
   <h3>Metadata</h3>
@@ -3215,6 +3224,46 @@ async function fetchMeta() {
   const r = await fetch('/api/codegraph/meta');
   if (!r.ok) return {};
   return r.json();
+}
+
+async function fetchBridges(limit) {
+  const r = await fetch('/api/codegraph/bridges?limit=' + (limit || 20));
+  if (!r.ok) return [];
+  return r.json();
+}
+
+function renderBridgeList(bridges) {
+  const el = document.getElementById('bridge-list');
+  if (!el) return;
+  if (!bridges.length) {
+    el.innerHTML = '<div id="empty-state" style="padding:8px 0">No betweenness data — re-run codegraph-analyze.py.</div>';
+    return;
+  }
+  const maxScore = bridges[0].betweenness || 1;
+  el.innerHTML = bridges.map(b => {
+    const pct = ((b.betweenness / maxScore) * 100).toFixed(0);
+    const score = (b.betweenness * 1000).toFixed(2);
+    return `<div class="bridge-row" data-node="${b.id}" title="${escapeHtml(b.qualified_name)} · ${escapeHtml(b.file)}:${b.line} · degree ${b.degree}">
+      <span class="bscore">${score}</span>
+      <span class="bname">${escapeHtml(b.name)}</span>
+      <span class="bscope">${escapeHtml(b.community_label || '')}</span>
+    </div>`;
+  }).join('');
+  // Click → jump to node + select. Only works if the node is in the
+  // current graph (some bridge nodes may be filtered out by min-degree).
+  el.querySelectorAll('.bridge-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const nid = row.dataset.node;
+      if (!_state.graph || !_state.graph.hasNode(nid)) return;
+      _state.sigma.getCamera().animate(
+        { x: _state.graph.getNodeAttribute(nid, 'x'),
+          y: _state.graph.getNodeAttribute(nid, 'y'),
+          ratio: 0.15 },
+        { duration: 400 }
+      );
+      selectNode(nid);
+    });
+  });
 }
 
 function rebuildGraph(data) {
@@ -3533,6 +3582,10 @@ async function init() {
     ).join('');
     rebuildGraph(await fetchData(_state.minDegree));
     startLiveOverlay();
+    // Bridges load independently of the graph rebuild so the panel
+    // still renders even if a low min-degree filter strips the
+    // top-betweenness nodes from the rendered subgraph.
+    fetchBridges(20).then(renderBridgeList).catch(() => {});
   } catch (e) {
     setStats('error: ' + e.message);
     document.getElementById('node-info').innerHTML = '<div id="empty-state" style="color:#ff6b6b">' + escapeHtml(e.message) + '<br><br>Has codegraph-extract.py been run? Run:<br><code>bin/codegraph-extract.py; bin/codegraph-analyze.py</code></div>';
@@ -4255,6 +4308,39 @@ class H(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps(meta).encode())
             except sqlite3.Error as ex:
+                self.send_response(503); self.end_headers()
+                self.wfile.write(json.dumps({'error': str(ex)}).encode())
+        elif self.path.startswith('/api/codegraph/bridges'):
+            # Top-N symbols by betweenness centrality. The "Refactor
+            # watch-list" panel: high betweenness = a symbol that sits
+            # on many shortest paths between others, so changing it
+            # ripples widely. Limit defaults to 20.
+            try:
+                from urllib.parse import urlparse, parse_qs
+                qs = parse_qs(urlparse(self.path).query)
+                limit = int(qs.get('limit', ['20'])[0])
+                limit = max(1, min(100, limit))
+                conn = sqlite3.connect(CODEGRAPH_DB)
+                rows = conn.execute(
+                    'SELECT id, qualified_name, name, kind, file_path, '
+                    '       line_number, community_label, betweenness, degree '
+                    '  FROM symbols '
+                    ' WHERE betweenness > 0 '
+                    ' ORDER BY betweenness DESC LIMIT ?',
+                    (limit,)
+                ).fetchall()
+                conn.close()
+                out = [
+                    {'id': r[0], 'qualified_name': r[1], 'name': r[2],
+                     'kind': r[3], 'file': r[4], 'line': r[5],
+                     'community_label': r[6], 'betweenness': r[7], 'degree': r[8]}
+                    for r in rows
+                ]
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(out).encode())
+            except (sqlite3.Error, ValueError) as ex:
                 self.send_response(503); self.end_headers()
                 self.wfile.write(json.dumps({'error': str(ex)}).encode())
         elif self.path == '/agent-sbom.json':

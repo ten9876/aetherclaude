@@ -96,6 +96,10 @@ CREATE TABLE symbols (
     degree          INTEGER DEFAULT 0,
     in_degree       INTEGER DEFAULT 0,
     out_degree      INTEGER DEFAULT 0,
+    -- Betweenness centrality (0..1). Computed by codegraph-analyze.py.
+    -- High betweenness = symbol sits on many shortest paths between
+    -- other pairs → "bridge" / refactor watch-list candidate.
+    betweenness     REAL DEFAULT 0,
     x_coord         REAL,
     y_coord         REAL
 );

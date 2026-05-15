@@ -63,6 +63,7 @@ CREATE TABLE symbols (
     degree          INTEGER DEFAULT 0,
     in_degree       INTEGER DEFAULT 0,
     out_degree      INTEGER DEFAULT 0,
+    betweenness     REAL DEFAULT 0,
     x_coord         REAL,
     y_coord         REAL
 );

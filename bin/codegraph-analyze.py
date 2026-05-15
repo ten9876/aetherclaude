@@ -149,6 +149,19 @@ def main():
     print(f'  Louvain: {n_communities} communities in '
           f'{time.time()-t1:.1f}s', file=sys.stderr)
 
+    # ---- Betweenness centrality (refactor watch-list) ----
+    # Exact betweenness is O(VE) — on AetherSDR's 7K/12K graph that's
+    # ~10-20 s. Approximation via random source sampling brings it
+    # to ~2 s with <1% rank error on the top-N, which is all we use
+    # it for (sidebar's "high-betweenness bridges" panel).
+    t_b = time.time()
+    k_sample = min(500, max(50, G.number_of_nodes() // 10))
+    betweenness = nx.betweenness_centrality(
+        G, k=k_sample, weight='weight', seed=args.seed, normalized=True
+    )
+    print(f'  betweenness (k={k_sample}): '
+          f'{time.time()-t_b:.1f}s', file=sys.stderr)
+
     # ---- Label communities by majority directory ----
     members_by_community: dict[int, list[int]] = defaultdict(list)
     for sid, cid in partition.items():
@@ -179,6 +192,12 @@ def main():
     conn.executemany(
         'UPDATE symbols SET community_id=?, community_label=? WHERE id=?',
         updates,
+    )
+    # Betweenness. Stored as REAL so the dashboard can ORDER BY it
+    # directly for the "Refactor watch-list" panel.
+    conn.executemany(
+        'UPDATE symbols SET betweenness=? WHERE id=?',
+        [(float(betweenness.get(sid, 0.0)), sid) for sid in betweenness],
     )
     # Metadata
     conn.execute('UPDATE metadata SET value=? WHERE key=?',
