@@ -3499,9 +3499,12 @@ document.getElementById('search').addEventListener('input', e => {
         if (!firstMatch) firstMatch = nid;
       }
     });
-    // Camera fits all matches when q is specific enough. Fit-to-view
-    // bounding box, computed in graph coords; then animate to that
-    // center with a ratio chosen to contain the spread.
+    // Camera fits all matches in the viewport. Compute the bounding
+    // box of the matches in graph coords, then pick a camera ratio
+    // that contains it relative to the full-graph extent. For a
+    // many-match search like "Audio" this zooms out so you see every
+    // hit lit up across the whole constellation; for a 1-2 hit
+    // search it zooms in on the cluster.
     if (_state.searchMatches.size && q.length >= 2) {
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
       for (const nid of _state.searchMatches) {
@@ -3512,11 +3515,23 @@ document.getElementById('search').addEventListener('input', e => {
         if (y < minY) minY = y;
         if (y > maxY) maxY = y;
       }
+      // Bounding box of the entire graph for normalization
+      let gMinX = Infinity, gMaxX = -Infinity, gMinY = Infinity, gMaxY = -Infinity;
+      g.forEachNode((_, attr) => {
+        if (attr.x < gMinX) gMinX = attr.x;
+        if (attr.x > gMaxX) gMaxX = attr.x;
+        if (attr.y < gMinY) gMinY = attr.y;
+        if (attr.y > gMaxY) gMaxY = attr.y;
+      });
       const cx = (minX + maxX) / 2;
       const cy = (minY + maxY) / 2;
-      // Heuristic: small match set → zoom in; large match set → zoom out.
-      const ratio = _state.searchMatches.size <= 2 ? 0.2
-                  : _state.searchMatches.size <= 8 ? 0.4 : 0.7;
+      // Ratio: fraction of full graph extent the match bbox occupies,
+      // with padding. Sigma's default camera ratio 1.0 fits the whole
+      // graph; smaller = more zoomed in. Clamp so single-match
+      // searches don't zoom too hard.
+      const gSpan = Math.max(gMaxX - gMinX, gMaxY - gMinY) || 1;
+      const matchSpan = Math.max(maxX - minX, maxY - minY);
+      const ratio = Math.max(0.15, Math.min(1.0, (matchSpan / gSpan) * 1.4 + 0.1));
       _state.sigma.getCamera().animate({ x: cx, y: cy, ratio }, { duration: 400 });
     }
     setStats(`${_state.searchMatches.size} match${_state.searchMatches.size===1?'':'es'} for "${q}"`);
