@@ -3183,6 +3183,7 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
       <select id="view-mode">
         <option value="dirs">Directories</option>
         <option value="communities">Communities</option>
+        <option value="concepts">Concepts</option>
         <option value="symbols">Symbols (2D)</option>
         <option value="symbols3d" selected>Symbols (3D)</option>
         <option value="graphify">Graphify</option>
@@ -3450,6 +3451,122 @@ async function drillIntoCommunity(commIdStr) {
     setStats(`${filtered.nodes.length} symbols in community ${commIdStr} · ${filtered.edges.length} edges`);
     // Remember we came from communities, so back button returns there
     _state.drilledFrom = 'communities';
+  } catch (e) {
+    setStats('error: ' + e.message);
+  }
+}
+
+async function fetchConceptGraph() {
+  const r = await fetch('/api/codegraph/concept-graph');
+  if (!r.ok) throw new Error('fetch failed: ' + r.status);
+  return r.json();
+}
+
+function rebuildConceptGraph(data) {
+  // Concept nodes (kind='concept') get a distinct visual treatment:
+  // bright magenta-cyan palette by concept_kind, larger size, always
+  // labeled. Anchor code-symbol nodes (the ones concepts point at)
+  // render in their existing community color, smaller, no forced
+  // label. Edges are confidence-tinted: stronger color for higher
+  // confidence_score.
+  if (_state.sigma) { _state.sigma.kill(); _state.sigma = null; }
+  if (typeof _live !== 'undefined') { _live.pulses.clear(); }
+  const g = new graphology.Graph({ type: 'directed', multi: false });
+  // Color palette by concept kind — keeps the categorical distinction
+  // visible even when zoomed out.
+  const conceptPalette = {
+    subsystem:  '#00bceb',  // cyan — architectural backbone
+    pattern:    '#ffaa00',  // amber — recurring solutions
+    principle:  '#ff66cc',  // pink — inviolable rules
+    feature:    '#88ddaa',  // mint — user-facing capability
+    protocol:   '#aa88ff',  // violet — wire-level spec
+  };
+  for (const n of data.nodes) {
+    const isConcept = (n.kind === 'concept');
+    const color = isConcept
+      ? (conceptPalette[n.concept_kind] || '#cccccc')
+      : communityColor(n.community || 0);
+    const size = isConcept
+      ? Math.max(5, Math.min(14, 5 + Math.sqrt(n.degree || 1) * 1.2))
+      : Math.max(1.5, Math.min(5, Math.log2((n.degree || 1) + 1)));
+    g.addNode(n.id, {
+      label: n.label,
+      kind: n.kind,
+      concept_kind: n.concept_kind,
+      description: n.description,
+      file: n.file_path || '',
+      line: n.line_number,
+      community_label: n.community_label,
+      degree: n.degree,
+      x: (Math.random() - 0.5) * 1000,
+      y: (Math.random() - 0.5) * 1000,
+      size,
+      color,
+      // Concepts always show their label; anchors don't.
+      forceLabel: isConcept,
+    });
+  }
+  for (const e of data.edges) {
+    if (g.hasNode(e.source) && g.hasNode(e.target)
+        && !g.hasEdge(e.source, e.target)) {
+      // Edge color by source-node color at confidence-scaled alpha.
+      const srcColor = g.getNodeAttribute(e.source, 'color');
+      const conf = Math.max(0.15, Math.min(1.0, e.confidence_score || 0.5));
+      g.addEdge(e.source, e.target, {
+        kind: e.kind,
+        size: 0.5 + conf * 0.8,
+        color: hexWithAlpha(srcColor, 0.25 + conf * 0.4),
+        confidence_score: conf,
+      });
+    }
+  }
+  _state.graph = g;
+  _state.rawNodes = data.nodes;
+  _state.rawEdges = data.edges;
+
+  setStats(`${data.concept_count} concepts · ${data.anchor_count} anchor symbols · running layout…`);
+
+  const layoutFa2 = graphologyLibrary.layoutForceAtlas2;
+  const t0 = performance.now();
+  layoutFa2.assign(g, {
+    iterations: 500,
+    settings: {
+      barnesHutOptimize: true, gravity: 1.5, scalingRatio: 12,
+      slowDown: 4, strongGravityMode: false, linLogMode: false,
+      adjustSizes: true,
+    },
+  });
+  const layoutMs = performance.now() - t0;
+
+  const container = document.getElementById('sigma-container');
+  _state.sigma = new Sigma(g, container, {
+    renderEdgeLabels: false,
+    renderLabels: true,
+    labelRenderedSizeThreshold: 4,
+    defaultDrawNodeLabel: drawLabelWithPill,
+    defaultDrawNodeHover: drawLabelWithPill,
+    labelColor: { color: '#e0e8f0' },
+    labelFont: 'SF Mono, monospace',
+    labelSize: 10,
+    minCameraRatio: 0.005,
+    maxCameraRatio: 10,
+  });
+  _state.sigma.on('clickNode', e => selectNode(e.node));
+  _state.sigma.on('clickStage', () => selectNode(null));
+  fitCameraToGraph(g);
+  setStats(`${data.concept_count} concepts · ${data.anchor_count} anchor symbols · ${data.edges.length} edges · layout in ${(layoutMs/1000).toFixed(1)}s`);
+}
+
+async function switchToConceptView() {
+  _state.viewMode = 'concepts';
+  _state.drilledDir = null;
+  document.getElementById('view-mode').value = 'concepts';
+  document.getElementById('back-to-dirs').style.display = 'none';
+  document.getElementById('min-degree-label').style.display = 'none';
+  show2DContainer();
+  setStats('<span class="loading-spinner"></span> loading concept graph…');
+  try {
+    rebuildConceptGraph(await fetchConceptGraph());
   } catch (e) {
     setStats('error: ' + e.message);
   }
@@ -4320,6 +4437,31 @@ function selectNode(nodeId) {
       selectNode(nid);
     });
   });
+  // Phase 3 enrichment: ask the API which concepts are connected
+  // to this symbol via documented_in / rationale_for / motivates /
+  // implements_pattern / obsolesces edges, and append a
+  // "Documented as" section to the detail pane.
+  fetch('/api/codegraph/concept-rationale?id=' + encodeURIComponent(nodeId))
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      if (!d || !d.concepts || !d.concepts.length) return;
+      const html = d.concepts.map(c => {
+        const score = (c.confidence_score || 0).toFixed(2);
+        return `<div style="margin:4px 0;padding:4px 6px;border-left:2px solid #ffaa00;background:#1a1208">
+          <div style="font-size:10px;color:#ffcc44">${escapeHtml(c.relation)} <span style="color:#607080">conf ${score}</span></div>
+          <div style="font-family:'SF Mono',monospace;font-size:11px;color:#d0d8e0">${escapeHtml(c.name)}</div>
+          <div style="font-size:10px;color:#809090;margin-top:2px">${escapeHtml((c.description || '').substring(0, 150))}</div>
+        </div>`;
+      }).join('');
+      const info = document.getElementById('node-info');
+      // Only inject if we still have the same node selected by the time
+      // the fetch returns (otherwise we'd dump stale content).
+      if (_state.highlightedId === nodeId) {
+        info.insertAdjacentHTML('beforeend',
+          `<h3 style="margin-top:14px">Documented as <span style="color:#607080;font-weight:normal">(${d.concepts.length} concept${d.concepts.length===1?'':'s'})</span></h3>${html}`);
+      }
+    })
+    .catch(() => { /* silent */ });
 }
 
 function highlightCommunity(cid) {
@@ -4609,6 +4751,7 @@ if (typeof ResizeObserver !== 'undefined') {
 document.getElementById('view-mode').addEventListener('change', e => {
   if (e.target.value === 'dirs') switchToDirectoryView();
   else if (e.target.value === 'communities') switchToCommunityView();
+  else if (e.target.value === 'concepts') switchToConceptView();
   else if (e.target.value === 'symbols3d') switchTo3DView();
   else if (e.target.value === 'graphify') switchToGraphifyView();
   else switchToSymbolView();
@@ -5423,6 +5566,137 @@ class H(BaseHTTPRequestHandler):
                     cg_conn.close()
             except Exception:
                 pass
+            return
+        elif self.path == '/api/codegraph/concept-graph':
+            # Concept-centric subgraph for the "Concepts" view mode.
+            # Returns every concept node + every code symbol any
+            # concept connects to, along with the inter-concept and
+            # concept-to-symbol edges. Code-only edges are dropped
+            # (we don't need the full code graph here — only the
+            # rationale layer + its anchor symbols).
+            try:
+                conn = sqlite3.connect(f'file:{CODEGRAPH_DB}?mode=ro', uri=True)
+                conn.row_factory = sqlite3.Row
+                # All concepts
+                concept_ids: set[int] = set()
+                nodes: list[dict] = []
+                for r in conn.execute(
+                    'SELECT id, qualified_name AS label, name, '
+                    '       parent_scope AS concept_kind, '
+                    '       signature AS description, '
+                    '       file_path, community_id AS community, '
+                    '       community_label, degree '
+                    '  FROM symbols WHERE kind = "concept"'
+                ):
+                    d = dict(r)
+                    d['kind'] = 'concept'
+                    nodes.append(d)
+                    concept_ids.add(d['id'])
+                # Concept ↔ anything edges (inferred only)
+                edges: list[dict] = []
+                anchor_ids: set[int] = set()
+                for r in conn.execute(
+                    'SELECT src_id, dst_id, kind, confidence_score '
+                    '  FROM edges '
+                    " WHERE confidence = 'INFERRED'"
+                ):
+                    src, dst = r['src_id'], r['dst_id']
+                    src_is_c = src in concept_ids
+                    dst_is_c = dst in concept_ids
+                    if not src_is_c and not dst_is_c:
+                        continue
+                    edges.append({
+                        'source': src, 'target': dst,
+                        'kind': r['kind'],
+                        'confidence_score': r['confidence_score'],
+                    })
+                    if not src_is_c:
+                        anchor_ids.add(src)
+                    if not dst_is_c:
+                        anchor_ids.add(dst)
+                # Hydrate the anchor code-symbol nodes
+                if anchor_ids:
+                    ph = ','.join('?' * len(anchor_ids))
+                    for r in conn.execute(
+                        f'SELECT id, qualified_name AS label, name, kind, '
+                        f'       file_path, line_number, '
+                        f'       community_id AS community, '
+                        f'       community_label, degree '
+                        f'  FROM symbols WHERE id IN ({ph})',
+                        list(anchor_ids)
+                    ):
+                        nodes.append(dict(r))
+                conn.close()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Cache-Control', 'no-cache')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'nodes': nodes, 'edges': edges,
+                    'concept_count': len(concept_ids),
+                    'anchor_count': len(anchor_ids),
+                }).encode())
+            except sqlite3.Error as ex:
+                self.send_response(503); self.end_headers()
+                self.wfile.write(json.dumps({'error': str(ex)}).encode())
+            return
+        elif self.path == '/api/codegraph/concept-rationale':
+            # Concepts attached to a single symbol — used by the
+            # node-info sidebar's "Documented as" enrichment when a
+            # code symbol is selected.
+            try:
+                from urllib.parse import urlparse, parse_qs
+                qs = parse_qs(urlparse(self.path).query) if '?' in self.path else {}
+                # The path-vs-query parsing above won't match because
+                # the elif hit on exact path. Re-parse from raw self.path.
+                from urllib.parse import urlparse as _u, parse_qs as _q
+                qs = _q(_u(self.path).query)
+                sid_raw = qs.get('id', [''])[0].strip()
+                if not sid_raw:
+                    self.send_response(400); self.end_headers()
+                    self.wfile.write(b'{"error":"id query param required"}')
+                    return
+                sid = int(sid_raw)
+                conn = sqlite3.connect(f'file:{CODEGRAPH_DB}?mode=ro', uri=True)
+                conn.row_factory = sqlite3.Row
+                rels = ('documented_in', 'rationale_for', 'motivates',
+                        'implements_pattern', 'obsolesces')
+                ph = ','.join('?' * len(rels))
+                rows = conn.execute(
+                    f'SELECT s.id, s.name, s.qualified_name, '
+                    f'       s.parent_scope AS concept_kind, '
+                    f'       s.signature AS description, '
+                    f'       e.kind AS relation, e.confidence_score '
+                    f'  FROM edges e JOIN symbols s ON e.src_id=s.id '
+                    f' WHERE e.dst_id=? AND s.kind="concept" '
+                    f'   AND e.kind IN ({ph})',
+                    (sid, *rels)
+                ).fetchall()
+                rows2 = conn.execute(
+                    f'SELECT s.id, s.name, s.qualified_name, '
+                    f'       s.parent_scope AS concept_kind, '
+                    f'       s.signature AS description, '
+                    f'       e.kind AS relation, e.confidence_score '
+                    f'  FROM edges e JOIN symbols s ON e.dst_id=s.id '
+                    f' WHERE e.src_id=? AND s.kind="concept" '
+                    f'   AND e.kind IN ({ph})',
+                    (sid, *rels)
+                ).fetchall()
+                conn.close()
+                seen = set()
+                concepts = []
+                for r in list(rows) + list(rows2):
+                    if r['id'] in seen:
+                        continue
+                    seen.add(r['id'])
+                    concepts.append(dict(r))
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'concepts': concepts}).encode())
+            except (sqlite3.Error, ValueError) as ex:
+                self.send_response(503); self.end_headers()
+                self.wfile.write(json.dumps({'error': str(ex)}).encode())
             return
         elif self.path == '/api/codegraph/communities':
             # Aggregate by Louvain community for a more granular bubble

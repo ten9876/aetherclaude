@@ -363,6 +363,74 @@ def tool_get_stats(conn) -> dict:
     return {'counts': counts, 'metadata': meta}
 
 
+def tool_get_rationale(conn, symbol) -> dict:
+    """For a given code symbol (or concept), return all CONCEPT nodes
+    related to it via documented_in / rationale_for / motivates /
+    implements_pattern / obsolesces edges. Use this to answer "why
+    does this symbol exist" / "what design decisions shaped it"
+    questions before editing.
+
+    Concepts are extracted from AetherSDR docs by codegraph-extract-
+    docs.py; their relations carry confidence='INFERRED' and a 0-1
+    confidence_score from the LLM."""
+    sym = resolve_symbol(conn, symbol)
+    if not sym:
+        return {'error': f'symbol not found: {symbol!r}'}
+    sid = sym['id']
+    # Concepts may be on either side of the edge depending on the
+    # relation (e.g. rationale_for points concept→symbol, while
+    # implements_pattern points symbol→concept). Query both.
+    concept_relations = (
+        'documented_in', 'rationale_for', 'motivates',
+        'implements_pattern', 'obsolesces',
+    )
+    placeholders = ','.join('?' * len(concept_relations))
+    out_concepts: list[dict] = []
+    seen: set[int] = set()
+    # Concept → this symbol
+    for r in conn.execute(
+        f'SELECT s.id, s.qualified_name, s.name, s.signature AS description, '
+        f'       s.parent_scope AS concept_kind, e.kind AS relation, '
+        f'       e.confidence_score, e.confidence '
+        f'  FROM edges e JOIN symbols s ON e.src_id=s.id '
+        f' WHERE e.dst_id=? AND s.kind="concept" '
+        f'   AND e.kind IN ({placeholders}) '
+        f' ORDER BY e.confidence_score DESC',
+        (sid, *concept_relations)
+    ):
+        if r['id'] in seen:
+            continue
+        seen.add(r['id'])
+        d = dict(r)
+        d['direction'] = 'incoming'  # concept → this symbol
+        out_concepts.append(d)
+    # This symbol → concept (e.g. when this symbol IS a concept linking
+    # to another, or rare cases where a code symbol is the source of
+    # an implements_pattern edge).
+    for r in conn.execute(
+        f'SELECT s.id, s.qualified_name, s.name, s.signature AS description, '
+        f'       s.parent_scope AS concept_kind, e.kind AS relation, '
+        f'       e.confidence_score, e.confidence '
+        f'  FROM edges e JOIN symbols s ON e.dst_id=s.id '
+        f' WHERE e.src_id=? AND s.kind="concept" '
+        f'   AND e.kind IN ({placeholders}) '
+        f' ORDER BY e.confidence_score DESC',
+        (sid, *concept_relations)
+    ):
+        if r['id'] in seen:
+            continue
+        seen.add(r['id'])
+        d = dict(r)
+        d['direction'] = 'outgoing'  # this symbol → concept
+        out_concepts.append(d)
+    return {
+        'symbol': sym['qualified_name'],
+        'kind': sym['kind'],
+        'concepts_count': len(out_concepts),
+        'concepts': out_concepts,
+    }
+
+
 def tool_staleness(conn) -> dict:
     """Compare the codegraph's recorded src_head_sha against AetherSDR's
     live HEAD. Lets agents decide whether to trust the index or
@@ -504,6 +572,27 @@ TOOL_SCHEMAS = [
         'inputSchema': {'type': 'object', 'properties': {}},
     },
     {
+        'name': 'get_rationale',
+        'description': (
+            'Returns the architectural concepts (subsystems, patterns, '
+            'principles, protocols, features) connected to a code symbol '
+            'via documented_in / rationale_for / motivates / '
+            'implements_pattern / obsolesces edges. Concepts are '
+            'extracted from AetherSDR docs by codegraph-extract-docs.py. '
+            'Use this to answer "why does this symbol exist" / "what '
+            'design decisions shaped it" before editing a non-trivial '
+            'symbol — same pre-edit safety check as impact() but for '
+            'design rationale instead of structural blast radius.'
+        ),
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'symbol': {'type': 'string'},
+            },
+            'required': ['symbol'],
+        },
+    },
+    {
         'name': 'staleness',
         'description': (
             'Returns whether the codegraph is behind AetherSDR HEAD. '
@@ -537,6 +626,8 @@ def call_tool(conn, name: str, arguments: dict) -> dict:
             return tool_get_stats(conn)
         if name == 'staleness':
             return tool_staleness(conn)
+        if name == 'get_rationale':
+            return tool_get_rationale(conn, arguments['symbol'])
         return {'error': f'unknown tool: {name}'}
     except sqlite3.Error as e:
         return {'error': f'sqlite error: {e}'}
