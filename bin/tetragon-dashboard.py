@@ -3614,22 +3614,12 @@ function _3dIsHighlighted(nodeId) {
 }
 
 function refresh3DHighlight() {
-  // Mutate each node's material in place (color + opacity) and tell
-  // 3d-force-graph to re-evaluate the link accessor functions. This
-  // is cheap (one material.color.set + opacity assign per node) and
-  // avoids rebuilding the whole scene graph on every click.
+  // Poke 3d-force-graph's accessors so the color/size/edge functions
+  // re-evaluate against the current _3d.selectedId / _3d.neighborSet.
   if (!_3d.graph) return;
-  const data = _3d.graph.graphData();
-  for (const n of data.nodes) {
-    if (!n.__threeMesh) continue;
-    const isLit = _3dIsHighlighted(n.id);
-    const m = n.__threeMesh.material;
-    m.color.set(isLit ? communityColor(n.community || 0) : '#1a2030');
-    m.opacity = isLit ? 0.95 : 0.5;
-    m.needsUpdate = true;
-  }
-  // Re-poke link accessors so the cyan-vs-dim swap applies.
   _3d.graph
+    .nodeColor(_3d.graph.nodeColor())
+    .nodeVal(_3d.graph.nodeVal())
     .linkColor(_3d.graph.linkColor())
     .linkWidth(_3d.graph.linkWidth());
 }
@@ -3666,30 +3656,19 @@ function rebuild3DGraph(data) {
     _3d.graph = ForceGraph3D({ controlType: 'orbit' })(container)
       .backgroundColor('#08081a')
       .nodeLabel(n => `${n.label}\n${n.file || ''}${n.line ? ':' + n.line : ''}\ndegree ${n.degree}`)
-      // Custom three.js mesh per node so we can set per-node opacity.
-      // The library's nodeOpacity accessor is a single global value;
-      // it can't dim non-neighbors to 50% while keeping the rest at
-      // 95%. Manual meshes also let us re-color/re-opacity in place
-      // by mutating material properties on selection change.
-      .nodeThreeObject(n => {
-        const THREE = window.THREE;
-        const isLit = _3dIsHighlighted(n.id);
-        const radius = Math.max(1, Math.sqrt(n.degree || 1)) * 2;
-        const geom = new THREE.SphereGeometry(radius, 10, 10);
-        // MeshBasicMaterial is lighting-independent — MeshLambertMaterial
-        // requires sufficient scene lights and rendered black against
-        // the dark background. Basic shows the color directly.
-        const mat = new THREE.MeshBasicMaterial({
-          color: isLit ? communityColor(n.community || 0) : '#1a2030',
-          transparent: true,
-          opacity: isLit ? 0.95 : 0.5,
-        });
-        const mesh = new THREE.Mesh(geom, mat);
-        // Stash a ref so onNodeClick can mutate the material directly
-        // instead of forcing a full graph rebuild.
-        n.__threeMesh = mesh;
-        return mesh;
+      // Two visual cues for "this node is not adjacent to your
+      // selection": dim color + shrunken size. Per-node opacity in
+      // 3d-force-graph requires a custom nodeThreeObject + a stable
+      // THREE handle, which proved fragile across UMD-bundle paths.
+      // Color + size achieves the same visual recession.
+      .nodeColor(n => _3dIsHighlighted(n.id)
+        ? communityColor(n.community || 0)
+        : '#1a2030')
+      .nodeVal(n => {
+        const base = Math.max(1, Math.sqrt(n.degree || 1));
+        return _3dIsHighlighted(n.id) ? base : base * 0.3;
       })
+      .nodeOpacity(0.9)
       // Edge color: bright cyan when both endpoints are in the
       // highlight set, faint community-tinted otherwise. Three.js
       // doesn't support per-link opacity easily, so we encode
