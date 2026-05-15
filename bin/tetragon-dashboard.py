@@ -3637,6 +3637,21 @@ function show3DContainer() {
   document.getElementById('sigma-container').style.display = 'none';
   document.getElementById('threed-container').style.display = '';
   document.getElementById('threed-label-layer').style.display = '';
+  // 3d-force-graph caches width/height at construction time and
+  // doesn't auto-track container resizes. Kick a resize now (in case
+  // the container changed dimensions while hidden) and on every
+  // future window resize / container resize.
+  resize3D();
+}
+
+function resize3D() {
+  if (!_3d.graph) return;
+  const c = document.getElementById('threed-container');
+  if (!c) return;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (w > 0 && h > 0) {
+    _3d.graph.width(w).height(h);
+  }
 }
 function show2DContainer() {
   document.getElementById('threed-container').style.display = 'none';
@@ -4387,6 +4402,14 @@ function startLiveOverlay() {
   if (_live.tickTimer) clearInterval(_live.tickTimer);
   _live.tickTimer = setInterval(pulseTick, 200);
   connectLiveStream();
+}
+
+// 3D canvas must follow the container size. Window resize fires for
+// browser-window changes; ResizeObserver catches everything else
+// (sidebar toggles, dev-tools open, etc).
+window.addEventListener('resize', resize3D);
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(resize3D).observe(document.getElementById('threed-container'));
 }
 
 // View-mode toggle. Default lands in directory view (bubble overview);
