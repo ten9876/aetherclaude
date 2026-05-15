@@ -58,9 +58,20 @@ def load_graph(conn: sqlite3.Connection) -> nx.Graph:
 
 
 def detect_communities(G: nx.Graph, seed: int = 42) -> dict[int, int]:
-    """Run Louvain. Returns {symbol_id: community_id}. python-louvain
-    accepts a random_state for reproducibility."""
-    return louvain.best_partition(G, random_state=seed, weight='weight')
+    """Run Louvain. Returns {symbol_id: community_id}.
+
+    Two python-louvain APIs to handle:
+      - Newer (≥0.16): best_partition(..., random_state=int)
+      - Older Ubuntu pkg: best_partition(..., randomize=bool)
+        — no per-call seed; seed via the stdlib's random.seed() so
+        runs stay reproducible.
+    """
+    import random
+    random.seed(seed)
+    try:
+        return louvain.best_partition(G, random_state=seed, weight='weight')
+    except TypeError:
+        return louvain.best_partition(G, randomize=False, weight='weight')
 
 
 def label_community(file_paths: list[str], member_names: list[str]) -> str:
