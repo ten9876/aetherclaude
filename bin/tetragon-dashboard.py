@@ -3457,18 +3457,20 @@ const PULSE_MS = 3500;
 const MAX_PULSE_SIZE_BOOST = 8;
 
 function pulseNode(nodeId, color) {
+  // Don't overwrite the community color — instead set `highlighted`
+  // which makes Sigma render a halo ring, AND bump size. Halo is
+  // visible against any community color; size is the secondary cue.
   const g = _state.graph;
   if (!g || !g.hasNode(nodeId)) return;
   let p = _live.pulses.get(nodeId);
   if (!p) {
-    const origColor = g.getNodeAttribute(nodeId, 'color');
     const origSize = g.getNodeAttribute(nodeId, 'size');
-    p = { origColor, origSize, color, expires: 0 };
+    p = { origSize, color, expires: 0 };
     _live.pulses.set(nodeId, p);
   }
   p.color = color;
   p.expires = performance.now() + PULSE_MS;
-  g.setNodeAttribute(nodeId, 'color', color);
+  g.setNodeAttribute(nodeId, 'highlighted', true);
   g.setNodeAttribute(nodeId, 'size', Math.min(40, (p.origSize || 4) + MAX_PULSE_SIZE_BOOST));
 }
 
@@ -3480,7 +3482,7 @@ function pulseTick() {
   for (const [nid, p] of _live.pulses) {
     if (now >= p.expires) {
       if (g.hasNode(nid)) {
-        g.setNodeAttribute(nid, 'color', p.origColor);
+        g.removeNodeAttribute(nid, 'highlighted');
         g.setNodeAttribute(nid, 'size', p.origSize);
       }
       _live.pulses.delete(nid);
@@ -3552,6 +3554,10 @@ function connectLiveStream() {
     let msg;
     try { msg = JSON.parse(ev.data); } catch (e) { return; }
     if (!msg || !Array.isArray(msg.symbol_ids)) return;
+    // Skip events that didn't resolve to any in-graph symbol. The
+    // file isn't in our codebase — pulsing nothing AND showing the
+    // file in the side panel is just noise.
+    if (msg.symbol_ids.length === 0) return;
     const tid = msg.trace_id || 'unknown';
     const color = traceColor(tid);
     _live.traces.set(tid, {
@@ -4237,15 +4243,18 @@ class H(BaseHTTPRequestHandler):
                             # First poll — seed from now, don't replay history.
                             row = conn.execute('SELECT MAX(id) FROM events').fetchone()
                             last_seen_id = (row[0] or 0)
+                        # Only Read/Edit/Write — their args is a file
+                        # basename. Grep/Glob args is a regex/glob
+                        # pattern; trying to map those to symbols
+                        # spams the side panel with garbage like
+                        # `^#include` while finding no symbols.
                         rows = conn.execute(
                             "SELECT id, timestamp AS time, trace_id, "
                             "       binary_name, args FROM events "
                             " WHERE id > ? AND source='claude-code' "
                             "   AND (binary_name LIKE 'claude:Read%' "
                             "     OR binary_name LIKE 'claude:Edit%' "
-                            "     OR binary_name LIKE 'claude:Write%' "
-                            "     OR binary_name LIKE 'claude:Glob%' "
-                            "     OR binary_name LIKE 'claude:Grep%') "
+                            "     OR binary_name LIKE 'claude:Write%') "
                             " ORDER BY id ASC LIMIT 50",
                             (last_seen_id,)
                         ).fetchall()
