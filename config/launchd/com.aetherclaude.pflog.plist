@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aetherclaude.pflog</string>
+
+  <!--
+    Persistent pf-block capture.
+
+    pflog0 is pf's pseudo-interface that mirrors every packet matching
+    a rule with the `log` keyword. The com.aetherclaude anchor's
+    block-drop rules use `log`, so this tcpdump captures every TCP /
+    UDP packet pf rejected for aetherclaude (UID 965) — the
+    AetherClaude orchestrator's blocked egress.
+
+    Output: /Users/Shared/aetherclaude/logs/pf-blocked.log
+      - one line per blocked packet
+      - -tttt = absolute ISO timestamp with µs
+      - -nn   = no DNS / port-name resolution (faster, more diagnosable)
+      - -s 200 = snap each packet to 200 bytes (headers only; full
+                 payloads aren't useful for "what got blocked")
+      - -l    = line-buffered output so the log updates immediately
+
+    Rotation: rely on macOS's newsyslog (default config rotates large
+    logs); the file is line-buffered text so a tail -f works.
+
+    Only root can read pflog0, so UserName is implicit-root.
+  -->
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/sbin/tcpdump</string>
+    <string>-i</string>
+    <string>pflog0</string>
+    <string>-nn</string>
+    <string>-tttt</string>
+    <string>-s</string>
+    <string>200</string>
+    <string>-l</string>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>/Users/Shared/aetherclaude/logs/pf-blocked.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/Shared/aetherclaude/logs/pf-blocked.err</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!--
+    Restart on exit (tcpdump shouldn't die under normal load, but if
+    it does we want to come right back up so we don't lose blocked
+    packets). Throttle keeps a tight crash loop from flooding logs.
+  -->
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+</dict>
+</plist>
