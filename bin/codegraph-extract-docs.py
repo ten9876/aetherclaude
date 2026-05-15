@@ -660,6 +660,21 @@ def main() -> int:
 
     print(f'\ndocs extraction complete in {time.time()-t0:.1f}s',
           file=sys.stderr)
+
+    # Phase-4 hook: refresh the GRAPH_REPORT.md audit doc now that
+    # concept/INFERRED-edge counts have changed. Best-effort —
+    # failure here doesn't invalidate the extraction we just landed.
+    report_script = Path(__file__).parent / 'codegraph-report.py'
+    if report_script.exists():
+        try:
+            subprocess.run(
+                ['python3', str(report_script), '--db', args.db],
+                check=False, timeout=30,
+            )
+        except Exception as e:
+            print(f'WARN: GRAPH_REPORT.md regen failed: {e}',
+                  file=sys.stderr)
+
     return 0
 
 

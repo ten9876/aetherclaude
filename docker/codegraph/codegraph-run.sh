@@ -82,5 +82,15 @@ done
 chmod g+w "$OUT/codegraph.db" || true
 echo "[codegraph-run] published $OUT/codegraph.db ($(stat -c%s "$OUT/codegraph.db") bytes)"
 
+# Step 5 (Phase 4): emit GRAPH_REPORT.md alongside the db so a human
+# reviewer can see the architectural state of the codebase at the
+# time of this index. Read-only on the db; safe to run.
+if [[ -x "$TOOLS/codegraph-report.py" ]]; then
+    python3 "$TOOLS/codegraph-report.py" \
+        --db "$OUT/codegraph.db" \
+        --out "$OUT/GRAPH_REPORT.md" \
+        || echo "[codegraph-run] WARN: GRAPH_REPORT.md generation failed (non-fatal)"
+fi
+
 t1=$(date +%s)
 echo "[codegraph-run] done in $((t1 - t0))s"
