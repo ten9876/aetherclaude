@@ -3297,17 +3297,20 @@ function rebuildCommunityGraph(data) {
   setStats(`${g.order} communities · ${g.size} inter-community edges · running layout…`);
   const layoutFa2 = graphologyLibrary.layoutForceAtlas2;
   const t0 = performance.now();
+  // 50-node graph: standard FA2 with strong gravity so isolated
+  // communities don't get banished. scalingRatio modest for a
+  // compact layout that fits the viewport without zoom-out.
   layoutFa2.assign(g, {
-    iterations: 500,
+    iterations: 400,
     settings: {
-      barnesHutOptimize: true, gravity: 1, scalingRatio: 30,
-      slowDown: 6, strongGravityMode: false, linLogMode: false,
+      barnesHutOptimize: true, gravity: 2, scalingRatio: 10,
+      slowDown: 4, strongGravityMode: true, linLogMode: false,
     },
   });
   if (graphologyLibrary.layoutNoverlap) {
     graphologyLibrary.layoutNoverlap.assign(g, {
-      maxIterations: 60,
-      settings: { ratio: 4, margin: 3, expansion: 1.1, speed: 3 },
+      maxIterations: 50,
+      settings: { ratio: 1.5, margin: 2, expansion: 1.05, speed: 3 },
     });
   }
   const layoutMs = performance.now() - t0;
@@ -3325,6 +3328,7 @@ function rebuildCommunityGraph(data) {
   });
   _state.sigma.on('clickNode', e => drillIntoCommunity(e.node));
 
+  fitCameraToGraph(g);
   setStats(`${g.order} communities · ${g.size} edges · layout in ${(layoutMs/1000).toFixed(1)}s · click a bubble to drill in`);
   // Reuse community sidebar — it's already keyed off the same data.
   renderCommunityList();
@@ -3414,17 +3418,21 @@ function rebuildDirGraph(data) {
   setStats(`${g.order} directories · ${g.size} inter-dir edges · running layout…`);
   const layoutFa2 = graphologyLibrary.layoutForceAtlas2;
   const t0 = performance.now();
+  // 5-node graph: standard FA2 with strong gravity to keep isolated
+  // dirs (main.cpp, generated) near the center instead of flung out.
+  // scalingRatio kept modest — too much repulsion banishes the
+  // weakly-connected bubbles to the corners.
   layoutFa2.assign(g, {
-    iterations: 400,
+    iterations: 300,
     settings: {
-      barnesHutOptimize: true, gravity: 1, scalingRatio: 40,
-      slowDown: 8, strongGravityMode: false, linLogMode: false,
+      barnesHutOptimize: true, gravity: 3, scalingRatio: 8,
+      slowDown: 3, strongGravityMode: true, linLogMode: false,
     },
   });
   if (graphologyLibrary.layoutNoverlap) {
     graphologyLibrary.layoutNoverlap.assign(g, {
-      maxIterations: 80,
-      settings: { ratio: 5, margin: 4, expansion: 1.1, speed: 3 },
+      maxIterations: 40,
+      settings: { ratio: 1.3, margin: 2, expansion: 1.05, speed: 3 },
     });
   }
   const layoutMs = performance.now() - t0;
@@ -3444,8 +3452,22 @@ function rebuildDirGraph(data) {
   _state.sigma.on('clickNode', e => drillIntoDirectory(e.node));
   _state.sigma.on('clickStage', () => { /* no-op in dir mode */ });
 
+  fitCameraToGraph(g);
   setStats(`${g.order} directories · ${g.size} edges · layout in ${(layoutMs/1000).toFixed(1)}s · click a bubble to drill in`);
   renderDirSidebar();
+}
+
+function fitCameraToGraph(g) {
+  // After layout, reset Sigma's camera so the rendered bounding box
+  // fills the viewport with a small margin. Sigma normalizes graph
+  // coords into [0,1] internally; the camera's default ratio=1 already
+  // shows the unit stage, so x=0.5,y=0.5 + ratio=1.05 centers and adds
+  // a comfortable padding for any noverlap excursion past the unit box.
+  // Without this step, sparse graphs (5 bubbles, mostly disconnected)
+  // appear as tiny dots in a sea of empty canvas.
+  if (!_state.sigma) return;
+  _state.sigma.getCamera().setState({ x: 0.5, y: 0.5, ratio: 1.05, angle: 0 });
+  _state.sigma.refresh();
 }
 
 function renderDirSidebar() {
