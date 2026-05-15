@@ -22,7 +22,11 @@ SRC=/src
 TOOLS=/tools
 OUT=/out
 BUILD=/tmp/build
-TMP_DB=/tmp/codegraph.db
+# Build the new db inside /out (a bind-mounted host directory) so the
+# final rename is intra-filesystem and atomic. Writing in /tmp first
+# and mv'ing across breaks on cross-fs renames AND can fail on the
+# existing target's permissions.
+TMP_DB=$OUT/codegraph.db.new
 
 t0=$(date +%s)
 echo "[codegraph-run] started at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -64,10 +68,14 @@ python3 "$TOOLS/codegraph-extract-clangd.py" \
 echo "[codegraph-run] analyze"
 python3 "$TOOLS/codegraph-analyze.py" "$TMP_DB"
 
-# Step 4: atomic publish. mv across the same filesystem is atomic; the
-# dashboard's per-request sqlite3.connect() picks up the new file on the
-# next read.
-mv "$TMP_DB" "$OUT/codegraph.db"
+# Step 4: atomic publish. mv within $OUT is intra-filesystem and atomic;
+# the dashboard's per-request sqlite3.connect() picks up the new file
+# on the next read. Also clean up the WAL/SHM sidecars that sqlite may
+# have left next to the new db (we wrote with WAL journal_mode).
+mv -f "$TMP_DB" "$OUT/codegraph.db"
+for sidecar in "$TMP_DB-wal" "$TMP_DB-shm"; do
+    [[ -f "$sidecar" ]] && rm -f "$sidecar"
+done
 echo "[codegraph-run] published $OUT/codegraph.db ($(stat -c%s "$OUT/codegraph.db") bytes)"
 
 t1=$(date +%s)
