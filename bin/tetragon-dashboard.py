@@ -3201,8 +3201,11 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
 <script src="/codegraph/assets/graphology.umd.min.js"></script>
 <script src="/codegraph/assets/graphology-library.min.js"></script>
 <script src="/codegraph/assets/sigma.min.js"></script>
-<script src="/codegraph/assets/3d-force-graph.min.js"></script>
+<!-- three.js must load before three-spritetext so window.THREE is set;
+     before 3d-force-graph too so any version compares stay sane. -->
+<script src="/codegraph/assets/three.min.js"></script>
 <script src="/codegraph/assets/three-spritetext.min.js"></script>
+<script src="/codegraph/assets/3d-force-graph.min.js"></script>
 <script>
 'use strict';
 
@@ -3680,9 +3683,16 @@ function rebuild3DGraph(data) {
       // SpriteText fails to load the spheres still render.
       .nodeThreeObjectExtend(true)
       .nodeThreeObject(n => {
-        if (typeof window.SpriteText !== 'function') return null;
         if (_3d.selectedId == null) return null;
         if (!_3dIsHighlighted(n.id)) return null;
+        if (typeof window.SpriteText !== 'function') {
+          if (!_3d._loggedSpriteTextWarn) {
+            console.warn('SpriteText missing — labels disabled. THREE:',
+              typeof window.THREE, ' SpriteText:', typeof window.SpriteText);
+            _3d._loggedSpriteTextWarn = true;
+          }
+          return null;
+        }
         const sprite = new window.SpriteText(n.label || '');
         sprite.color = '#e0e8f0';
         sprite.backgroundColor = 'rgba(10,10,26,0.92)';
@@ -4957,6 +4967,7 @@ class H(BaseHTTPRequestHandler):
                 'graphology-library.min.js': 'application/javascript',
                 '3d-force-graph.min.js': 'application/javascript',
                 'three-spritetext.min.js': 'application/javascript',
+                'three.min.js': 'application/javascript',
             }
             if name not in ALLOWED:
                 self.send_response(404); self.end_headers(); return
