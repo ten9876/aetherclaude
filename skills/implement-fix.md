@@ -28,16 +28,41 @@ Your task for this pass (IMPLEMENT):
    violate a principle, do NOT work around it — halt and leave a single
    comment requesting an amendment, then stop.
 2. Read the relevant source files.
-3. For SmartSDR protocol questions, consult the FlexLib C# reference at
+3. **Check blast radius BEFORE editing any non-trivial structural symbol.**
+   Identify the seed symbol(s) you're about to change (the class / function
+   the edit centers on), then call the codegraph MCP:
+     `mcp__codegraph__impact` with `{"symbol": "QualifiedName", "max_depth": 3}`
+   This returns transitive callers + callees, total `risk_score`, and a
+   `high_risk` list of structural-bridge symbols (those with high betweenness
+   centrality — changing the seed will ripple through them). If `risk_score >= 0.05`
+   or `high_risk` is non-empty, you MUST:
+   - Read at least the top-3 high-risk caller files to understand how they
+     depend on the seed
+   - Note in your reasoning which downstream behaviors could regress
+   - Cite the impact findings in your commit message AND in a `### Blast radius`
+     section at the bottom of the PR body (the orchestrator generates the PR
+     body from your commit; include the section there too)
+   For pure UI-widget removals or strictly local helper edits where the seed
+   isn't a structural symbol, you may skip this — but say so explicitly in
+   your reasoning.
+
+   The PreToolUse blast-radius hook ALSO fires automatically on every Edit
+   and injects a warning when the touched file's symbols have non-trivial
+   risk. Treat that warning the same way: if it flagged high-risk callers,
+   cite them.
+4. For SmartSDR protocol questions, consult the FlexLib C# reference at
    `/Users/aetherclaude/reference/FlexLib/` — read-only upstream source,
    authoritative for command/status/VITA-49 behavior. (This is also
    Principle I of the constitution.)
-4. Implement the fix with focused, minimal changes.
-5. Commit with message: `Short description (#${ISSUE_NUMBER}). Principle <N>.`
+5. Implement the fix with focused, minimal changes.
+6. Commit with message: `Short description (#${ISSUE_NUMBER}). Principle <N>.`
    where `<N>` is the Roman-numeral identifier of the constitution principle
    the change honors most directly (e.g., `Principle III.` for a UI-naming
    fix). If multiple principles apply, cite the most load-bearing one. If
    no constitution exists in the workspace, omit the `Principle <N>.` suffix.
+   If you ran an impact check that surfaced high-risk callers, add a
+   `Blast radius: risk_score=X.XXX, N high-risk affected (top: A, B, C).`
+   line to the body so the reviewer sees the structural context.
 
 IMPORTANT RULES:
 - Do NOT run git push — the orchestrator handles pushing.

@@ -354,7 +354,7 @@ CLAUDE_HARD_CEILING="${CLAUDE_HARD_CEILING:-${CLAUDE_TIMEOUT:-3600}}"  # 60 min 
 
 # Default tool surface — used by all skills that legitimately write code
 # (triage, continue-triage, implement-fix, review-pr, explain-ci).
-CLAUDE_ALLOWED_TOOLS_DEFAULT="Read,Glob,Grep,Edit,Write,Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git diff *),Bash(git log *),Bash(git status),Bash(git checkout *),Bash(ls *),Bash(head *),Bash(tail *),mcp__aetherclaude-github__*"
+CLAUDE_ALLOWED_TOOLS_DEFAULT="Read,Glob,Grep,Edit,Write,Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git diff *),Bash(git log *),Bash(git status),Bash(git checkout *),Bash(ls *),Bash(head *),Bash(tail *),mcp__aetherclaude-github__*,mcp__codegraph__*"
 
 # @Mention tool surface — strictly conversational. No code mutation, no git
 # write, no PR creation, no label management. Claude can read code and
