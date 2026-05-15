@@ -3268,16 +3268,20 @@ function rebuildCommunityGraph(data) {
   if (typeof _live !== 'undefined') { _live.pulses.clear(); }
   const g = new graphology.Graph({ type: 'undirected', multi: false });
   for (const c of data.communities) {
+    // Same adjacency-based sizing as directories — see rebuildDirGraph
+    // for rationale.
+    const adjacency = (c.internal_edges || 0) + (c.external_edges || 0);
     g.addNode(c.id, {
       label: c.label,
       community_id: c.community_id,
       symbol_count: c.symbol_count,
       internal_edges: c.internal_edges,
       external_edges: c.external_edges,
+      adjacency: adjacency,
       top_symbols: c.top_symbols,
       x: (Math.random() - 0.5) * 1000,
       y: (Math.random() - 0.5) * 1000,
-      size: Math.max(4, Math.min(18, Math.log2(c.symbol_count + 1) * 2.3)),
+      size: Math.max(3, Math.min(25, Math.sqrt(adjacency) * 0.6 + 3)),
       color: communityColor(c.community_id || 0),
     });
   }
@@ -3386,17 +3390,22 @@ function rebuildDirGraph(data) {
     return hslToHex(((h % 360) + 360) % 360, 60, 60);
   }
   for (const d of data.directories) {
+    // Size by adjacency (internal + external edges) on sqrt scale —
+    // architectural importance, not raw code volume. A small dir
+    // with many callers reads as a structural hub; a big dir with
+    // few connections reads as bulk. sqrt keeps the long tail from
+    // collapsing the spread the way log would.
+    const adjacency = (d.internal_edges || 0) + (d.external_edges || 0);
     g.addNode(d.path, {
       label: d.path,
       symbol_count: d.symbol_count,
       internal_edges: d.internal_edges,
       external_edges: d.external_edges,
+      adjacency: adjacency,
       top_symbols: d.top_symbols,
       x: (Math.random() - 0.5) * 1000,
       y: (Math.random() - 0.5) * 1000,
-      // Size: log-scaled by symbol count. 20-symbol dirs ~6 px,
-      // 200-symbol dirs ~14 px, 700-symbol dirs ~18 px.
-      size: Math.max(5, Math.min(20, Math.log2(d.symbol_count + 1) * 2.5)),
+      size: Math.max(5, Math.min(40, Math.sqrt(adjacency) * 0.5 + 5)),
       color: dirColor(d.path),
     });
   }
