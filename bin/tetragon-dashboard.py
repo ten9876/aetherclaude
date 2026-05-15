@@ -3621,7 +3621,8 @@ function refresh3DHighlight() {
     .nodeColor(_3d.graph.nodeColor())
     .nodeVal(_3d.graph.nodeVal())
     .linkColor(_3d.graph.linkColor())
-    .linkWidth(_3d.graph.linkWidth());
+    .linkWidth(_3d.graph.linkWidth())
+    .linkVisibility(_3d.graph.linkVisibility());
 }
 
 function show3DContainer() {
@@ -3669,29 +3670,27 @@ function rebuild3DGraph(data) {
         return _3dIsHighlighted(n.id) ? base : base * 0.3;
       })
       .nodeOpacity(0.9)
-      // Edge color: bright cyan when both endpoints are in the
-      // highlight set, faint community-tinted otherwise. Three.js
-      // doesn't support per-link opacity easily, so we encode
-      // opacity in the color alpha if the channel supports it.
+      // Edge color: cyan when touching the selected node; default
+      // community-source tint when nothing is selected. (Hidden
+      // edges go through linkVisibility below.)
       .linkColor(l => {
         const srcId = (l.source && l.source.id !== undefined) ? l.source.id : l.source;
-        const dstId = (l.target && l.target.id !== undefined) ? l.target.id : l.target;
-        if (_3d.selectedId != null) {
-          if (srcId === _3d.selectedId || dstId === _3d.selectedId) return '#00bceb';
-          return '#101820';  // dim
-        }
-        // No selection — default tint by source community.
+        if (_3d.selectedId != null) return '#00bceb';
         const srcNode = (l.source && l.source.community !== undefined)
           ? l.source
           : (data.nodes.find(n => n.id === srcId) || {});
         return hexWithAlpha(communityColor(srcNode.community || 0), 0.25);
       })
       .linkOpacity(0.55)
-      .linkWidth(l => {
-        if (_3d.selectedId == null) return 0.4;
+      .linkWidth(l => _3d.selectedId == null ? 0.4 : 1.2)
+      // Hide every edge that doesn't touch the selected node, so the
+      // visible graph collapses to the local neighborhood on click.
+      // No selection → show all edges.
+      .linkVisibility(l => {
+        if (_3d.selectedId == null) return true;
         const srcId = (l.source && l.source.id !== undefined) ? l.source.id : l.source;
         const dstId = (l.target && l.target.id !== undefined) ? l.target.id : l.target;
-        return (srcId === _3d.selectedId || dstId === _3d.selectedId) ? 1.2 : 0.2;
+        return srcId === _3d.selectedId || dstId === _3d.selectedId;
       })
       // Click → set selection, recompute neighbor set, mutate every
       // node's material in place, refresh link accessors, populate
