@@ -3691,9 +3691,12 @@ function rebuildGraph(data) {
   const container = document.getElementById('sigma-container');
   _state.sigma = new Sigma(g, container, {
     renderEdgeLabels: false,
-    // Labels off by default — only show on selection / hover / search.
-    // Reference viz hides all labels at this zoom level too.
-    renderLabels: false,
+    // Labels enabled at the renderer level so forceLabel can override
+    // them per-node. We pin labelRenderedSizeThreshold to 1000 so the
+    // default behaviour (no selection, no search) shows no labels —
+    // only nodes whose reducer returns forceLabel:true will paint.
+    renderLabels: true,
+    labelRenderedSizeThreshold: 1000,
     // Sigma renders highlighted-node labels on a near-white pill —
     // pale text on a pale background was unreadable. Dark text + a
     // tighter font weight gives strong contrast against the pill
