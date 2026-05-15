@@ -3696,19 +3696,14 @@ function rebuild3DGraph(data) {
       // node's material in place, refresh link accessors, populate
       // the detail pane, and aim the camera.
       .onNodeClick(n => {
+        // Highlight + detail-pane only. Camera stays put so the user's
+        // orbit/zoom state isn't yanked out from under them on every
+        // click.
         _3d.currentNode = n;
         _3d.selectedId = n.id;
         _3d.neighborSet = new Set(_3d.adjacency.get(n.id) || []);
         select3DNode(n);
         refresh3DHighlight();
-        // Aim the camera at the clicked node.
-        const distance = 80;
-        const distRatio = 1 + distance / Math.hypot(n.x, n.y, n.z);
-        _3d.graph.cameraPosition(
-          { x: n.x * distRatio, y: n.y * distRatio, z: n.z * distRatio },
-          n,
-          1500
-        );
       })
       .onBackgroundClick(() => {
         _3d.selectedId = null;
