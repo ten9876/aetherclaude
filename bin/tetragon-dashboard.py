@@ -3221,6 +3221,44 @@ function hexWithAlpha(hex, alpha) {
   return hex.slice(0, 7) + a;
 }
 
+// Custom label renderer — Sigma's default draws bare text with no
+// backdrop. Forced labels in the selection/neighbor view sit on top
+// of dense edges and dim community-colored nodes, making them
+// illegible. This renderer paints a dark pill with a node-colored
+// border behind the text so it pops at any zoom level.
+function drawLabelWithPill(context, data, settings) {
+  if (!data.label) return;
+  const fontSize = settings.labelSize || 11;
+  const weight = settings.labelWeight || '500';
+  context.font = `${weight} ${fontSize}px ${settings.labelFont || 'sans-serif'}`;
+  const text = data.label;
+  const metrics = context.measureText(text);
+  const padX = 5, padY = 2;
+  const w = metrics.width + padX * 2;
+  const h = fontSize + padY * 2;
+  // Position above the node — anchored to its rendered position+size.
+  const x = data.x - w / 2;
+  const y = data.y - (data.size || 4) - h - 3;
+  // Pill backdrop (dark, ~90% opaque) bordered with the node's color.
+  context.fillStyle = 'rgba(10, 10, 26, 0.92)';
+  context.strokeStyle = data.color || '#00bceb';
+  context.lineWidth = 1;
+  if (context.roundRect) {
+    context.beginPath();
+    context.roundRect(x, y, w, h, 4);
+    context.fill();
+    context.stroke();
+  } else {
+    context.fillRect(x, y, w, h);
+    context.strokeRect(x, y, w, h);
+  }
+  // Text
+  context.fillStyle = (settings.labelColor && settings.labelColor.color) || '#fff';
+  context.textAlign = 'left';
+  context.textBaseline = 'top';
+  context.fillText(text, x + padX, y + padY);
+}
+
 // Deterministic color-per-community via HSL hash → hex.
 function communityColor(cid) {
   const h = ((cid * 137) % 360 + 360) % 360;
@@ -3324,7 +3362,9 @@ function rebuildCommunityGraph(data) {
     renderEdgeLabels: false,
     renderLabels: true,
     labelRenderedSizeThreshold: 8,
-    labelColor: { color: '#d0d8e0' },
+    defaultDrawNodeLabel: drawLabelWithPill,
+    defaultDrawNodeHover: drawLabelWithPill,
+    labelColor: { color: '#e0e8f0' },
     labelFont: 'SF Mono, monospace',
     labelSize: 10,
     minCameraRatio: 0.05,
@@ -3451,7 +3491,9 @@ function rebuildDirGraph(data) {
     renderEdgeLabels: false,
     renderLabels: true,
     labelRenderedSizeThreshold: 5,
-    labelColor: { color: '#d8e0e8' },
+    defaultDrawNodeLabel: drawLabelWithPill,
+    defaultDrawNodeHover: drawLabelWithPill,
+    labelColor: { color: '#e0e8f0' },
     labelFont: 'SF Mono, monospace',
     labelSize: 11,
     labelWeight: '500',
@@ -3697,11 +3739,12 @@ function rebuildGraph(data) {
     // only nodes whose reducer returns forceLabel:true will paint.
     renderLabels: true,
     labelRenderedSizeThreshold: 1000,
-    // Sigma renders highlighted-node labels on a near-white pill —
-    // pale text on a pale background was unreadable. Dark text + a
-    // tighter font weight gives strong contrast against the pill
-    // while keeping the cyan selection ring readable.
-    labelColor: { color: '#0a0a1a' },
+    // Use the custom pill-backed label renderer for both default and
+    // hover paths. Without the pill, label text sits directly on top
+    // of dense edges and dim background dots and becomes illegible.
+    defaultDrawNodeLabel: drawLabelWithPill,
+    defaultDrawNodeHover: drawLabelWithPill,
+    labelColor: { color: '#e0e8f0' },
     labelFont: 'SF Mono, monospace',
     labelSize: 11,
     labelWeight: '600',
