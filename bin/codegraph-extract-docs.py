@@ -298,7 +298,7 @@ def build_prompt(doc_rel_path: str, doc_text: str,
     )
 
 
-def call_claude(prompt: str) -> dict | None:
+def call_claude(prompt: str, timeout: int = 600) -> dict | None:
     """Run `claude --print --output-format json --json-schema …` and
     return the parsed model output, or None on failure."""
     try:
@@ -326,7 +326,7 @@ def call_claude(prompt: str) -> dict | None:
                 'Read,Edit,Write,Bash,Grep,Glob,WebFetch,WebSearch,Task,Agent,TodoWrite,ToolSearch',
             ],
             input=prompt,
-            capture_output=True, text=True, timeout=600,
+            capture_output=True, text=True, timeout=timeout,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         print(f'  ! claude invocation failed: {e}', file=sys.stderr)
@@ -415,6 +415,15 @@ def main() -> int:
                          'docs from src/core, src/models, src/gui')
     ap.add_argument('--headers-only', action='store_true',
                     help='Skip markdown docs; only process header comments')
+    ap.add_argument('--header-dirs', nargs='+', default=None,
+                    help='Override the header-scan dir list (paths relative '
+                         'to --root). Default: src/core src/models src/gui')
+    ap.add_argument('--append', action='store_true',
+                    help='Skip the idempotent wipe of prior INFERRED edges '
+                         '/ concept rows. Use when retrying a specific '
+                         'subset without losing prior successful extractions.')
+    ap.add_argument('--timeout', type=int, default=600,
+                    help='Per-claude-call timeout in seconds (default 600)')
     ap.add_argument('--dry-run', action='store_true',
                     help='Run extraction, print summary, do not write to db')
     ap.add_argument('-v', '--verbose', action='store_true')
@@ -449,7 +458,8 @@ def main() -> int:
             worklist.append((rel, text, 30, 60))
 
     if args.headers or args.headers_only:
-        for dir_rel in HEADER_DIRS:
+        header_dirs = args.header_dirs or HEADER_DIRS
+        for dir_rel in header_dirs:
             src_dir = root / dir_rel
             if not src_dir.is_dir():
                 print(f'  - skip headers in {dir_rel} (missing)',
@@ -487,7 +497,7 @@ def main() -> int:
         prompt = build_prompt(rel, text, god_nodes,
                               max_concepts=cap_c, max_edges=cap_e)
         n_called += 1
-        result = call_claude(prompt)
+        result = call_claude(prompt, timeout=args.timeout)
         if result is None:
             continue
         n_ok += 1
@@ -519,15 +529,23 @@ def main() -> int:
     # ---- Write to db ----
     conn = sqlite3.connect(args.db)
     try:
-        # Wipe prior INFERRED edges + concept rows so re-runs are
-        # idempotent. EXTRACTED edges from the AST extractor are
-        # never touched.
-        conn.execute(
-            "DELETE FROM edges WHERE confidence = 'INFERRED'"
-        )
-        conn.execute(
-            "DELETE FROM symbols WHERE kind = 'concept'"
-        )
+        if not args.append:
+            # Default mode — wipe prior INFERRED edges + concept rows
+            # so re-runs are idempotent. EXTRACTED edges from the AST
+            # extractor are never touched.
+            conn.execute(
+                "DELETE FROM edges WHERE confidence = 'INFERRED'"
+            )
+            conn.execute(
+                "DELETE FROM symbols WHERE kind = 'concept'"
+            )
+        else:
+            # --append: keep prior rows. Dedup by qualified_name so
+            # we don't try to re-insert a concept that's already in
+            # the symbols table. New concepts merge in; existing ones
+            # keep their old IDs so existing edges stay wired.
+            print('  --append: not wiping prior INFERRED edges / concepts',
+                  file=sys.stderr)
         # Dedup concepts by name (keep first description).
         concept_rows: dict[str, dict] = {}
         for c in all_concepts:
@@ -545,11 +563,31 @@ def main() -> int:
                 'parent_scope': c.get('kind', 'concept'),
                 'signature': c.get('description', '')[:500],
             }
+        if args.append:
+            # In append mode, drop concepts whose qualified_name is
+            # already in the symbols table — and remember their IDs
+            # so any new edges referencing them resolve correctly.
+            existing_ids: dict[str, int] = {}
+            for row in conn.execute(
+                "SELECT id, qualified_name FROM symbols WHERE kind = 'concept'"
+            ):
+                existing_ids[row[1]] = row[0]
+            for qn in list(concept_rows.keys()):
+                if qn in existing_ids:
+                    del concept_rows[qn]
         # Allocate IDs starting after the max code-symbol id so we
         # don't collide if a re-extraction has happened in parallel.
         max_id = conn.execute('SELECT COALESCE(MAX(id), 0) FROM symbols') \
                      .fetchone()[0]
         concept_id_by_name: dict[str, int] = {}
+        # In append mode, seed the map with concepts already in the
+        # symbols table so new edges that target them resolve.
+        if args.append:
+            for row in conn.execute(
+                "SELECT id, qualified_name, name FROM symbols WHERE kind='concept'"
+            ):
+                concept_id_by_name[row[1]] = row[0]
+                concept_id_by_name[row[2]] = row[0]
         for qn, row in concept_rows.items():
             max_id += 1
             row['id'] = max_id
