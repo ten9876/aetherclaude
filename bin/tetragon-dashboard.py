@@ -3196,6 +3196,15 @@ function hslToHex(h, s, l) {
   return `#${toHex(f(0))}${toHex(f(8))}${toHex(f(4))}`;
 }
 
+// Add alpha to a #rrggbb color — used for edge tinting so edges
+// pick up the source community color but at reduced opacity, so
+// they sit behind the nodes visually instead of competing.
+function hexWithAlpha(hex, alpha) {
+  if (!hex || hex[0] !== '#' || hex.length < 7) return hex;
+  const a = Math.round(alpha * 255).toString(16).padStart(2, '0');
+  return hex.slice(0, 7) + a;
+}
+
 // Deterministic color-per-community via HSL hash → hex.
 function communityColor(cid) {
   const h = ((cid * 137) % 360 + 360) % 360;
@@ -3281,21 +3290,26 @@ function rebuildGraph(data) {
       community: n.community,
       community_label: n.community_label,
       degree: n.degree,
-      // Random initial positions in a unit disk — forceAtlas2 spreads them out.
       x: (Math.random() - 0.5) * 1000,
       y: (Math.random() - 0.5) * 1000,
-      // Log-scaled sizes capped at 8 px so a handful of high-degree
-      // hubs don't dominate the canvas. Most nodes (degree ≤ 8) land
-      // around 2-3 px which lets the graph structure breathe.
-      size: Math.max(1.5, Math.min(8, Math.log2(n.degree + 1) * 1.4)),
+      // Tiny dots — match Martin's reference: most nodes 1-2 px,
+      // hubs ~3 px. The structure comes from edge density, not size.
+      size: Math.max(1, Math.min(3, Math.log2(n.degree + 1) * 0.5)),
       color: communityColor(n.community || 0),
     });
   }
+  // Edges inherit a desaturated form of the source node's community
+  // color — same approach as the reference viz. Visually you see the
+  // cluster colour bleed along its internal edges, while inter-cluster
+  // edges get a mixed look. Plain monochrome edges hide the structure.
   for (const e of data.edges) {
     if (g.hasNode(e.source) && g.hasNode(e.target) && !g.hasEdge(e.source, e.target)) {
-      // Brighter edge color so the structure is actually visible
-      // against the dark background — #1a2030 was nearly invisible.
-      g.addEdge(e.source, e.target, { kind: e.kind, size: 0.4, color: '#2e4a6a' });
+      const srcColor = g.getNodeAttribute(e.source, 'color');
+      g.addEdge(e.source, e.target, {
+        kind: e.kind,
+        size: 0.3,
+        color: hexWithAlpha(srcColor, 0.35),
+      });
     }
   }
   _state.graph = g;
@@ -3304,72 +3318,59 @@ function rebuildGraph(data) {
 
   setStats(`${g.order} nodes · ${g.size} edges · running layout…`);
 
-  // Layout: ForceAtlas2 with adjustSizes so node radius is honored
-  // (less overlap), then a noverlap post-process for any remaining
-  // collisions. Larger scalingRatio + linLogMode spread tight clusters.
+  // Layout: ForceAtlas2 with linLog (better cluster separation than
+  // standard FA2 for graphs that have a few high-degree hubs +
+  // long tail). High scalingRatio + strongGravity keep the whole
+  // thing from drifting apart; iterations bumped to 500 for crisp
+  // cluster boundaries like the reference viz.
   const layoutFa2 = graphologyLibrary.layoutForceAtlas2;
   const t0 = performance.now();
   layoutFa2.assign(g, {
-    iterations: 300,
+    iterations: 500,
     settings: {
       barnesHutOptimize: true,
-      gravity: 0.8,
-      scalingRatio: 18,
-      slowDown: 4,
-      strongGravityMode: false,
-      adjustSizes: true,
+      gravity: 1,
+      scalingRatio: 8,
+      slowDown: 1,
+      strongGravityMode: true,
       linLogMode: true,
     },
   });
-  // Push any still-overlapping nodes apart. Bounded iteration count so
-  // dense communities don't explode out into nothing.
-  if (graphologyLibrary.layoutNoverlap) {
-    graphologyLibrary.layoutNoverlap.assign(g, {
-      maxIterations: 50,
-      settings: { ratio: 1.2, margin: 1, expansion: 1.05, speed: 3 },
-    });
-  }
   const layoutMs = performance.now() - t0;
 
-  // Render
   const container = document.getElementById('sigma-container');
   _state.sigma = new Sigma(g, container, {
     renderEdgeLabels: false,
-    defaultEdgeColor: '#2e4a6a',
-    // Only label the largest 30-50 nodes. labelRenderedSizeThreshold
-    // applies to the *rendered* size at current zoom, so as you zoom
-    // in more labels appear naturally — but the default view stays
-    // readable instead of stacking 1000+ labels.
-    labelRenderedSizeThreshold: 14,
+    // Labels off by default — only show on selection / hover / search.
+    // Reference viz hides all labels at this zoom level too.
+    renderLabels: false,
     labelColor: { color: '#c8d0d8' },
     labelFont: 'SF Mono, monospace',
     labelSize: 11,
-    labelWeight: '500',
     minCameraRatio: 0.05,
     maxCameraRatio: 10,
-    // Hover reducer — when hovering a node, dim everything else,
-    // and brighten the hovered node's neighbors + edges. Same logic
-    // we use on click but applied transiently.
+    // Selection emphasis: when a node is selected via click,
+    // highlight it and its neighbors + their edges; dim the rest.
     nodeReducer: (node, data) => {
       const sel = _state.highlightedId;
       if (!sel) return data;
+      const g = _state.graph;
+      if (!g) return data;
       const isSel = (node === sel);
-      const isNeighbor = _state.graph && _state.graph.hasEdge(sel, node) ||
-                        _state.graph.hasEdge(node, sel);
-      if (isSel || isNeighbor) {
-        return { ...data, zIndex: 1 };
-      }
+      const isNeighbor = g.hasEdge(sel, node) || g.hasEdge(node, sel);
+      if (isSel) return { ...data, size: (data.size || 2) * 2.2, label: data.label, forceLabel: true, zIndex: 2 };
+      if (isNeighbor) return { ...data, label: data.label, forceLabel: true, zIndex: 1 };
       return { ...data, color: '#1a2030', label: '', zIndex: 0 };
     },
     edgeReducer: (edge, data) => {
       const sel = _state.highlightedId;
       if (!sel) return data;
-      const ext = _state.graph.extremities(edge);
+      const g = _state.graph;
+      if (!g) return data;
+      const ext = g.extremities(edge);
       const touches = (ext[0] === sel || ext[1] === sel);
-      if (touches) {
-        return { ...data, color: '#00bceb', size: 1.2, zIndex: 1 };
-      }
-      return { ...data, color: '#101820', size: 0.2, zIndex: 0 };
+      if (touches) return { ...data, color: '#00bceb', size: 0.8, zIndex: 1 };
+      return { ...data, hidden: true };
     },
   });
   _state.sigma.on('clickNode', e => selectNode(e.node));
