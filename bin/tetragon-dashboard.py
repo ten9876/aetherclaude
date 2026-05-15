@@ -3499,40 +3499,27 @@ document.getElementById('search').addEventListener('input', e => {
         if (!firstMatch) firstMatch = nid;
       }
     });
-    // Camera fits all matches in the viewport. Compute the bounding
-    // box of the matches in graph coords, then pick a camera ratio
-    // that contains it relative to the full-graph extent. For a
-    // many-match search like "Audio" this zooms out so you see every
-    // hit lit up across the whole constellation; for a 1-2 hit
-    // search it zooms in on the cluster.
-    if (_state.searchMatches.size && q.length >= 2) {
-      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      for (const nid of _state.searchMatches) {
-        const x = g.getNodeAttribute(nid, 'x');
-        const y = g.getNodeAttribute(nid, 'y');
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
+    // Camera: only auto-zoom for a small match set, using Sigma's
+    // node display coords (which are correctly normalized). For
+    // many-match queries leave the camera as-is — the user already
+    // has the full graph in view and the lit matches stand out
+    // against the dimmed background. Moving the camera off-screen
+    // (which my previous bbox-in-graph-coords math was doing) just
+    // blacks out the canvas.
+    if (_state.searchMatches.size === 1 && q.length >= 2) {
+      const nid = [..._state.searchMatches][0];
+      const dd = _state.sigma.getNodeDisplayData(nid);
+      if (dd) {
+        _state.sigma.getCamera().animate({ x: dd.x, y: dd.y, ratio: 0.15 }, { duration: 400 });
       }
-      // Bounding box of the entire graph for normalization
-      let gMinX = Infinity, gMaxX = -Infinity, gMinY = Infinity, gMaxY = -Infinity;
-      g.forEachNode((_, attr) => {
-        if (attr.x < gMinX) gMinX = attr.x;
-        if (attr.x > gMaxX) gMaxX = attr.x;
-        if (attr.y < gMinY) gMinY = attr.y;
-        if (attr.y > gMaxY) gMaxY = attr.y;
-      });
-      const cx = (minX + maxX) / 2;
-      const cy = (minY + maxY) / 2;
-      // Ratio: fraction of full graph extent the match bbox occupies,
-      // with padding. Sigma's default camera ratio 1.0 fits the whole
-      // graph; smaller = more zoomed in. Clamp so single-match
-      // searches don't zoom too hard.
-      const gSpan = Math.max(gMaxX - gMinX, gMaxY - gMinY) || 1;
-      const matchSpan = Math.max(maxX - minX, maxY - minY);
-      const ratio = Math.max(0.15, Math.min(1.0, (matchSpan / gSpan) * 1.4 + 0.1));
-      _state.sigma.getCamera().animate({ x: cx, y: cy, ratio }, { duration: 400 });
+    } else if (_state.searchMatches.size > 1 && _state.searchMatches.size <= 6 && q.length >= 2) {
+      // Average the matches' display coords for a sensible center.
+      let sx = 0, sy = 0, n = 0;
+      for (const nid of _state.searchMatches) {
+        const dd = _state.sigma.getNodeDisplayData(nid);
+        if (dd) { sx += dd.x; sy += dd.y; n++; }
+      }
+      if (n) _state.sigma.getCamera().animate({ x: sx/n, y: sy/n, ratio: 0.35 }, { duration: 400 });
     }
     setStats(`${_state.searchMatches.size} match${_state.searchMatches.size===1?'':'es'} for "${q}"`);
   } else {
