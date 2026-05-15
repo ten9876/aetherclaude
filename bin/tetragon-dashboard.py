@@ -3168,8 +3168,15 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
   <h1>AetherSDR Codegraph</h1>
   <a class="back" href="/">&larr; Dashboard</a>
   <div class="controls">
-    <label>min degree: <input type="range" id="min-degree" min="0" max="50" value="5"><span id="min-degree-val">5</span></label>
+    <label>view:
+      <select id="view-mode">
+        <option value="dirs" selected>Directories</option>
+        <option value="symbols">Symbols</option>
+      </select>
+    </label>
+    <label id="min-degree-label">min degree: <input type="range" id="min-degree" min="0" max="50" value="5"><span id="min-degree-val">5</span></label>
     <label>search: <input type="text" id="search" placeholder="symbol name..."></label>
+    <button id="back-to-dirs" style="display:none;background:#101025;color:#00bceb;border:1px solid #00bceb;padding:3px 10px;border-radius:3px;font-size:11px;cursor:pointer">&larr; Back to directories</button>
   </div>
   <span id="stats"><span class="loading-spinner"></span> loading...</span>
 </header>
@@ -3228,6 +3235,8 @@ const _state = {
   meta: {},
   highlightedId: null,
   searchMatches: new Set(),  // node IDs matching the current search query
+  viewMode: 'dirs',          // 'dirs' (default) | 'symbols'
+  drilledDir: null,          // path of the directory the user clicked into
 };
 
 function setStats(text) { document.getElementById('stats').textContent = text; }
@@ -3236,6 +3245,158 @@ async function fetchData(minDegree) {
   const r = await fetch('/api/codegraph/data?min_degree=' + minDegree);
   if (!r.ok) throw new Error('fetch failed: ' + r.status);
   return r.json();
+}
+
+async function fetchDirectories() {
+  const r = await fetch('/api/codegraph/directories');
+  if (!r.ok) throw new Error('fetch failed: ' + r.status);
+  return r.json();
+}
+
+function rebuildDirGraph(data) {
+  // Directory bubble layout. Each node is a directory (src/gui, src/core, …);
+  // size scales by symbol_count; color is community-style via dir name hash.
+  // Inter-dir edges are weighted by call count and rendered translucent.
+  if (_state.sigma) { _state.sigma.kill(); _state.sigma = null; }
+  if (typeof _live !== 'undefined') { _live.pulses.clear(); }
+  const g = new graphology.Graph({ type: 'undirected', multi: false });
+  // Hash each dir name to a stable hue
+  function dirColor(s) {
+    let h = 0;
+    for (const c of s) h = ((h * 31) + c.charCodeAt(0)) | 0;
+    return hslToHex(((h % 360) + 360) % 360, 60, 60);
+  }
+  for (const d of data.directories) {
+    g.addNode(d.path, {
+      label: d.path,
+      symbol_count: d.symbol_count,
+      internal_edges: d.internal_edges,
+      external_edges: d.external_edges,
+      top_symbols: d.top_symbols,
+      x: (Math.random() - 0.5) * 1000,
+      y: (Math.random() - 0.5) * 1000,
+      // Size: log-scaled by symbol count. 20-symbol dirs ~6 px,
+      // 200-symbol dirs ~14 px, 700-symbol dirs ~18 px.
+      size: Math.max(5, Math.min(20, Math.log2(d.symbol_count + 1) * 2.5)),
+      color: dirColor(d.path),
+    });
+  }
+  for (const e of data.edges) {
+    if (g.hasNode(e.source) && g.hasNode(e.target) && !g.hasEdge(e.source, e.target)) {
+      const srcColor = g.getNodeAttribute(e.source, 'color');
+      // Edge size scales with the weight (number of calls between dirs)
+      // so the dominant inter-cluster relationships pop visually.
+      const sz = Math.max(0.3, Math.min(3, Math.log2(e.weight + 1) * 0.35));
+      g.addEdge(e.source, e.target, {
+        size: sz, color: hexWithAlpha(srcColor, 0.25), weight: e.weight,
+      });
+    }
+  }
+  _state.graph = g;
+  _state.rawNodes = data.directories;
+  _state.rawEdges = data.edges;
+
+  setStats(`${g.order} directories · ${g.size} inter-dir edges · running layout…`);
+  const layoutFa2 = graphologyLibrary.layoutForceAtlas2;
+  const t0 = performance.now();
+  layoutFa2.assign(g, {
+    iterations: 400,
+    settings: {
+      barnesHutOptimize: true, gravity: 1, scalingRatio: 40,
+      slowDown: 8, strongGravityMode: false, linLogMode: false,
+    },
+  });
+  if (graphologyLibrary.layoutNoverlap) {
+    graphologyLibrary.layoutNoverlap.assign(g, {
+      maxIterations: 80,
+      settings: { ratio: 5, margin: 4, expansion: 1.1, speed: 3 },
+    });
+  }
+  const layoutMs = performance.now() - t0;
+
+  const container = document.getElementById('sigma-container');
+  _state.sigma = new Sigma(g, container, {
+    renderEdgeLabels: false,
+    renderLabels: true,
+    labelRenderedSizeThreshold: 5,
+    labelColor: { color: '#d8e0e8' },
+    labelFont: 'SF Mono, monospace',
+    labelSize: 11,
+    labelWeight: '500',
+    minCameraRatio: 0.05,
+    maxCameraRatio: 10,
+  });
+  _state.sigma.on('clickNode', e => drillIntoDirectory(e.node));
+  _state.sigma.on('clickStage', () => { /* no-op in dir mode */ });
+
+  setStats(`${g.order} directories · ${g.size} edges · layout in ${(layoutMs/1000).toFixed(1)}s · click a bubble to drill in`);
+  renderDirSidebar();
+}
+
+function renderDirSidebar() {
+  // Repurpose the community-list panel for the directory list in dir mode.
+  const el = document.getElementById('community-list');
+  if (!el || !_state.rawNodes) return;
+  el.innerHTML = _state.rawNodes.slice(0, 30).map(d => {
+    const color = _state.graph.getNodeAttribute(d.path, 'color');
+    return `<div class="community-row" data-dir="${escapeHtml(d.path)}"><span><span class="community-swatch" style="background:${color}"></span>${escapeHtml(d.path)}</span><span>${d.symbol_count}</span></div>`;
+  }).join('');
+  el.querySelectorAll('.community-row').forEach(row => {
+    row.addEventListener('click', () => drillIntoDirectory(row.dataset.dir));
+  });
+}
+
+async function drillIntoDirectory(dirPath) {
+  _state.drilledDir = dirPath;
+  _state.viewMode = 'symbols';
+  document.getElementById('view-mode').value = 'symbols';
+  document.getElementById('back-to-dirs').style.display = '';
+  document.getElementById('min-degree-label').style.display = '';
+  setStats('<span class="loading-spinner"></span> loading symbols in ' + dirPath);
+  try {
+    const data = await fetchData(_state.minDegree);
+    // Filter to symbols whose file_path starts with the chosen directory.
+    const prefix = dirPath + '/';
+    const keepIds = new Set(
+      data.nodes.filter(n => (n.file || '').startsWith(prefix)).map(n => n.id)
+    );
+    const filtered = {
+      nodes: data.nodes.filter(n => keepIds.has(n.id)),
+      edges: data.edges.filter(e => keepIds.has(e.source) && keepIds.has(e.target)),
+    };
+    rebuildGraph(filtered);
+    setStats(`${filtered.nodes.length} symbols in ${dirPath} · ${filtered.edges.length} edges`);
+  } catch (e) {
+    setStats('error: ' + e.message);
+  }
+}
+
+async function switchToDirectoryView() {
+  _state.viewMode = 'dirs';
+  _state.drilledDir = null;
+  document.getElementById('view-mode').value = 'dirs';
+  document.getElementById('back-to-dirs').style.display = 'none';
+  document.getElementById('min-degree-label').style.display = 'none';
+  setStats('<span class="loading-spinner"></span> loading directories...');
+  try {
+    rebuildDirGraph(await fetchDirectories());
+  } catch (e) {
+    setStats('error: ' + e.message);
+  }
+}
+
+async function switchToSymbolView() {
+  _state.viewMode = 'symbols';
+  _state.drilledDir = null;
+  document.getElementById('view-mode').value = 'symbols';
+  document.getElementById('back-to-dirs').style.display = 'none';
+  document.getElementById('min-degree-label').style.display = '';
+  setStats('<span class="loading-spinner"></span> loading...');
+  try {
+    rebuildGraph(await fetchData(_state.minDegree));
+  } catch (e) {
+    setStats('error: ' + e.message);
+  }
 }
 
 async function fetchMeta() {
@@ -3716,17 +3877,27 @@ function startLiveOverlay() {
   connectLiveStream();
 }
 
+// View-mode toggle. Default lands in directory view (bubble overview);
+// user can switch to flat symbol view via the dropdown or by drilling
+// into a directory.
+document.getElementById('view-mode').addEventListener('change', e => {
+  if (e.target.value === 'dirs') switchToDirectoryView();
+  else switchToSymbolView();
+});
+document.getElementById('back-to-dirs').addEventListener('click', switchToDirectoryView);
+
 async function init() {
   try {
     _state.meta = await fetchMeta();
     document.getElementById('meta').innerHTML = Object.entries(_state.meta).map(([k,v]) =>
       `<div class="field"><div class="k">${escapeHtml(k)}</div><div class="v">${escapeHtml(v)}</div></div>`
     ).join('');
-    rebuildGraph(await fetchData(_state.minDegree));
+    // Default landing view: directories. The 7K-node symbol hairball
+    // is one click away via the dropdown, but the bubble overview is
+    // far more useful as an architectural starting point.
+    document.getElementById('min-degree-label').style.display = 'none';
+    rebuildDirGraph(await fetchDirectories());
     startLiveOverlay();
-    // Bridges load independently of the graph rebuild so the panel
-    // still renders even if a low min-degree filter strips the
-    // top-betweenness nodes from the rendered subgraph.
     fetchBridges(20).then(renderBridgeList).catch(() => {});
     checkStaleness();
   } catch (e) {
@@ -4488,6 +4659,87 @@ class H(BaseHTTPRequestHandler):
                     cg_conn.close()
             except Exception:
                 pass
+            return
+        elif self.path == '/api/codegraph/directories':
+            # Aggregate the codegraph by top-level src/<dir> for the
+            # directory drill-down view. Each entry collapses all
+            # symbols under that directory into one bubble; edges
+            # between directories are weighted by the call count.
+            #
+            # This addresses the hairball-on-default problem: the
+            # 7K-node symbol view becomes a ~25-bubble overview, and
+            # users click into a directory to see its symbols.
+            try:
+                conn = sqlite3.connect(f'file:{CODEGRAPH_DB}?mode=ro', uri=True)
+                conn.row_factory = sqlite3.Row
+                # Pull every symbol's directory; we use the first two
+                # path components ('src/gui', 'src/core', 'src/models', …).
+                # Fewer components would lump everything together;
+                # more would explode into per-class buckets.
+                dir_of: dict[int, str] = {}
+                dir_stats: dict[str, dict] = {}
+                for r in conn.execute(
+                    'SELECT id, file_path FROM symbols'
+                ):
+                    fp = r['file_path'] or ''
+                    parts = fp.split('/')
+                    if len(parts) >= 2 and parts[0] == 'src':
+                        dirkey = f'src/{parts[1]}'
+                    elif len(parts) >= 2:
+                        dirkey = parts[0]
+                    else:
+                        dirkey = 'misc'
+                    dir_of[r['id']] = dirkey
+                    bucket = dir_stats.setdefault(dirkey, {
+                        'path': dirkey, 'symbol_count': 0,
+                        'internal_edges': 0, 'external_edges': 0,
+                        'top_symbols': [],
+                    })
+                    bucket['symbol_count'] += 1
+                # Per-directory top symbols by degree (for the tooltip).
+                for r in conn.execute(
+                    'SELECT id, qualified_name, degree FROM symbols '
+                    ' ORDER BY degree DESC LIMIT 5000'
+                ):
+                    d = dir_of.get(r['id'])
+                    if not d:
+                        continue
+                    tops = dir_stats[d]['top_symbols']
+                    if len(tops) < 5:
+                        tops.append({
+                            'name': r['qualified_name'], 'degree': r['degree']
+                        })
+                # Aggregate inter-directory edges.
+                edge_counts: dict[tuple[str, str], int] = {}
+                for r in conn.execute(
+                    'SELECT src_id, dst_id FROM edges'
+                ):
+                    s = dir_of.get(r['src_id'])
+                    t = dir_of.get(r['dst_id'])
+                    if not s or not t:
+                        continue
+                    if s == t:
+                        dir_stats[s]['internal_edges'] += 1
+                        continue
+                    dir_stats[s]['external_edges'] += 1
+                    key = (s, t)
+                    edge_counts[key] = edge_counts.get(key, 0) + 1
+                conn.close()
+                dirs = sorted(dir_stats.values(),
+                              key=lambda d: -d['symbol_count'])
+                edges = [
+                    {'source': s, 'target': t, 'weight': w}
+                    for (s, t), w in edge_counts.items()
+                ]
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'directories': dirs, 'edges': edges,
+                }).encode())
+            except sqlite3.Error as ex:
+                self.send_response(503); self.end_headers()
+                self.wfile.write(json.dumps({'error': str(ex)}).encode())
             return
         elif self.path == '/api/codegraph/staleness':
             # Compare the codegraph's recorded src_head_sha against
