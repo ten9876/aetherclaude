@@ -3201,10 +3201,6 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
 <script src="/codegraph/assets/graphology.umd.min.js"></script>
 <script src="/codegraph/assets/graphology-library.min.js"></script>
 <script src="/codegraph/assets/sigma.min.js"></script>
-<!-- three.js must load before three-spritetext so window.THREE is set;
-     before 3d-force-graph too so any version compares stay sane. -->
-<script src="/codegraph/assets/three.min.js"></script>
-<script src="/codegraph/assets/three-spritetext.min.js"></script>
 <script src="/codegraph/assets/3d-force-graph.min.js"></script>
 <script>
 'use strict';
@@ -3620,13 +3616,10 @@ function _3dIsHighlighted(nodeId) {
 function refresh3DHighlight() {
   // Poke 3d-force-graph's accessors so the color/size/edge functions
   // re-evaluate against the current _3d.selectedId / _3d.neighborSet.
-  // nodeThreeObject re-poke is what makes the SpriteText labels appear
-  // and disappear in sync with selection.
   if (!_3d.graph) return;
   _3d.graph
     .nodeColor(_3d.graph.nodeColor())
     .nodeVal(_3d.graph.nodeVal())
-    .nodeThreeObject(_3d.graph.nodeThreeObject())
     .linkColor(_3d.graph.linkColor())
     .linkWidth(_3d.graph.linkWidth())
     .linkVisibility(_3d.graph.linkVisibility());
@@ -3677,39 +3670,6 @@ function rebuild3DGraph(data) {
         return _3dIsHighlighted(n.id) ? base : base * 0.3;
       })
       .nodeOpacity(0.9)
-      // SpriteText label attached to selected node and its neighbors
-      // only. nodeThreeObjectExtend(true) means this object is ADDED
-      // to the default sphere (not a replacement) — so even if
-      // SpriteText fails to load the spheres still render.
-      .nodeThreeObjectExtend(true)
-      .nodeThreeObject(n => {
-        if (_3d.selectedId == null) return null;
-        if (!_3dIsHighlighted(n.id)) return null;
-        if (typeof window.SpriteText !== 'function') {
-          if (!_3d._loggedSpriteTextWarn) {
-            console.warn('SpriteText missing — labels disabled. THREE:',
-              typeof window.THREE, ' SpriteText:', typeof window.SpriteText);
-            _3d._loggedSpriteTextWarn = true;
-          }
-          return null;
-        }
-        const sprite = new window.SpriteText(n.label || '');
-        sprite.color = '#e0e8f0';
-        sprite.backgroundColor = 'rgba(10,10,26,0.92)';
-        sprite.borderColor = communityColor(n.community || 0);
-        sprite.borderWidth = 0.4;
-        sprite.borderRadius = 3;
-        sprite.padding = 2;
-        sprite.fontFace = 'SF Mono, monospace';
-        // Label height in world-units. Scales with degree so big
-        // hubs get bigger labels.
-        sprite.textHeight = Math.max(3, Math.min(8, Math.sqrt(n.degree || 1) * 0.6));
-        // Offset above the node sphere so the label doesn't sit
-        // inside the geometry.
-        const radius = Math.max(1, Math.sqrt(n.degree || 1)) * 2;
-        sprite.position.y = radius + 2;
-        return sprite;
-      })
       // Edge color: cyan when touching the selected node; default
       // community-source tint when nothing is selected. (Hidden
       // edges go through linkVisibility below.)
