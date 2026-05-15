@@ -6446,17 +6446,25 @@ a{{color:#0a6aba}}
             # Allow maintainer events through if they @mention the bot
             # Maintainer-skip filter — the maintainer's everyday GitHub
             # activity (closing issues, comments without @mention)
-            # shouldn't bounce the bot. Two exceptions: @mentions in
-            # comments (handled by is_mention), and the
-            # `aetherclaude-eligible` label add — that's the explicit
-            # authorization signal for implement-fix and we must NOT
-            # filter it out.
+            # shouldn't bounce the bot. Three exceptions:
+            #   1. @mentions in comments (is_mention)
+            #   2. `aetherclaude-eligible` label add — the explicit
+            #      authorization signal for implement-fix
+            #   3. NEWLY OPENED issues — even when the maintainer is
+            #      the sender (e.g. filed via AetherSDR's AI-assisted
+            #      bug-report tool, which authenticates as ten9876),
+            #      we still want triage to run.
             maint_label = (payload.get('label') or {}).get('name', '')
             maint_eligibility_signal = (
                 event_type == 'issues' and action == 'labeled'
                 and maint_label == 'aetherclaude-eligible'
             )
-            if sender == 'ten9876' and not is_mention and not maint_eligibility_signal:
+            maint_issue_opened = (
+                event_type == 'issues' and action == 'opened'
+            )
+            if (sender == 'ten9876' and not is_mention
+                    and not maint_eligibility_signal
+                    and not maint_issue_opened):
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (maintainer)'); return
             # Skip irrelevant actions
             if event_type == 'issues' and action not in ('opened', 'edited', 'labeled', 'reopened', 'closed'):
