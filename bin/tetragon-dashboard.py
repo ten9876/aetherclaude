@@ -3154,6 +3154,13 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
   .bridge-row .bname { color:#d0d8e0; flex:1; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; }
   .bridge-row .bscope { color:#607080; }
   .bridge-row .bscore { color:#ffaa00; min-width:46px; text-align:right; }
+  /* Stale-index banner — appears at top of /codegraph when AetherSDR
+   * HEAD has moved since the last extraction. Amber for ≤10 commits
+   * behind, red for >10. Click the link to re-kick the extractor. */
+  #stale-banner { position:fixed; top:48px; left:0; right:320px; padding:8px 16px; background:#3a2a10; border-bottom:1px solid #ffaa00; color:#ffd0a0; font-size:11px; z-index:9; display:none; align-items:center; gap:10px; }
+  #stale-banner.severe { background:#3a1010; border-bottom-color:#ff4444; color:#ffc0c0; }
+  #stale-banner b { color:#fff; }
+  #stale-banner .stale-sha { font-family:'SF Mono', monospace; color:#a0b0c0; }
 </style>
 </head>
 <body>
@@ -3166,6 +3173,7 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
   </div>
   <span id="stats"><span class="loading-spinner"></span> loading...</span>
 </header>
+<div id="stale-banner"></div>
 <div id="sigma-container"></div>
 <aside id="side">
   <h3>Node detail</h3>
@@ -3240,6 +3248,33 @@ async function fetchBridges(limit) {
   const r = await fetch('/api/codegraph/bridges?limit=' + (limit || 20));
   if (!r.ok) return [];
   return r.json();
+}
+
+async function checkStaleness() {
+  // Compare the codegraph's recorded HEAD against AetherSDR's live
+  // HEAD; show a banner if the index is behind. Severe (>10 commits)
+  // gets a red banner; small drift gets amber. Silent on errors —
+  // the UI shouldn't shout about an offline git or missing metadata.
+  try {
+    const r = await fetch('/api/codegraph/staleness');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (!d.is_stale) return;
+    const banner = document.getElementById('stale-banner');
+    const cb = d.commits_behind;
+    const severe = (cb < 0) || (cb > 10);
+    banner.classList.toggle('severe', severe);
+    const cbText = (cb < 0) ? 'unknown (recorded SHA unreachable)' : `${cb} commit${cb===1?'':'s'} behind`;
+    const recorded = (d.src_head_sha || '').substring(0, 8);
+    const current = (d.current_head_sha || '').substring(0, 8);
+    banner.innerHTML =
+      `<b>Codegraph is stale</b> — ${cbText}. ` +
+      `Indexed <span class="stale-sha">${escapeHtml(recorded)}</span>, ` +
+      `HEAD is <span class="stale-sha">${escapeHtml(current)}</span>. ` +
+      `Last extraction: ${escapeHtml(d.extracted_at || '?')}. ` +
+      `Re-run nightly job to refresh.`;
+    banner.style.display = 'flex';
+  } catch (e) { /* silent */ }
 }
 
 function renderBridgeList(bridges) {
@@ -3693,6 +3728,7 @@ async function init() {
     // still renders even if a low min-degree filter strips the
     // top-betweenness nodes from the rendered subgraph.
     fetchBridges(20).then(renderBridgeList).catch(() => {});
+    checkStaleness();
   } catch (e) {
     setStats('error: ' + e.message);
     document.getElementById('node-info').innerHTML = '<div id="empty-state" style="color:#ff6b6b">' + escapeHtml(e.message) + '<br><br>Has codegraph-extract.py been run? Run:<br><code>bin/codegraph-extract.py; bin/codegraph-analyze.py</code></div>';
@@ -4452,6 +4488,73 @@ class H(BaseHTTPRequestHandler):
                     cg_conn.close()
             except Exception:
                 pass
+            return
+        elif self.path == '/api/codegraph/staleness':
+            # Compare the codegraph's recorded src_head_sha against
+            # AetherSDR's live HEAD. Returns:
+            #   src_head_sha    — recorded at extraction time
+            #   current_head_sha — live `git rev-parse HEAD`
+            #   commits_behind  — count between recorded..current
+            #   is_stale        — commits_behind > 0
+            #   extracted_at    — when the index was built
+            # Best-effort: if either side is unavailable, returns
+            # is_stale=false and a `reason` field so the UI knows
+            # not to render a banner.
+            import subprocess
+            try:
+                conn = sqlite3.connect(f'file:{CODEGRAPH_DB}?mode=ro', uri=True)
+                meta = dict(conn.execute('SELECT key, value FROM metadata').fetchall())
+                conn.close()
+            except sqlite3.Error as ex:
+                self.send_response(503); self.end_headers()
+                self.wfile.write(json.dumps({'error': str(ex)}).encode())
+                return
+            recorded = (meta.get('src_head_sha') or '').strip()
+            src_path = '/Users/aetherclaude/workspace/AetherSDR'
+            current = ''
+            commits_behind = 0
+            reason = ''
+            if not recorded:
+                reason = 'no src_head_sha in metadata (re-run extractor)'
+            else:
+                try:
+                    out = subprocess.run(
+                        ['git', '-C', src_path, 'rev-parse', 'HEAD'],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if out.returncode == 0:
+                        current = out.stdout.strip()
+                except Exception as e:
+                    reason = f'git rev-parse failed: {e}'
+            if recorded and current and recorded != current:
+                try:
+                    out = subprocess.run(
+                        ['git', '-C', src_path, 'rev-list',
+                         f'{recorded}..{current}', '--count'],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if out.returncode == 0:
+                        commits_behind = int(out.stdout.strip() or '0')
+                    else:
+                        # Recorded SHA may be unreachable (force-pushed,
+                        # branch swap). Surface as a stale signal but
+                        # without an exact count.
+                        commits_behind = -1
+                        reason = 'recorded SHA unreachable from HEAD'
+                except Exception as e:
+                    reason = f'git rev-list failed: {e}'
+            is_stale = (commits_behind != 0 and recorded and current)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'is_stale': bool(is_stale),
+                'commits_behind': commits_behind,
+                'src_head_sha': recorded,
+                'current_head_sha': current,
+                'extracted_at': meta.get('extracted_at', ''),
+                'reason': reason,
+            }).encode())
             return
         elif self.path == '/api/codegraph/meta':
             # Returns the metadata table as a flat {key: value} JSON.

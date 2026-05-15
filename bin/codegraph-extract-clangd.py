@@ -612,9 +612,23 @@ def main():
 
     # Metadata
     elapsed = time.time() - t0
+    # Capture AetherSDR HEAD at index time so the dashboard can detect
+    # staleness ("codegraph is N commits behind HEAD"). Best-effort:
+    # if git isn't reachable (CI sandbox, fresh clone), leave empty.
+    src_head_sha = ''
+    try:
+        out = subprocess.run(
+            ['git', '-C', str(src_root), 'rev-parse', 'HEAD'],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0:
+            src_head_sha = out.stdout.strip()
+    except Exception:
+        pass
     meta = {
         'extracted_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'src_root': str(src_root),
+        'src_head_sha': src_head_sha,
         'ccdb_path': str(ccdb_path),
         'extractor_version': '3.0.0-clangd',
         'symbol_count': str(len(all_symbols)),

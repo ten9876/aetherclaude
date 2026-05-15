@@ -325,6 +325,60 @@ def tool_get_stats(conn) -> dict:
     return {'counts': counts, 'metadata': meta}
 
 
+def tool_staleness(conn) -> dict:
+    """Compare the codegraph's recorded src_head_sha against AetherSDR's
+    live HEAD. Lets agents decide whether to trust the index or
+    request a re-extraction before using impact / get_neighbors."""
+    import subprocess
+    meta = dict(conn.execute('SELECT key, value FROM metadata').fetchall())
+    recorded = (meta.get('src_head_sha') or '').strip()
+    src_path = meta.get('src_root', '/Users/aetherclaude/workspace/AetherSDR')
+    # The src_root in metadata may be the in-container path (/src);
+    # remap to the host path the dashboard / agent sees.
+    if src_path == '/src' or src_path == '/src/src':
+        src_path = '/Users/aetherclaude/workspace/AetherSDR'
+    elif src_path.endswith('/src'):
+        src_path = src_path[:-4]
+    current = ''
+    commits_behind = 0
+    reason = ''
+    if not recorded:
+        reason = 'no src_head_sha in metadata (re-run extractor)'
+    else:
+        try:
+            out = subprocess.run(
+                ['git', '-C', src_path, 'rev-parse', 'HEAD'],
+                capture_output=True, text=True, timeout=5,
+            )
+            if out.returncode == 0:
+                current = out.stdout.strip()
+        except Exception as e:
+            reason = f'git rev-parse failed: {e}'
+    if recorded and current and recorded != current:
+        try:
+            out = subprocess.run(
+                ['git', '-C', src_path, 'rev-list',
+                 f'{recorded}..{current}', '--count'],
+                capture_output=True, text=True, timeout=5,
+            )
+            if out.returncode == 0:
+                commits_behind = int(out.stdout.strip() or '0')
+            else:
+                commits_behind = -1
+                reason = 'recorded SHA unreachable from HEAD'
+        except Exception as e:
+            reason = f'git rev-list failed: {e}'
+    is_stale = (commits_behind != 0 and recorded and current)
+    return {
+        'is_stale': bool(is_stale),
+        'commits_behind': commits_behind,
+        'src_head_sha': recorded,
+        'current_head_sha': current,
+        'extracted_at': meta.get('extracted_at', ''),
+        'reason': reason,
+    }
+
+
 # --------------------------------------------------------------------------
 # Tool registry — JSONSchema for each tool's input
 # --------------------------------------------------------------------------
@@ -411,6 +465,16 @@ TOOL_SCHEMAS = [
         'description': 'Symbol/edge counts and codegraph metadata (last extraction time, extractor version, etc.).',
         'inputSchema': {'type': 'object', 'properties': {}},
     },
+    {
+        'name': 'staleness',
+        'description': (
+            'Returns whether the codegraph is behind AetherSDR HEAD. '
+            'commits_behind > 0 means symbols/edges/centrality may not '
+            'reflect the current source. Call this before relying on '
+            'impact() output for high-stakes edits.'
+        ),
+        'inputSchema': {'type': 'object', 'properties': {}},
+    },
 ]
 
 
@@ -433,6 +497,8 @@ def call_tool(conn, name: str, arguments: dict) -> dict:
             return tool_impact(conn, **arguments)
         if name == 'get_stats':
             return tool_get_stats(conn)
+        if name == 'staleness':
+            return tool_staleness(conn)
         return {'error': f'unknown tool: {name}'}
     except sqlite3.Error as e:
         return {'error': f'sqlite error: {e}'}
