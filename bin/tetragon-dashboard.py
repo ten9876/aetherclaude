@@ -3171,6 +3171,7 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
     <label>view:
       <select id="view-mode">
         <option value="dirs" selected>Directories</option>
+        <option value="communities">Communities</option>
         <option value="symbols">Symbols</option>
       </select>
     </label>
@@ -3251,6 +3252,120 @@ async function fetchDirectories() {
   const r = await fetch('/api/codegraph/directories');
   if (!r.ok) throw new Error('fetch failed: ' + r.status);
   return r.json();
+}
+
+async function fetchCommunities() {
+  const r = await fetch('/api/codegraph/communities');
+  if (!r.ok) throw new Error('fetch failed: ' + r.status);
+  return r.json();
+}
+
+function rebuildCommunityGraph(data) {
+  // Same shape as rebuildDirGraph but per Louvain community. Used as
+  // an alternative bubble overview; communities give ~50 clusters
+  // where directories give only 5 on AetherSDR's flat layout.
+  if (_state.sigma) { _state.sigma.kill(); _state.sigma = null; }
+  if (typeof _live !== 'undefined') { _live.pulses.clear(); }
+  const g = new graphology.Graph({ type: 'undirected', multi: false });
+  for (const c of data.communities) {
+    g.addNode(c.id, {
+      label: c.label,
+      community_id: c.community_id,
+      symbol_count: c.symbol_count,
+      internal_edges: c.internal_edges,
+      external_edges: c.external_edges,
+      top_symbols: c.top_symbols,
+      x: (Math.random() - 0.5) * 1000,
+      y: (Math.random() - 0.5) * 1000,
+      size: Math.max(4, Math.min(18, Math.log2(c.symbol_count + 1) * 2.3)),
+      color: communityColor(c.community_id || 0),
+    });
+  }
+  for (const e of data.edges) {
+    if (g.hasNode(e.source) && g.hasNode(e.target) && !g.hasEdge(e.source, e.target)) {
+      const srcColor = g.getNodeAttribute(e.source, 'color');
+      const sz = Math.max(0.3, Math.min(2.5, Math.log2(e.weight + 1) * 0.3));
+      g.addEdge(e.source, e.target, {
+        size: sz, color: hexWithAlpha(srcColor, 0.22), weight: e.weight,
+      });
+    }
+  }
+  _state.graph = g;
+  _state.rawNodes = data.communities;
+  _state.rawEdges = data.edges;
+
+  setStats(`${g.order} communities · ${g.size} inter-community edges · running layout…`);
+  const layoutFa2 = graphologyLibrary.layoutForceAtlas2;
+  const t0 = performance.now();
+  layoutFa2.assign(g, {
+    iterations: 500,
+    settings: {
+      barnesHutOptimize: true, gravity: 1, scalingRatio: 30,
+      slowDown: 6, strongGravityMode: false, linLogMode: false,
+    },
+  });
+  if (graphologyLibrary.layoutNoverlap) {
+    graphologyLibrary.layoutNoverlap.assign(g, {
+      maxIterations: 60,
+      settings: { ratio: 4, margin: 3, expansion: 1.1, speed: 3 },
+    });
+  }
+  const layoutMs = performance.now() - t0;
+
+  const container = document.getElementById('sigma-container');
+  _state.sigma = new Sigma(g, container, {
+    renderEdgeLabels: false,
+    renderLabels: true,
+    labelRenderedSizeThreshold: 8,
+    labelColor: { color: '#d0d8e0' },
+    labelFont: 'SF Mono, monospace',
+    labelSize: 10,
+    minCameraRatio: 0.05,
+    maxCameraRatio: 10,
+  });
+  _state.sigma.on('clickNode', e => drillIntoCommunity(e.node));
+
+  setStats(`${g.order} communities · ${g.size} edges · layout in ${(layoutMs/1000).toFixed(1)}s · click a bubble to drill in`);
+  // Reuse community sidebar — it's already keyed off the same data.
+  renderCommunityList();
+}
+
+async function drillIntoCommunity(commIdStr) {
+  _state.viewMode = 'symbols';
+  document.getElementById('view-mode').value = 'symbols';
+  document.getElementById('back-to-dirs').style.display = '';
+  document.getElementById('back-to-dirs').textContent = '← Back to communities';
+  document.getElementById('min-degree-label').style.display = '';
+  setStats('<span class="loading-spinner"></span> loading symbols in community ' + commIdStr);
+  try {
+    const data = await fetchData(_state.minDegree);
+    const cid = parseInt(commIdStr, 10);
+    const keepIds = new Set(data.nodes.filter(n => n.community === cid).map(n => n.id));
+    const filtered = {
+      nodes: data.nodes.filter(n => keepIds.has(n.id)),
+      edges: data.edges.filter(e => keepIds.has(e.source) && keepIds.has(e.target)),
+    };
+    rebuildGraph(filtered);
+    setStats(`${filtered.nodes.length} symbols in community ${commIdStr} · ${filtered.edges.length} edges`);
+    // Remember we came from communities, so back button returns there
+    _state.drilledFrom = 'communities';
+  } catch (e) {
+    setStats('error: ' + e.message);
+  }
+}
+
+async function switchToCommunityView() {
+  _state.viewMode = 'communities';
+  _state.drilledDir = null;
+  document.getElementById('view-mode').value = 'communities';
+  document.getElementById('back-to-dirs').style.display = 'none';
+  document.getElementById('min-degree-label').style.display = 'none';
+  setStats('<span class="loading-spinner"></span> loading communities...');
+  try {
+    rebuildCommunityGraph(await fetchCommunities());
+  } catch (e) {
+    setStats('error: ' + e.message);
+  }
 }
 
 function rebuildDirGraph(data) {
@@ -3882,9 +3997,13 @@ function startLiveOverlay() {
 // into a directory.
 document.getElementById('view-mode').addEventListener('change', e => {
   if (e.target.value === 'dirs') switchToDirectoryView();
+  else if (e.target.value === 'communities') switchToCommunityView();
   else switchToSymbolView();
 });
-document.getElementById('back-to-dirs').addEventListener('click', switchToDirectoryView);
+document.getElementById('back-to-dirs').addEventListener('click', () => {
+  if (_state.drilledFrom === 'communities') switchToCommunityView();
+  else switchToDirectoryView();
+});
 
 async function init() {
   try {
@@ -4659,6 +4778,80 @@ class H(BaseHTTPRequestHandler):
                     cg_conn.close()
             except Exception:
                 pass
+            return
+        elif self.path == '/api/codegraph/communities':
+            # Aggregate by Louvain community for a more granular bubble
+            # overview than the 5-bucket directory view. Caps at the
+            # top-50 communities by member count — the long tail of
+            # singleton communities (median size = 1 on AetherSDR)
+            # would otherwise drown the meaningful structural clusters.
+            try:
+                conn = sqlite3.connect(f'file:{CODEGRAPH_DB}?mode=ro', uri=True)
+                conn.row_factory = sqlite3.Row
+                cid_of: dict[int, int] = {}
+                cstats: dict[int, dict] = {}
+                for r in conn.execute(
+                    'SELECT id, community_id, community_label FROM symbols '
+                    ' WHERE community_id IS NOT NULL'
+                ):
+                    cid = r['community_id']
+                    cid_of[r['id']] = cid
+                    bucket = cstats.setdefault(cid, {
+                        'community_id': cid,
+                        'label': r['community_label'] or f'cid:{cid}',
+                        'symbol_count': 0,
+                        'internal_edges': 0,
+                        'external_edges': 0,
+                        'top_symbols': [],
+                    })
+                    bucket['symbol_count'] += 1
+                # Top symbols per community by degree
+                for r in conn.execute(
+                    'SELECT id, qualified_name, degree FROM symbols '
+                    ' WHERE community_id IS NOT NULL ORDER BY degree DESC LIMIT 8000'
+                ):
+                    c = cid_of.get(r['id'])
+                    if c is None:
+                        continue
+                    tops = cstats[c]['top_symbols']
+                    if len(tops) < 3:
+                        tops.append({
+                            'name': r['qualified_name'], 'degree': r['degree'],
+                        })
+                edge_counts: dict[tuple[int, int], int] = {}
+                for r in conn.execute('SELECT src_id, dst_id FROM edges'):
+                    s = cid_of.get(r['src_id'])
+                    t = cid_of.get(r['dst_id'])
+                    if s is None or t is None:
+                        continue
+                    if s == t:
+                        cstats[s]['internal_edges'] += 1
+                        continue
+                    cstats[s]['external_edges'] += 1
+                    key = (s, t) if s < t else (t, s)
+                    edge_counts[key] = edge_counts.get(key, 0) + 1
+                conn.close()
+                # Cap at top-50 by symbol count
+                sorted_c = sorted(cstats.values(),
+                                  key=lambda c: -c['symbol_count'])[:50]
+                kept_ids = {c['community_id'] for c in sorted_c}
+                kept_edges = [
+                    {'source': str(s), 'target': str(t), 'weight': w}
+                    for (s, t), w in edge_counts.items()
+                    if s in kept_ids and t in kept_ids
+                ]
+                # Stringify community_id so it's safe as a graphology node key
+                for c in sorted_c:
+                    c['id'] = str(c['community_id'])
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'communities': sorted_c, 'edges': kept_edges,
+                }).encode())
+            except sqlite3.Error as ex:
+                self.send_response(503); self.end_headers()
+                self.wfile.write(json.dumps({'error': str(ex)}).encode())
             return
         elif self.path == '/api/codegraph/directories':
             # Aggregate the codegraph by top-level src/<dir> for the
