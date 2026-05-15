@@ -3367,7 +3367,7 @@ function rebuildCommunityGraph(data) {
     labelColor: { color: '#e0e8f0' },
     labelFont: 'SF Mono, monospace',
     labelSize: 10,
-    minCameraRatio: 0.05,
+    minCameraRatio: 0.005,
     maxCameraRatio: 10,
   });
   _state.sigma.on('clickNode', e => drillIntoCommunity(e.node));
@@ -3497,7 +3497,7 @@ function rebuildDirGraph(data) {
     labelFont: 'SF Mono, monospace',
     labelSize: 11,
     labelWeight: '500',
-    minCameraRatio: 0.05,
+    minCameraRatio: 0.005,
     maxCameraRatio: 10,
   });
   _state.sigma.on('clickNode', e => drillIntoDirectory(e.node));
@@ -3748,7 +3748,7 @@ function rebuildGraph(data) {
     labelFont: 'SF Mono, monospace',
     labelSize: 11,
     labelWeight: '600',
-    minCameraRatio: 0.05,
+    minCameraRatio: 0.005,
     maxCameraRatio: 10,
     // Selection emphasis: when a node is selected via click,
     // highlight it and its neighbors + their edges; dim the rest.
@@ -3777,12 +3777,14 @@ function rebuildGraph(data) {
         //   ratio 1.0  → top 5
         //   ratio 0.5  → top 12
         //   ratio 0.2  → top 30
-        //   ratio 0.05 → all neighbors
+        //   ratio 0.05 → top 100
+        //   ratio 0.005 (max zoom) → top 1000 (effectively all)
         const ratio = (_state.sigma && _state.sigma.getCamera().ratio) || 1;
         const list = _state.neighborsByDegree || [];
         // Inverse-power curve: N(ratio) = round(5 / ratio).
-        // (5 at 1.0; 10 at 0.5; 25 at 0.2; 100 at 0.05)
-        let n = Math.round(5 / Math.max(ratio, 0.05));
+        // With minCameraRatio=0.005 the user can always zoom in deep
+        // enough to reveal every neighbor regardless of count.
+        let n = Math.round(5 / Math.max(ratio, 0.005));
         n = Math.min(n, list.length);
         // Build a small cache so we don't iterate the list every node
         // reducer call. Recompute when ratio bucket changes.
