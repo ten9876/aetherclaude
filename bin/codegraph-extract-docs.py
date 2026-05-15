@@ -69,6 +69,10 @@ DEFAULT_DOCS = [
     'docs/vita49-format.md',
     '.specify/memory/constitution.md',
 ]
+# Directories under src/ to scan for header-comment-derived synthetic
+# docs (one synthetic doc per dir; concatenates every `class Foo`
+# declaration with its preceding `//` comment block).
+HEADER_DIRS = ['src/core', 'src/models', 'src/gui']
 # Per-doc spend cap. First call eats ~$0.15 on Claude Code's
 # cache-creation tokens (system + tool defs); subsequent docs reuse
 # the cache and cost ~$0.03 each. Cap generously per doc but the
@@ -157,7 +161,7 @@ RULES:
   - Edges must reference real code symbols when targeting code. The
     god-node primer below lists the codebase's structural hubs as
     grounding. If unsure a symbol exists, skip the edge — never invent.
-  - Limit: at most 30 concepts and 60 edges per doc.
+  - Limit: at most {MAX_CONCEPTS} concepts and {MAX_EDGES} edges per doc.
 """
 
 
@@ -198,19 +202,95 @@ def read_doc(path: Path) -> str | None:
     return text
 
 
+_CLASS_DECL_RE = re.compile(
+    r'^(?:class|struct)\s+([A-Z]\w+)(?:\s*[:{].*)?$'
+)
+
+
+def extract_class_docs(src_dir: Path) -> tuple[str, list[str]]:
+    """Walk every .h under src_dir and pull out class-level `//` block
+    comments immediately preceding a `class Foo` or `struct Foo`
+    declaration. Returns (synthetic_doc_text, list_of_class_names).
+
+    AetherSDR's convention is line-comments (//) above the class —
+    we collect the contiguous comment block and pair it with the
+    class name to give the extractor LLM enough context to name the
+    architectural concept the class represents.
+
+    Output format (one entry per documented class):
+
+        ## ClassName  (path/to/file.h)
+
+        First paragraph of doc.
+        Second paragraph.
+    """
+    sections: list[str] = []
+    class_names: list[str] = []
+    for h in sorted(src_dir.rglob('*.h')):
+        try:
+            lines = h.read_text(encoding='utf-8', errors='replace').splitlines()
+        except OSError:
+            continue
+        for i, line in enumerate(lines):
+            m = _CLASS_DECL_RE.match(line.strip())
+            if not m:
+                continue
+            cls_name = m.group(1)
+            # Walk backwards collecting contiguous `//` lines.
+            doc_lines: list[str] = []
+            j = i - 1
+            while j >= 0:
+                t = lines[j].strip()
+                if not t:
+                    # Blank line BREAKS the doc block unless we
+                    # already have content (allows one blank inside).
+                    if doc_lines and j > 0 and lines[j-1].strip().startswith('//'):
+                        doc_lines.append('')
+                        j -= 1
+                        continue
+                    break
+                if t.startswith('//'):
+                    doc_lines.append(t.lstrip('/').lstrip())
+                    j -= 1
+                    continue
+                # Hit non-comment line — stop.
+                break
+            doc_lines.reverse()
+            # Require at least 2 substantive lines so we skip
+            # one-liners like `// Forward decl` that aren't concepts.
+            substantive = [ln for ln in doc_lines if ln]
+            if len(substantive) < 2:
+                continue
+            try:
+                rel = h.relative_to(src_dir.parent)
+            except ValueError:
+                rel = h.name
+            sections.append(
+                f'## {cls_name}  ({rel})\n\n' +
+                '\n'.join(doc_lines)
+            )
+            class_names.append(cls_name)
+    return '\n\n'.join(sections), class_names
+
+
 def build_prompt(doc_rel_path: str, doc_text: str,
-                 god_nodes: list[dict]) -> str:
+                 god_nodes: list[dict],
+                 max_concepts: int = 30,
+                 max_edges: int = 60) -> str:
     primer = '\n'.join(
         f'  - {g["name"]} (bw={g["bw"]:.3f}, in {g["file"]})'
         for g in god_nodes
     )
+    instructions = SYSTEM_INSTRUCTIONS.replace(
+        '{MAX_CONCEPTS}', str(max_concepts)
+    ).replace('{MAX_EDGES}', str(max_edges))
     return (
-        f'{SYSTEM_INSTRUCTIONS}\n\n'
+        f'{instructions}\n\n'
         f'## God-node primer (structural hubs in the codebase)\n\n'
         f'These symbols are the highest-betweenness centrality nodes; '
         f'concepts often anchor to them.\n\n'
         f'{primer}\n\n'
-        f'## Documentation file: {doc_rel_path}\n\n'
+        f'## Documentation source: {doc_rel_path}\n\n'
         f'```\n{doc_text}\n```\n\n'
         f'Emit the JSON now.'
     )
@@ -323,6 +403,11 @@ def main() -> int:
                     help='AetherSDR repo root containing docs')
     ap.add_argument('--docs', nargs='+', default=None,
                     help='Override the doc list (paths relative to --root)')
+    ap.add_argument('--headers', action='store_true',
+                    help='Also process header-comment-derived synthetic '
+                         'docs from src/core, src/models, src/gui')
+    ap.add_argument('--headers-only', action='store_true',
+                    help='Skip markdown docs; only process header comments')
     ap.add_argument('--dry-run', action='store_true',
                     help='Run extraction, print summary, do not write to db')
     ap.add_argument('-v', '--verbose', action='store_true')
@@ -342,18 +427,58 @@ def main() -> int:
         print('WARNING: no god-nodes loaded (betweenness not computed?)',
               file=sys.stderr)
 
+    # Build the worklist. Each entry is (label, text, max_concepts,
+    # max_edges) — labels survive into the final concept rows'
+    # file_path field so we can trace provenance.
+    worklist: list[tuple[str, str, int, int]] = []
+    if not args.headers_only:
+        for rel in docs:
+            path = root / rel
+            text = read_doc(path)
+            if text is None:
+                print(f'  - skip {rel} (missing or unreadable)',
+                      file=sys.stderr)
+                continue
+            worklist.append((rel, text, 30, 60))
+
+    if args.headers or args.headers_only:
+        for dir_rel in HEADER_DIRS:
+            src_dir = root / dir_rel
+            if not src_dir.is_dir():
+                print(f'  - skip headers in {dir_rel} (missing)',
+                      file=sys.stderr)
+                continue
+            text, classes = extract_class_docs(src_dir)
+            if not text:
+                print(f'  - skip headers in {dir_rel} (no class docs)',
+                      file=sys.stderr)
+                continue
+            label = f'{dir_rel} (headers, {len(classes)} classes)'
+            # Headers bundle many classes → raise caps. Each class is
+            # itself a candidate concept; budget proportionally.
+            cap_c = min(120, max(30, len(classes) * 2))
+            cap_e = min(240, max(60, len(classes) * 3))
+            # MAX_DOC_BYTES still applies; truncate at boundary.
+            if len(text) > MAX_DOC_BYTES:
+                cut = text.rfind('\n\n## ', 0, MAX_DOC_BYTES)
+                if cut < MAX_DOC_BYTES // 2:
+                    cut = MAX_DOC_BYTES
+                text = text[:cut] + '\n\n[... truncated ...]\n'
+            worklist.append((label, text, cap_c, cap_e))
+
+    if not worklist:
+        print('ERROR: nothing to extract from', file=sys.stderr)
+        return 2
+
     t0 = time.time()
     all_concepts: list[dict] = []
     all_edges: list[dict] = []
     n_called = n_ok = 0
-    for rel in docs:
-        path = root / rel
-        text = read_doc(path)
-        if text is None:
-            print(f'  - skip {rel} (missing or unreadable)', file=sys.stderr)
-            continue
-        print(f'  extracting from {rel} ({len(text)} chars)', file=sys.stderr)
-        prompt = build_prompt(rel, text, god_nodes)
+    for rel, text, cap_c, cap_e in worklist:
+        print(f'  extracting from {rel} ({len(text)} chars, '
+              f'cap={cap_c}c/{cap_e}e)', file=sys.stderr)
+        prompt = build_prompt(rel, text, god_nodes,
+                              max_concepts=cap_c, max_edges=cap_e)
         n_called += 1
         result = call_claude(prompt)
         if result is None:
