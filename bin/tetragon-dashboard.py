@@ -3351,9 +3351,14 @@ function rebuildGraph(data) {
     // Labels off by default — only show on selection / hover / search.
     // Reference viz hides all labels at this zoom level too.
     renderLabels: false,
-    labelColor: { color: '#c8d0d8' },
+    // Sigma renders highlighted-node labels on a near-white pill —
+    // pale text on a pale background was unreadable. Dark text + a
+    // tighter font weight gives strong contrast against the pill
+    // while keeping the cyan selection ring readable.
+    labelColor: { color: '#0a0a1a' },
     labelFont: 'SF Mono, monospace',
     labelSize: 11,
+    labelWeight: '600',
     minCameraRatio: 0.05,
     maxCameraRatio: 10,
     // Selection emphasis: when a node is selected via click,
