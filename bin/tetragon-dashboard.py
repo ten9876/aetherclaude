@@ -3189,6 +3189,7 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
       </select>
     </label>
     <label id="min-degree-label">min degree: <input type="range" id="min-degree" min="0" max="50" value="5"><span id="min-degree-val">5</span></label>
+    <label title="Drop nodes whose Louvain community has fewer than 3 members. Matches the filter Martin's graphify viz uses (~234 communities). Off by default; the unfiltered view shows the long tail of helpers/singletons too."><input type="checkbox" id="hide-singletons"> hide singleton communities</label>
     <label>search: <input type="text" id="search" placeholder="symbol name..."></label>
     <button id="back-to-dirs" style="display:none;background:#101025;color:#00bceb;border:1px solid #00bceb;padding:3px 10px;border-radius:3px;font-size:11px;cursor:pointer">&larr; Back to directories</button>
   </div>
@@ -3300,6 +3301,10 @@ const _state = {
   searchMatches: new Set(),  // node IDs matching the current search query
   viewMode: 'symbols3d',     // 'symbols3d' (default) | 'symbols' | 'dirs' | 'communities'
   drilledDir: null,          // path of the directory the user clicked into
+  // When true, fetchData()'s output is post-filtered to drop nodes
+  // in communities of size < 3 and their orphaned edges. Toggled by
+  // the "hide singleton communities" checkbox in the header.
+  hideSingletons: false,
 };
 
 function setStats(text) { document.getElementById('stats').textContent = text; }
@@ -3307,7 +3312,31 @@ function setStats(text) { document.getElementById('stats').textContent = text; }
 async function fetchData(minDegree) {
   const r = await fetch('/api/codegraph/data?min_degree=' + minDegree);
   if (!r.ok) throw new Error('fetch failed: ' + r.status);
-  return r.json();
+  // Apply the singleton-community filter centrally so every consumer
+  // (2D symbols, 3D symbols, drill-ins) honors the checkbox state.
+  return applySingletonFilter(await r.json());
+}
+
+// Optional post-filter applied to /api/codegraph/data output.
+// Drops nodes in singleton/tiny communities (size < 3) plus any
+// edges that lose an endpoint. Matches Martin's graphify number
+// (~3700 nodes, ~234 communities). Off by default — UI checkbox
+// flips _state.hideSingletons.
+function applySingletonFilter(data) {
+  if (!_state.hideSingletons) return data;
+  const counts = new Map();
+  for (const n of data.nodes) {
+    const c = n.community || 0;
+    counts.set(c, (counts.get(c) || 0) + 1);
+  }
+  const keep = new Set(
+    data.nodes.filter(n => (counts.get(n.community || 0) || 0) >= 3)
+              .map(n => n.id)
+  );
+  return {
+    nodes: data.nodes.filter(n => keep.has(n.id)),
+    edges: data.edges.filter(e => keep.has(e.source) && keep.has(e.target)),
+  };
 }
 
 async function fetchDirectories() {
@@ -4537,6 +4566,34 @@ function startLiveOverlay() {
   _live.tickTimer = setInterval(pulseTick, 200);
   connectLiveStream();
 }
+
+// "Hide singleton communities" checkbox — toggling refreshes whichever
+// symbol-mode view is active so the filter takes effect immediately.
+// Persisted in localStorage so reloads remember the setting.
+const _hideSingletonsCheckbox = document.getElementById('hide-singletons');
+try {
+  _state.hideSingletons = localStorage.getItem('codegraph.hideSingletons') === '1';
+  _hideSingletonsCheckbox.checked = _state.hideSingletons;
+} catch (e) { /* localStorage may be blocked */ }
+_hideSingletonsCheckbox.addEventListener('change', async () => {
+  _state.hideSingletons = _hideSingletonsCheckbox.checked;
+  try {
+    localStorage.setItem('codegraph.hideSingletons',
+                         _state.hideSingletons ? '1' : '0');
+  } catch (e) {}
+  // Re-fetch + re-render whichever symbol-level view is active.
+  // Directories / Communities aggregate per-community already, so
+  // the filter doesn't change them.
+  setStats('<span class="loading-spinner"></span> reloading with filter ' +
+           (_state.hideSingletons ? 'ON' : 'OFF') + '…');
+  try {
+    if (_state.viewMode === 'symbols3d') {
+      rebuild3DGraph(await fetchData(_state.minDegree));
+    } else if (_state.viewMode === 'symbols') {
+      rebuildGraph(await fetchData(_state.minDegree));
+    }
+  } catch (e) { setStats('error: ' + e.message); }
+});
 
 // 3D canvas must follow the container size. Window resize fires for
 // browser-window changes; ResizeObserver catches everything else
