@@ -3715,18 +3715,29 @@ function tick3DLabels() {
   const rect = layer.getBoundingClientRect();
   const data = _3d.graph.graphData();
   const nodeById = new Map(data.nodes.map(n => [n.id, n]));
+  const camPos = camera.position;
+  // Depth-cued sizing: labels close to the camera render bigger,
+  // labels far away shrink. Reference distance picked so a node
+  // ~150 units from the camera reads at base 11px; closer = up to
+  // 1.6x, farther = down to 0.4x.
+  const REF_DISTANCE = 150;
   for (const [nid, div] of _3dLabels.divs) {
     const n = nodeById.get(nid);
     if (!n) { div.style.display = 'none'; continue; }
     _3dLabels.tmpVec.set(n.x || 0, n.y || 0, n.z || 0);
     _3dLabels.tmpVec.project(camera);
-    // z > 1 means the point is behind the camera frustum; hide.
     if (_3dLabels.tmpVec.z > 1) { div.style.display = 'none'; continue; }
     const sx = (_3dLabels.tmpVec.x + 1) * 0.5 * rect.width;
     const sy = (1 - _3dLabels.tmpVec.y) * 0.5 * rect.height;
+    // Compute world-distance from camera and derive a font scale.
+    const dx = (n.x || 0) - camPos.x;
+    const dy = (n.y || 0) - camPos.y;
+    const dz = (n.z || 0) - camPos.z;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const scale = Math.max(0.4, Math.min(1.6, REF_DISTANCE / Math.max(dist, 1)));
+    div.style.fontSize = (11 * scale).toFixed(2) + 'px';
+    div.style.opacity = Math.max(0.3, Math.min(1, scale)).toFixed(2);
     div.style.display = '';
-    // Anchor centered above the node sphere (rough offset; we don't
-    // know the projected sphere radius without more math).
     div.style.transform = `translate(${sx - div.offsetWidth / 2}px, ${sy - div.offsetHeight - 16}px)`;
   }
   _3dLabels.rafId = requestAnimationFrame(tick3DLabels);
