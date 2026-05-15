@@ -3219,6 +3219,7 @@ const _state = {
   rawEdges: [],
   meta: {},
   highlightedId: null,
+  searchMatches: new Set(),  // node IDs matching the current search query
 };
 
 function setStats(text) { document.getElementById('stats').textContent = text; }
@@ -3364,10 +3365,19 @@ function rebuildGraph(data) {
     // Selection emphasis: when a node is selected via click,
     // highlight it and its neighbors + their edges; dim the rest.
     nodeReducer: (node, data) => {
-      const sel = _state.highlightedId;
-      if (!sel) return data;
       const g = _state.graph;
       if (!g) return data;
+      // Search mode takes precedence: matches get a label + size
+      // boost, non-matches dim. This is the only feedback the search
+      // gives in renderLabels=false mode.
+      if (_state.searchMatches.size > 0) {
+        if (_state.searchMatches.has(node)) {
+          return { ...data, size: (data.size || 2) * 2.5, label: data.label, forceLabel: true, zIndex: 2 };
+        }
+        return { ...data, color: '#1a2030', label: '', zIndex: 0 };
+      }
+      const sel = _state.highlightedId;
+      if (!sel) return data;
       const isSel = (node === sel);
       const isNeighbor = g.hasEdge(sel, node) || g.hasEdge(node, sel);
       if (isSel) return { ...data, size: (data.size || 2) * 2.2, label: data.label, forceLabel: true, zIndex: 2 };
@@ -3375,10 +3385,17 @@ function rebuildGraph(data) {
       return { ...data, color: '#1a2030', label: '', zIndex: 0 };
     },
     edgeReducer: (edge, data) => {
-      const sel = _state.highlightedId;
-      if (!sel) return data;
       const g = _state.graph;
       if (!g) return data;
+      // Hide edges in search mode — fewer visual distractions.
+      if (_state.searchMatches.size > 0) {
+        const ext = g.extremities(edge);
+        const both = _state.searchMatches.has(ext[0]) && _state.searchMatches.has(ext[1]);
+        if (!both) return { ...data, hidden: true };
+        return { ...data, color: '#00bceb', size: 0.8, zIndex: 1 };
+      }
+      const sel = _state.highlightedId;
+      if (!sel) return data;
       const ext = g.extremities(edge);
       const touches = (ext[0] === sel || ext[1] === sel);
       if (touches) return { ...data, color: '#00bceb', size: 0.8, zIndex: 1 };
@@ -3471,22 +3488,42 @@ document.getElementById('min-degree').addEventListener('input', e => {
 
 document.getElementById('search').addEventListener('input', e => {
   const q = e.target.value.toLowerCase().trim();
+  _state.searchMatches.clear();
   if (!_state.graph) return;
   const g = _state.graph;
-  let firstMatch = null;
-  g.forEachNode((nid, attr) => {
-    const matches = q && attr.label.toLowerCase().includes(q);
-    if (q && matches) {
-      g.setNodeAttribute(nid, 'highlighted', true);
-      if (!firstMatch) firstMatch = nid;
-    } else {
-      g.removeNodeAttribute(nid, 'highlighted');
+  if (q) {
+    let firstMatch = null;
+    g.forEachNode((nid, attr) => {
+      if (attr.label && attr.label.toLowerCase().includes(q)) {
+        _state.searchMatches.add(nid);
+        if (!firstMatch) firstMatch = nid;
+      }
+    });
+    // Camera fits all matches when q is specific enough. Fit-to-view
+    // bounding box, computed in graph coords; then animate to that
+    // center with a ratio chosen to contain the spread.
+    if (_state.searchMatches.size && q.length >= 2) {
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const nid of _state.searchMatches) {
+        const x = g.getNodeAttribute(nid, 'x');
+        const y = g.getNodeAttribute(nid, 'y');
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      // Heuristic: small match set → zoom in; large match set → zoom out.
+      const ratio = _state.searchMatches.size <= 2 ? 0.2
+                  : _state.searchMatches.size <= 8 ? 0.4 : 0.7;
+      _state.sigma.getCamera().animate({ x: cx, y: cy, ratio }, { duration: 400 });
     }
-  });
-  _state.sigma.refresh();
-  if (firstMatch && q.length >= 3) {
-    _state.sigma.getCamera().animate({ x: g.getNodeAttribute(firstMatch, 'x'), y: g.getNodeAttribute(firstMatch, 'y'), ratio: 0.2 }, { duration: 400 });
+    setStats(`${_state.searchMatches.size} match${_state.searchMatches.size===1?'':'es'} for "${q}"`);
+  } else {
+    setStats(`${g.order} nodes · ${g.size} edges`);
   }
+  _state.sigma.refresh();
 });
 
 // ---------------------------------------------------------------
