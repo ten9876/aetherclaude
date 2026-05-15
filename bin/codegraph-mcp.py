@@ -242,30 +242,52 @@ def tool_impact(conn, symbol, max_depth: int = 3) -> dict:
     max_depth = max(1, min(5, int(max_depth)))
     sid = sym['id']
 
+    # Detect whether the edges table has the Phase-1 confidence columns.
+    # Older codegraph.db builds predate them; gracefully fall back to
+    # treating every edge as full-confidence in that case.
+    has_confidence = bool(conn.execute(
+        "SELECT 1 FROM pragma_table_info('edges') WHERE name='confidence_score'"
+    ).fetchone())
+
     def walk(seed_id, direction):
         """direction='upstream' walks src_id<-dst_id (callers).
-        direction='downstream' walks src_id->dst_id (callees)."""
-        seen = {seed_id: 0}
+        direction='downstream' walks src_id->dst_id (callees).
+        Returns {symbol_id: (distance, min_confidence_along_path)}.
+        Min confidence along the path is the bottleneck — one weak
+        link makes the whole reach less trustworthy."""
+        seen = {seed_id: (0, 1.0)}
         frontier = [seed_id]
         for d in range(1, max_depth + 1):
             if not frontier:
                 break
             next_frontier = []
             for nid in frontier:
-                if direction == 'upstream':
-                    rows = conn.execute(
-                        'SELECT src_id FROM edges WHERE dst_id=? AND kind="calls"',
-                        (nid,)
-                    )
+                parent_conf = seen[nid][1]
+                if has_confidence:
+                    if direction == 'upstream':
+                        rows = conn.execute(
+                            'SELECT src_id, confidence_score FROM edges '
+                            ' WHERE dst_id=? AND kind="calls"',
+                            (nid,)
+                        )
+                    else:
+                        rows = conn.execute(
+                            'SELECT dst_id, confidence_score FROM edges '
+                            ' WHERE src_id=? AND kind="calls"',
+                            (nid,)
+                        )
                 else:
-                    rows = conn.execute(
-                        'SELECT dst_id FROM edges WHERE src_id=? AND kind="calls"',
+                    col = 'src_id' if direction == 'upstream' else 'dst_id'
+                    other_col = 'dst_id' if direction == 'upstream' else 'src_id'
+                    rows = [(r[0], 1.0) for r in conn.execute(
+                        f'SELECT {col} FROM edges WHERE {other_col}=? AND kind="calls"',
                         (nid,)
-                    )
+                    )]
                 for r in rows:
-                    other = r[0]
+                    other, edge_conf = r[0], r[1]
+                    path_conf = min(parent_conf, float(edge_conf or 1.0))
                     if other not in seen:
-                        seen[other] = d
+                        seen[other] = (d, path_conf)
                         next_frontier.append(other)
             frontier = next_frontier
         seen.pop(seed_id, None)
@@ -274,10 +296,10 @@ def tool_impact(conn, symbol, max_depth: int = 3) -> dict:
     upstream = walk(sid, 'upstream')
     downstream = walk(sid, 'downstream')
 
-    def hydrate(distances: dict) -> list[dict]:
-        if not distances:
+    def hydrate(reach: dict) -> list[dict]:
+        if not reach:
             return []
-        ids = list(distances.keys())
+        ids = list(reach.keys())
         ph = ','.join('?' * len(ids))
         rows = conn.execute(
             f'SELECT id, qualified_name, kind, file_path, line_number, '
@@ -286,7 +308,12 @@ def tool_impact(conn, symbol, max_depth: int = 3) -> dict:
         ).fetchall()
         out = []
         for r in rows:
-            out.append({**dict(r), 'distance': distances[r['id']]})
+            distance, path_conf = reach[r['id']]
+            out.append({
+                **dict(r),
+                'distance': distance,
+                'path_confidence': round(path_conf, 3),
+            })
         out.sort(key=lambda x: (-x['betweenness'] or 0, x['distance']))
         return out
 
@@ -294,8 +321,19 @@ def tool_impact(conn, symbol, max_depth: int = 3) -> dict:
     dn_list = hydrate(downstream)
     affected = up_list + dn_list
 
-    risk_score = sum((s['betweenness'] or 0) for s in affected)
-    high_risk = [s for s in affected if (s['betweenness'] or 0) >= HIGH_RISK_BETWEENNESS]
+    # Risk score weights each affected node's betweenness by its
+    # path confidence — a high-betweenness symbol reached only via
+    # low-confidence inferred edges shouldn't drive risk as hard as
+    # one reached via deterministic AST edges.
+    risk_score = sum(
+        (s['betweenness'] or 0) * (s['path_confidence'] or 0)
+        for s in affected
+    )
+    high_risk = [
+        s for s in affected
+        if (s['betweenness'] or 0) * (s['path_confidence'] or 0)
+            >= HIGH_RISK_BETWEENNESS
+    ]
 
     return {
         'symbol': sym['qualified_name'],

@@ -112,6 +112,14 @@ CREATE TABLE edges (
     src_id  INTEGER NOT NULL REFERENCES symbols(id),
     dst_id  INTEGER NOT NULL REFERENCES symbols(id),
     kind    TEXT NOT NULL,
+    -- Edge provenance (Phase 1 — adopted from graphify's schema).
+    -- EXTRACTED: deterministic from AST (libclang / ctags). Score 1.0.
+    -- INFERRED:  derived from LLM extraction over docs/comments. Score
+    --            reflects model's claimed certainty (0.0–1.0).
+    -- AMBIGUOUS: extracted but with multiple plausible referents (e.g.
+    --            overload sets); score reflects best-guess preference.
+    confidence       TEXT NOT NULL DEFAULT 'EXTRACTED',
+    confidence_score REAL NOT NULL DEFAULT 1.0,
     UNIQUE(src_id, dst_id, kind)
 );
 CREATE INDEX idx_edges_src ON edges(src_id);

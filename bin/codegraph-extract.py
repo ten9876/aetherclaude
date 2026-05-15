@@ -76,6 +76,10 @@ CREATE TABLE edges (
     src_id  INTEGER NOT NULL REFERENCES symbols(id),
     dst_id  INTEGER NOT NULL REFERENCES symbols(id),
     kind    TEXT NOT NULL,                   -- calls / inherits / signal-slot
+    -- Phase-1 edge provenance — see codegraph-extract-clangd.py
+    -- for the EXTRACTED/INFERRED/AMBIGUOUS semantics.
+    confidence       TEXT NOT NULL DEFAULT 'EXTRACTED',
+    confidence_score REAL NOT NULL DEFAULT 1.0,
     UNIQUE(src_id, dst_id, kind)
 );
 CREATE INDEX idx_edges_src ON edges(src_id);
