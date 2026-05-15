@@ -73,13 +73,18 @@ def write_state(sha: str) -> None:
 
 
 def current_head() -> str:
+    # Watcher runs as jeremy, repo is owned by aetherclaude — git's
+    # dubious-ownership check rejects the read unless we declare the
+    # path safe inline. Cleaner than a global git config tweak.
     try:
         out = subprocess.run(
-            ['git', '-C', SRC_PATH, 'rev-parse', 'HEAD'],
+            ['git', '-c', f'safe.directory={SRC_PATH}',
+             '-C', SRC_PATH, 'rev-parse', 'HEAD'],
             capture_output=True, text=True, timeout=10,
         )
         if out.returncode == 0:
             return out.stdout.strip()
+        log(f'git rev-parse stderr: {out.stderr.strip()[:200]}')
     except Exception as e:
         log(f'git rev-parse failed: {e}')
     return ''
