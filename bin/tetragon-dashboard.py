@@ -3486,6 +3486,35 @@ document.getElementById('min-degree').addEventListener('input', e => {
   }, 250);
 });
 
+function applySearchLabelMasking(g) {
+  // Stash the real label in _origLabel the first time we mask, then
+  // clear the live label so Sigma's hover/render lookup (which falls
+  // back to the underlying attribute when the reducer returns a
+  // falsy label) doesn't show a truncated character on dimmed nodes.
+  g.forEachNode((nid, attr) => {
+    if (_state.searchMatches.has(nid)) {
+      if (attr._origLabel) {
+        g.setNodeAttribute(nid, 'label', attr._origLabel);
+        g.removeNodeAttribute(nid, '_origLabel');
+      }
+    } else {
+      if (attr.label) {
+        g.setNodeAttribute(nid, '_origLabel', attr.label);
+        g.setNodeAttribute(nid, 'label', '');
+      }
+    }
+  });
+}
+
+function clearSearchLabelMasking(g) {
+  g.forEachNode((nid, attr) => {
+    if (attr._origLabel) {
+      g.setNodeAttribute(nid, 'label', attr._origLabel);
+      g.removeNodeAttribute(nid, '_origLabel');
+    }
+  });
+}
+
 document.getElementById('search').addEventListener('input', e => {
   const q = e.target.value.toLowerCase().trim();
   _state.searchMatches.clear();
@@ -3494,11 +3523,15 @@ document.getElementById('search').addEventListener('input', e => {
   if (q) {
     let firstMatch = null;
     g.forEachNode((nid, attr) => {
-      if (attr.label && attr.label.toLowerCase().includes(q)) {
+      // Match against the real label (may currently be masked to '');
+      // _origLabel holds the real one when masking is active.
+      const realLabel = attr._origLabel || attr.label;
+      if (realLabel && realLabel.toLowerCase().includes(q)) {
         _state.searchMatches.add(nid);
         if (!firstMatch) firstMatch = nid;
       }
     });
+    applySearchLabelMasking(g);
     // Camera: only auto-zoom for a small match set, using Sigma's
     // node display coords (which are correctly normalized). For
     // many-match queries leave the camera as-is — the user already
@@ -3523,6 +3556,7 @@ document.getElementById('search').addEventListener('input', e => {
     }
     setStats(`${_state.searchMatches.size} match${_state.searchMatches.size===1?'':'es'} for "${q}"`);
   } else {
+    clearSearchLabelMasking(g);
     setStats(`${g.order} nodes · ${g.size} edges`);
   }
   _state.sigma.refresh();
