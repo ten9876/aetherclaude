@@ -77,10 +77,13 @@
   <key>RunAtLoad</key>
   <true/>
 
+  <!-- Log path under /Users/Shared so the jeremy-owned launchd job can
+       write it. /Users/aetherclaude/logs was aetherclaude-owned and
+       not writable by jeremy. -->
   <key>StandardOutPath</key>
-  <string>/Users/aetherclaude/logs/codegraph-refresh.log</string>
+  <string>/Users/Shared/aetherclaude/logs/codegraph-refresh.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/aetherclaude/logs/codegraph-refresh.log</string>
+  <string>/Users/Shared/aetherclaude/logs/codegraph-refresh.log</string>
 
   <!--
     Not KeepAlive — this is a periodic one-shot. We want launchd to
