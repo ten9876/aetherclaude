@@ -316,10 +316,11 @@ def call_claude(prompt: str) -> dict | None:
                 '--output-format', 'json',
                 '--json-schema', json.dumps(JSON_SCHEMA),
                 '--max-budget-usd', str(MAX_BUDGET_USD),
-                # Cap at 1 turn — this is one-shot extraction with no
-                # tools allowed; multi-turn iteration just bloats the
-                # output token count without improving quality.
-                '--max-turns', '1',
+                # No --max-turns: Claude Code's structured-output
+                # path needs the natural flow (1 to emit, 1 to
+                # validate); capping to 1 broke every call with
+                # `error_max_turns`. The schema + disallowedTools
+                # already prevent any drift.
                 '--no-session-persistence',
                 '--disallowedTools',
                 'Read,Edit,Write,Bash,Grep,Glob,WebFetch,WebSearch,Task,Agent,TodoWrite,ToolSearch',
