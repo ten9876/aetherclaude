@@ -2254,7 +2254,10 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
     <a href="#" onclick="openOperatorTui();return false" style="color:#6688ff;font-size:11px;text-decoration:none;border:1px solid #303860;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#88aaff';this.style.borderColor='#88aaff'" onmouseout="this.style.color='#6688ff';this.style.borderColor='#303860'">Operator TUI &#x2197;</a>
     <div class="live" id="agent-status">&#9679; LIVE</div>
   </div>
-  <a href="#" onclick="showWhitepaper();return false" style="color:#607080;font-size:11px;text-decoration:none;border:1px solid #304050;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#00b4d8';this.style.borderColor='#00b4d8'" onmouseout="this.style.color='#607080';this.style.borderColor='#304050'">Agent Defense-in-Depth Whitepaper</a>
+  <div style="display:flex;align-items:center;gap:8px">
+    <a href="/codegraph" target="_blank" style="color:#ffaa00;font-size:11px;text-decoration:none;border:1px solid #604020;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#ffcc44';this.style.borderColor='#ffcc44'" onmouseout="this.style.color='#ffaa00';this.style.borderColor='#604020'">Codegraph &#x2197;</a>
+    <a href="#" onclick="showWhitepaper();return false" style="color:#607080;font-size:11px;text-decoration:none;border:1px solid #304050;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#00b4d8';this.style.borderColor='#00b4d8'" onmouseout="this.style.color='#607080';this.style.borderColor='#304050'">Agent Defense-in-Depth Whitepaper</a>
+  </div>
 </div>
 </div>
 
