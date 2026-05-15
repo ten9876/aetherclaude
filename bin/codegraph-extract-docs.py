@@ -75,9 +75,11 @@ DEFAULT_DOCS = [
 HEADER_DIRS = ['src/core', 'src/models', 'src/gui']
 # Per-doc spend cap. First call eats ~$0.15 on Claude Code's
 # cache-creation tokens (system + tool defs); subsequent docs reuse
-# the cache and cost ~$0.03 each. Cap generously per doc but the
-# total run sits around $0.50-1.00 on opus.
-MAX_BUDGET_USD = 1.00
+# the cache and cost ~$0.03 each. A big header bundle (src/core has
+# 67 classes / 30 KB) can run $1+ in a single shot when the model
+# emits many concepts. Cap generously per call; total run sits
+# around $1-3 on opus.
+MAX_BUDGET_USD = 2.50
 CLAUDE_BIN = '/opt/homebrew/bin/claude'
 CLAUDE_MODEL = 'opus'
 # Cap docs to ~40KB so we don't blow context on the biggest ones
@@ -314,12 +316,16 @@ def call_claude(prompt: str) -> dict | None:
                 '--output-format', 'json',
                 '--json-schema', json.dumps(JSON_SCHEMA),
                 '--max-budget-usd', str(MAX_BUDGET_USD),
+                # Cap at 1 turn — this is one-shot extraction with no
+                # tools allowed; multi-turn iteration just bloats the
+                # output token count without improving quality.
+                '--max-turns', '1',
                 '--no-session-persistence',
                 '--disallowedTools',
                 'Read,Edit,Write,Bash,Grep,Glob,WebFetch,WebSearch,Task,Agent,TodoWrite,ToolSearch',
             ],
             input=prompt,
-            capture_output=True, text=True, timeout=300,
+            capture_output=True, text=True, timeout=600,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         print(f'  ! claude invocation failed: {e}', file=sys.stderr)
