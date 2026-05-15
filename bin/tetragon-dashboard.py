@@ -3284,13 +3284,18 @@ function rebuildGraph(data) {
       // Random initial positions in a unit disk — forceAtlas2 spreads them out.
       x: (Math.random() - 0.5) * 1000,
       y: (Math.random() - 0.5) * 1000,
-      size: Math.max(2, Math.min(20, Math.sqrt(n.degree) * 1.5)),
+      // Log-scaled sizes capped at 8 px so a handful of high-degree
+      // hubs don't dominate the canvas. Most nodes (degree ≤ 8) land
+      // around 2-3 px which lets the graph structure breathe.
+      size: Math.max(1.5, Math.min(8, Math.log2(n.degree + 1) * 1.4)),
       color: communityColor(n.community || 0),
     });
   }
   for (const e of data.edges) {
     if (g.hasNode(e.source) && g.hasNode(e.target) && !g.hasEdge(e.source, e.target)) {
-      g.addEdge(e.source, e.target, { kind: e.kind, size: 0.5, color: '#1a2030' });
+      // Brighter edge color so the structure is actually visible
+      // against the dark background — #1a2030 was nearly invisible.
+      g.addEdge(e.source, e.target, { kind: e.kind, size: 0.4, color: '#2e4a6a' });
     }
   }
   _state.graph = g;
@@ -3299,32 +3304,73 @@ function rebuildGraph(data) {
 
   setStats(`${g.order} nodes · ${g.size} edges · running layout…`);
 
-  // Client-side ForceAtlas2 — graphologyLibrary.layoutForceAtlas2
+  // Layout: ForceAtlas2 with adjustSizes so node radius is honored
+  // (less overlap), then a noverlap post-process for any remaining
+  // collisions. Larger scalingRatio + linLogMode spread tight clusters.
   const layoutFa2 = graphologyLibrary.layoutForceAtlas2;
   const t0 = performance.now();
   layoutFa2.assign(g, {
-    iterations: 200,
+    iterations: 300,
     settings: {
       barnesHutOptimize: true,
-      gravity: 1,
-      scalingRatio: 10,
-      slowDown: 1,
+      gravity: 0.8,
+      scalingRatio: 18,
+      slowDown: 4,
       strongGravityMode: false,
+      adjustSizes: true,
+      linLogMode: true,
     },
   });
+  // Push any still-overlapping nodes apart. Bounded iteration count so
+  // dense communities don't explode out into nothing.
+  if (graphologyLibrary.layoutNoverlap) {
+    graphologyLibrary.layoutNoverlap.assign(g, {
+      maxIterations: 50,
+      settings: { ratio: 1.2, margin: 1, expansion: 1.05, speed: 3 },
+    });
+  }
   const layoutMs = performance.now() - t0;
 
   // Render
   const container = document.getElementById('sigma-container');
   _state.sigma = new Sigma(g, container, {
     renderEdgeLabels: false,
-    defaultEdgeColor: '#1a2030',
-    labelRenderedSizeThreshold: 8,
-    labelColor: { color: '#a0b0c0' },
+    defaultEdgeColor: '#2e4a6a',
+    // Only label the largest 30-50 nodes. labelRenderedSizeThreshold
+    // applies to the *rendered* size at current zoom, so as you zoom
+    // in more labels appear naturally — but the default view stays
+    // readable instead of stacking 1000+ labels.
+    labelRenderedSizeThreshold: 14,
+    labelColor: { color: '#c8d0d8' },
     labelFont: 'SF Mono, monospace',
     labelSize: 11,
+    labelWeight: '500',
     minCameraRatio: 0.05,
     maxCameraRatio: 10,
+    // Hover reducer — when hovering a node, dim everything else,
+    // and brighten the hovered node's neighbors + edges. Same logic
+    // we use on click but applied transiently.
+    nodeReducer: (node, data) => {
+      const sel = _state.highlightedId;
+      if (!sel) return data;
+      const isSel = (node === sel);
+      const isNeighbor = _state.graph && _state.graph.hasEdge(sel, node) ||
+                        _state.graph.hasEdge(node, sel);
+      if (isSel || isNeighbor) {
+        return { ...data, zIndex: 1 };
+      }
+      return { ...data, color: '#1a2030', label: '', zIndex: 0 };
+    },
+    edgeReducer: (edge, data) => {
+      const sel = _state.highlightedId;
+      if (!sel) return data;
+      const ext = _state.graph.extremities(edge);
+      const touches = (ext[0] === sel || ext[1] === sel);
+      if (touches) {
+        return { ...data, color: '#00bceb', size: 1.2, zIndex: 1 };
+      }
+      return { ...data, color: '#101820', size: 0.2, zIndex: 0 };
+    },
   });
   _state.sigma.on('clickNode', e => selectNode(e.node));
   _state.sigma.on('clickStage', () => selectNode(null));
@@ -3357,6 +3403,9 @@ function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;'
 
 function selectNode(nodeId) {
   _state.highlightedId = nodeId;
+  // Force sigma to re-evaluate node/edge reducers (which read
+  // _state.highlightedId) so neighbor highlighting paints immediately.
+  if (_state.sigma) _state.sigma.refresh();
   if (!nodeId) {
     document.getElementById('node-info').innerHTML = '<div id="empty-state">Click a node to inspect.<br>Drag to pan, scroll to zoom.</div>';
     return;
