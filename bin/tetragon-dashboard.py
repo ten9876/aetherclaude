@@ -3676,7 +3676,10 @@ function rebuild3DGraph(data) {
         const isLit = _3dIsHighlighted(n.id);
         const radius = Math.max(1, Math.sqrt(n.degree || 1)) * 2;
         const geom = new THREE.SphereGeometry(radius, 10, 10);
-        const mat = new THREE.MeshLambertMaterial({
+        // MeshBasicMaterial is lighting-independent — MeshLambertMaterial
+        // requires sufficient scene lights and rendered black against
+        // the dark background. Basic shows the color directly.
+        const mat = new THREE.MeshBasicMaterial({
           color: isLit ? communityColor(n.community || 0) : '#1a2030',
           transparent: true,
           opacity: isLit ? 0.95 : 0.5,
