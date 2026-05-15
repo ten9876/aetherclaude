@@ -4062,31 +4062,32 @@ function rebuildGraph(data) {
 
   setStats(`${g.order} nodes · ${g.size} edges · running layout…`);
 
-  // Layout: classic ForceAtlas2 (no linLog, no strongGravity) with
-  // very high scalingRatio so communities push hard against each
-  // other and end up as visually distinct regions, then a noverlap
-  // pass so individual nodes within a cluster don't sit on top of
-  // each other. Matches the reference viz's "exploded archipelago"
-  // shape rather than the dense ball linLog produces.
+  // Layout: ForceAtlas2 with linLogMode + adjustSizes for the
+  // hub-and-spoke "knowledge graph" look. linLog uses log(distance)
+  // forces which produce far better cluster separation. adjustSizes
+  // makes node radius (sqrt-degree) a layout mass, so high-degree
+  // hubs (MainWindow @ 482, AppSettings::instance @ 322) pull their
+  // neighborhoods toward themselves and end up at the center of
+  // their respective rosettes. Lower scalingRatio than before so
+  // clusters don't fling apart into an archipelago.
   const layoutFa2 = graphologyLibrary.layoutForceAtlas2;
   const t0 = performance.now();
   layoutFa2.assign(g, {
-    iterations: 600,
+    iterations: 800,
     settings: {
       barnesHutOptimize: true,
       gravity: 1,
-      scalingRatio: 50,
-      slowDown: 10,
+      scalingRatio: 10,
+      slowDown: 3,
       strongGravityMode: false,
-      linLogMode: false,
+      linLogMode: true,
+      adjustSizes: true,
+      edgeWeightInfluence: 1,
     },
   });
-  if (graphologyLibrary.layoutNoverlap) {
-    graphologyLibrary.layoutNoverlap.assign(g, {
-      maxIterations: 100,
-      settings: { ratio: 3, margin: 2, expansion: 1.1, speed: 3 },
-    });
-  }
+  // No noverlap post-pass — adjustSizes already enforces non-overlap
+  // proportional to node mass, and the noverlap step was previously
+  // shoving isolated nodes into corners.
   const layoutMs = performance.now() - t0;
 
   const container = document.getElementById('sigma-container');
