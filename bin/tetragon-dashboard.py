@@ -3724,18 +3724,27 @@ function rebuildGraph(data) {
       const isNeighbor = g.hasEdge(sel, node) || g.hasEdge(node, sel);
       if (isSel) return { ...data, size: (data.size || 2) * 2.2, forceLabel: true, zIndex: 2 };
       if (isNeighbor) {
-        // Progressive label disclosure driven by camera ratio +
-        // node DEGREE (architectural importance), not visual size.
-        // Symbol nodes are 1-8 px, so a size-based threshold has
-        // no usable range. Degree spans 0..500 on AetherSDR.
-        //
-        //   ratio 1.0 (zoomed out) → degree >= 50 (the few hubs)
-        //   ratio 0.5 (medium)     → degree >= 25
-        //   ratio 0.2 (zoomed in)  → degree >= 10
-        //   ratio 0.05 (max zoom)  → degree >= 2.5 (everyone)
+        // Progressive label disclosure: label the top-N neighbors
+        // by degree, where N scales inversely with the camera ratio.
+        // At default zoom (ratio ~1) only the 5 most-connected
+        // neighbors get labels; zoom in to reveal more in tiers.
+        //   ratio 1.0  → top 5
+        //   ratio 0.5  → top 12
+        //   ratio 0.2  → top 30
+        //   ratio 0.05 → all neighbors
         const ratio = (_state.sigma && _state.sigma.getCamera().ratio) || 1;
-        const degreeThreshold = ratio * 50;
-        const showLabel = (data.degree || 0) >= degreeThreshold;
+        const list = _state.neighborsByDegree || [];
+        // Inverse-power curve: N(ratio) = round(5 / ratio).
+        // (5 at 1.0; 10 at 0.5; 25 at 0.2; 100 at 0.05)
+        let n = Math.round(5 / Math.max(ratio, 0.05));
+        n = Math.min(n, list.length);
+        // Build a small cache so we don't iterate the list every node
+        // reducer call. Recompute when ratio bucket changes.
+        if (!_state._labelCacheKey || _state._labelCacheKey !== `${sel}|${n}`) {
+          _state._labelCache = new Set(list.slice(0, n));
+          _state._labelCacheKey = `${sel}|${n}`;
+        }
+        const showLabel = _state._labelCache.has(node);
         return { ...data, forceLabel: showLabel, zIndex: 1 };
       }
       return { ...data, color: '#1a2030', zIndex: 0 };
@@ -3764,8 +3773,12 @@ function rebuildGraph(data) {
   // progressive label-disclosure threshold updates as the user zooms.
   // Sigma's render pipeline caches reducer output between frames if
   // attributes don't change; an explicit refresh bypasses that.
+  // Invalidate the label cache so the next reducer pass recomputes.
   _state.sigma.getCamera().on('updated', () => {
-    if (_state.highlightedId) _state.sigma.refresh();
+    if (_state.highlightedId) {
+      _state._labelCacheKey = null;
+      _state.sigma.refresh();
+    }
   });
 
   setStats(`${g.order} nodes · ${g.size} edges · layout in ${(layoutMs/1000).toFixed(1)}s`);
@@ -3796,6 +3809,16 @@ function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;'
 
 function selectNode(nodeId) {
   _state.highlightedId = nodeId;
+  // Precompute the neighbor IDs sorted by degree descending — the
+  // reducer uses this list to label only the top-N at any given zoom.
+  _state.neighborsByDegree = [];
+  if (nodeId && _state.graph) {
+    const g = _state.graph;
+    const ns = g.neighbors(nodeId);
+    ns.sort((a, b) => (g.getNodeAttribute(b, 'degree') || 0) -
+                      (g.getNodeAttribute(a, 'degree') || 0));
+    _state.neighborsByDegree = ns;
+  }
   // Force sigma to re-evaluate node/edge reducers (which read
   // _state.highlightedId) so neighbor highlighting paints immediately.
   if (_state.sigma) _state.sigma.refresh();
