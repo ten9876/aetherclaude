@@ -3595,7 +3595,23 @@ async function switchToSymbolView() {
 
 // 3D state lives separately so toggling between 2D and 3D doesn't
 // dispose / recreate the Three.js scene every time.
-const _3d = { graph: null, currentNode: null };
+const _3d = {
+  graph: null,
+  currentNode: null,
+  // Built on every rebuild3DGraph. Maps node id -> Set of neighbor ids,
+  // used to keep neighbor-only highlight O(1) per render frame.
+  adjacency: new Map(),
+  // Selection state (separate from _state.highlightedId because the
+  // 3D view doesn't go through selectNode for the highlighting path).
+  selectedId: null,
+  neighborSet: new Set(),
+};
+
+function _3dIsHighlighted(nodeId) {
+  if (_3d.selectedId == null) return true;  // nothing selected → all bright
+  if (nodeId === _3d.selectedId) return true;
+  return _3d.neighborSet.has(nodeId);
+}
 
 function show3DContainer() {
   document.getElementById('sigma-container').style.display = 'none';
@@ -3629,21 +3645,51 @@ function rebuild3DGraph(data) {
     _3d.graph = ForceGraph3D({ controlType: 'orbit' })(container)
       .backgroundColor('#08081a')
       .nodeLabel(n => `${n.label}\n${n.file || ''}${n.line ? ':' + n.line : ''}\ndegree ${n.degree}`)
-      .nodeColor(n => communityColor(n.community || 0))
-      // size = sqrt(degree) — same intuition as the 2D view but
-      // scaled for the 3D scene's coordinate system.
+      // Color callback dims non-neighbors when a node is selected.
+      // Returning an RGBA-ish hex with low alpha + a dim hue replaces
+      // 3d-force-graph's "fully visible" rendering for that node.
+      .nodeColor(n => {
+        const base = communityColor(n.community || 0);
+        if (_3dIsHighlighted(n.id)) return base;
+        return '#1a2030';  // matches the 2D dim color
+      })
       .nodeVal(n => Math.max(1, Math.sqrt(n.degree || 1)))
       .nodeOpacity(0.9)
-      .linkColor(l => hexWithAlpha(communityColor(
-        (data.nodes.find(n => n.id === (l.source.id || l.source)) || {}).community || 0
-      ), 0.25))
-      .linkOpacity(0.4)
-      .linkWidth(0.4)
-      // Click → reuse the existing selectNode pipeline so the
-      // detail / neighbors / blast-radius panels stay in sync.
+      // Edge color: bright cyan when both endpoints are in the
+      // highlight set, faint community-tinted otherwise. Three.js
+      // doesn't support per-link opacity easily, so we encode
+      // opacity in the color alpha if the channel supports it.
+      .linkColor(l => {
+        const srcId = (l.source && l.source.id !== undefined) ? l.source.id : l.source;
+        const dstId = (l.target && l.target.id !== undefined) ? l.target.id : l.target;
+        if (_3d.selectedId != null) {
+          if (srcId === _3d.selectedId || dstId === _3d.selectedId) return '#00bceb';
+          return '#101820';  // dim
+        }
+        // No selection — default tint by source community.
+        const srcNode = (l.source && l.source.community !== undefined)
+          ? l.source
+          : (data.nodes.find(n => n.id === srcId) || {});
+        return hexWithAlpha(communityColor(srcNode.community || 0), 0.25);
+      })
+      .linkOpacity(0.55)
+      .linkWidth(l => {
+        if (_3d.selectedId == null) return 0.4;
+        const srcId = (l.source && l.source.id !== undefined) ? l.source.id : l.source;
+        const dstId = (l.target && l.target.id !== undefined) ? l.target.id : l.target;
+        return (srcId === _3d.selectedId || dstId === _3d.selectedId) ? 1.2 : 0.2;
+      })
+      // Click → set selection, recompute neighbor set, refresh
+      // visuals, populate the detail pane, and aim the camera.
       .onNodeClick(n => {
         _3d.currentNode = n;
+        _3d.selectedId = n.id;
+        _3d.neighborSet = new Set(_3d.adjacency.get(n.id) || []);
         select3DNode(n);
+        _3d.graph
+          .nodeColor(_3d.graph.nodeColor())   // poke 3d-force-graph
+          .linkColor(_3d.graph.linkColor())   // to re-eval the
+          .linkWidth(_3d.graph.linkWidth());  // accessor functions
         // Aim the camera at the clicked node.
         const distance = 80;
         const distRatio = 1 + distance / Math.hypot(n.x, n.y, n.z);
@@ -3652,8 +3698,32 @@ function rebuild3DGraph(data) {
           n,
           1500
         );
+      })
+      .onBackgroundClick(() => {
+        _3d.selectedId = null;
+        _3d.neighborSet = new Set();
+        _3d.graph
+          .nodeColor(_3d.graph.nodeColor())
+          .linkColor(_3d.graph.linkColor())
+          .linkWidth(_3d.graph.linkWidth());
+        document.getElementById('node-info').innerHTML =
+          '<div id="empty-state">Click a node to inspect.<br>Drag to rotate, scroll to zoom.</div>';
       });
   }
+  // Build the adjacency map so neighbor-only highlighting on click
+  // is O(1) per render frame. Both directions because the graph is
+  // logically undirected for the neighbor-overlay purpose.
+  _3d.adjacency = new Map();
+  for (const e of data.edges) {
+    if (!_3d.adjacency.has(e.source)) _3d.adjacency.set(e.source, new Set());
+    if (!_3d.adjacency.has(e.target)) _3d.adjacency.set(e.target, new Set());
+    _3d.adjacency.get(e.source).add(e.target);
+    _3d.adjacency.get(e.target).add(e.source);
+  }
+  // Reset selection across reloads (min-degree change, view switch).
+  _3d.selectedId = null;
+  _3d.neighborSet = new Set();
+
   // Build the graph payload — convert our edge {source,target} shape
   // 3d-force-graph accepts as-is.
   _3d.graph.graphData({
