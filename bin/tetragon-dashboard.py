@@ -3724,17 +3724,18 @@ function rebuildGraph(data) {
       const isNeighbor = g.hasEdge(sel, node) || g.hasEdge(node, sel);
       if (isSel) return { ...data, size: (data.size || 2) * 2.2, forceLabel: true, zIndex: 2 };
       if (isNeighbor) {
-        // Progressive label disclosure for neighbors. At low zoom
-        // (camera ratio ~1) only the largest hubs in the neighborhood
-        // get labels; as the user zooms in, more neighbors light up.
-        // At max zoom every neighbor shows its label.
-        // threshold = ratio * 6 means:
-        //   ratio 1.0 (zoomed out) → label only nodes with size >= 6
-        //   ratio 0.5 (medium)     → label only nodes with size >= 3
-        //   ratio 0.15 (zoomed in) → label all (size >= ~0.9)
+        // Progressive label disclosure driven by camera ratio +
+        // node DEGREE (architectural importance), not visual size.
+        // Symbol nodes are 1-8 px, so a size-based threshold has
+        // no usable range. Degree spans 0..500 on AetherSDR.
+        //
+        //   ratio 1.0 (zoomed out) → degree >= 50 (the few hubs)
+        //   ratio 0.5 (medium)     → degree >= 25
+        //   ratio 0.2 (zoomed in)  → degree >= 10
+        //   ratio 0.05 (max zoom)  → degree >= 2.5 (everyone)
         const ratio = (_state.sigma && _state.sigma.getCamera().ratio) || 1;
-        const threshold = ratio * 6;
-        const showLabel = (data.size || 2) >= threshold;
+        const degreeThreshold = ratio * 50;
+        const showLabel = (data.degree || 0) >= degreeThreshold;
         return { ...data, forceLabel: showLabel, zIndex: 1 };
       }
       return { ...data, color: '#1a2030', zIndex: 0 };
@@ -3759,6 +3760,13 @@ function rebuildGraph(data) {
   });
   _state.sigma.on('clickNode', e => selectNode(e.node));
   _state.sigma.on('clickStage', () => selectNode(null));
+  // Force the reducer to re-run on every camera change so the
+  // progressive label-disclosure threshold updates as the user zooms.
+  // Sigma's render pipeline caches reducer output between frames if
+  // attributes don't change; an explicit refresh bypasses that.
+  _state.sigma.getCamera().on('updated', () => {
+    if (_state.highlightedId) _state.sigma.refresh();
+  });
 
   setStats(`${g.order} nodes · ${g.size} edges · layout in ${(layoutMs/1000).toFixed(1)}s`);
 
