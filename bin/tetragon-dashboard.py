@@ -3172,7 +3172,8 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
       <select id="view-mode">
         <option value="dirs">Directories</option>
         <option value="communities">Communities</option>
-        <option value="symbols" selected>Symbols</option>
+        <option value="symbols" selected>Symbols (2D)</option>
+        <option value="symbols3d">Symbols (3D)</option>
       </select>
     </label>
     <label id="min-degree-label">min degree: <input type="range" id="min-degree" min="0" max="50" value="5"><span id="min-degree-val">5</span></label>
@@ -3183,6 +3184,7 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
 </header>
 <div id="stale-banner"></div>
 <div id="sigma-container"></div>
+<div id="threed-container" style="position:fixed;top:48px;left:0;right:320px;bottom:0;display:none;background:#08081a"></div>
 <aside id="side">
   <h3>Node detail</h3>
   <div id="node-info"><div id="empty-state">Click a node to inspect.<br>Drag to pan, scroll to zoom.</div></div>
@@ -3199,6 +3201,7 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
 <script src="/codegraph/assets/graphology.umd.min.js"></script>
 <script src="/codegraph/assets/graphology-library.min.js"></script>
 <script src="/codegraph/assets/sigma.min.js"></script>
+<script src="/codegraph/assets/3d-force-graph.min.js"></script>
 <script>
 'use strict';
 
@@ -3408,6 +3411,7 @@ async function switchToCommunityView() {
   document.getElementById('view-mode').value = 'communities';
   document.getElementById('back-to-dirs').style.display = 'none';
   document.getElementById('min-degree-label').style.display = 'none';
+  show2DContainer();
   setStats('<span class="loading-spinner"></span> loading communities...');
   try {
     rebuildCommunityGraph(await fetchCommunities());
@@ -3565,6 +3569,7 @@ async function switchToDirectoryView() {
   document.getElementById('view-mode').value = 'dirs';
   document.getElementById('back-to-dirs').style.display = 'none';
   document.getElementById('min-degree-label').style.display = 'none';
+  show2DContainer();
   setStats('<span class="loading-spinner"></span> loading directories...');
   try {
     rebuildDirGraph(await fetchDirectories());
@@ -3579,12 +3584,108 @@ async function switchToSymbolView() {
   document.getElementById('view-mode').value = 'symbols';
   document.getElementById('back-to-dirs').style.display = 'none';
   document.getElementById('min-degree-label').style.display = '';
+  show2DContainer();
   setStats('<span class="loading-spinner"></span> loading...');
   try {
     rebuildGraph(await fetchData(_state.minDegree));
   } catch (e) {
     setStats('error: ' + e.message);
   }
+}
+
+// 3D state lives separately so toggling between 2D and 3D doesn't
+// dispose / recreate the Three.js scene every time.
+const _3d = { graph: null, currentNode: null };
+
+function show3DContainer() {
+  document.getElementById('sigma-container').style.display = 'none';
+  document.getElementById('threed-container').style.display = '';
+}
+function show2DContainer() {
+  document.getElementById('threed-container').style.display = 'none';
+  document.getElementById('sigma-container').style.display = '';
+}
+
+async function switchTo3DView() {
+  _state.viewMode = 'symbols3d';
+  document.getElementById('view-mode').value = 'symbols3d';
+  document.getElementById('back-to-dirs').style.display = 'none';
+  document.getElementById('min-degree-label').style.display = '';
+  show3DContainer();
+  setStats('<span class="loading-spinner"></span> loading 3D…');
+  try {
+    const data = await fetchData(_state.minDegree);
+    rebuild3DGraph(data);
+  } catch (e) {
+    setStats('error: ' + e.message);
+  }
+}
+
+function rebuild3DGraph(data) {
+  const container = document.getElementById('threed-container');
+  // Reuse the existing 3D graph if present, just swap data — keeps
+  // the WebGL context alive across re-filters (min-degree slider).
+  if (!_3d.graph) {
+    _3d.graph = ForceGraph3D({ controlType: 'orbit' })(container)
+      .backgroundColor('#08081a')
+      .nodeLabel(n => `${n.label}\n${n.file || ''}${n.line ? ':' + n.line : ''}\ndegree ${n.degree}`)
+      .nodeColor(n => communityColor(n.community || 0))
+      // size = sqrt(degree) — same intuition as the 2D view but
+      // scaled for the 3D scene's coordinate system.
+      .nodeVal(n => Math.max(1, Math.sqrt(n.degree || 1)))
+      .nodeOpacity(0.9)
+      .linkColor(l => hexWithAlpha(communityColor(
+        (data.nodes.find(n => n.id === (l.source.id || l.source)) || {}).community || 0
+      ), 0.25))
+      .linkOpacity(0.4)
+      .linkWidth(0.4)
+      // Click → reuse the existing selectNode pipeline so the
+      // detail / neighbors / blast-radius panels stay in sync.
+      .onNodeClick(n => {
+        _3d.currentNode = n;
+        select3DNode(n);
+        // Aim the camera at the clicked node.
+        const distance = 80;
+        const distRatio = 1 + distance / Math.hypot(n.x, n.y, n.z);
+        _3d.graph.cameraPosition(
+          { x: n.x * distRatio, y: n.y * distRatio, z: n.z * distRatio },
+          n,
+          1500
+        );
+      });
+  }
+  // Build the graph payload — convert our edge {source,target} shape
+  // 3d-force-graph accepts as-is.
+  _3d.graph.graphData({
+    nodes: data.nodes.map(n => ({
+      id: n.id,
+      label: n.label,
+      community: n.community,
+      community_label: n.community_label,
+      file: n.file,
+      line: n.line,
+      degree: n.degree,
+      kind: n.kind,
+    })),
+    links: data.edges.map(e => ({ source: e.source, target: e.target, kind: e.kind })),
+  });
+  setStats(`${data.nodes.length} nodes · ${data.edges.length} edges · 3D · drag to rotate, scroll to zoom`);
+}
+
+function select3DNode(n) {
+  // Mirror the 2D selectNode behaviour for the right-side detail
+  // pane. We don't have a graphology graph in 3D mode, so we hand-
+  // build the same fields the 2D selectNode renders.
+  _state.highlightedId = String(n.id);
+  const el = document.getElementById('node-info');
+  if (!el) return;
+  el.innerHTML = `
+    <div class="field"><div class="k">name</div><div class="v">${escapeHtml(n.label || '')}</div></div>
+    <div class="field"><div class="k">kind</div><div class="v">${escapeHtml(n.kind || '')}</div></div>
+    <div class="field"><div class="k">file</div><div class="v">${escapeHtml(n.file || '?')}${n.line ? ':' + n.line : ''}</div></div>
+    <div class="field"><div class="k">degree</div><div class="v">${n.degree}</div></div>
+    <div class="field"><div class="k">community</div><div class="v"><span class="community-swatch" style="background:${communityColor(n.community || 0)}"></span>${escapeHtml(n.community_label || '?')}</div></div>
+  `;
 }
 
 async function fetchMeta() {
@@ -3916,7 +4017,11 @@ document.getElementById('min-degree').addEventListener('input', e => {
   if (_refetchTimer) clearTimeout(_refetchTimer);
   _refetchTimer = setTimeout(async () => {
     setStats('<span class="loading-spinner"></span> reloading…');
-    try { rebuildGraph(await fetchData(v)); } catch (e) { setStats('error: ' + e.message); }
+    try {
+      const data = await fetchData(v);
+      if (_state.viewMode === 'symbols3d') rebuild3DGraph(data);
+      else rebuildGraph(data);
+    } catch (e) { setStats('error: ' + e.message); }
   }, 250);
 });
 
@@ -4121,6 +4226,7 @@ function startLiveOverlay() {
 document.getElementById('view-mode').addEventListener('change', e => {
   if (e.target.value === 'dirs') switchToDirectoryView();
   else if (e.target.value === 'communities') switchToCommunityView();
+  else if (e.target.value === 'symbols3d') switchTo3DView();
   else switchToSymbolView();
 });
 document.getElementById('back-to-dirs').addEventListener('click', () => {
@@ -4746,6 +4852,7 @@ class H(BaseHTTPRequestHandler):
                 'sigma.min.js': 'application/javascript',
                 'graphology.umd.min.js': 'application/javascript',
                 'graphology-library.min.js': 'application/javascript',
+                '3d-force-graph.min.js': 'application/javascript',
             }
             if name not in ALLOWED:
                 self.send_response(404); self.end_headers(); return
