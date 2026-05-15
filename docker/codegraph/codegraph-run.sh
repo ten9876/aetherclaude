@@ -76,6 +76,10 @@ mv -f "$TMP_DB" "$OUT/codegraph.db"
 for sidecar in "$TMP_DB-wal" "$TMP_DB-shm"; do
     [[ -f "$sidecar" ]] && rm -f "$sidecar"
 done
+# Group-writable so the doc-extraction pass (which runs as
+# aetherclaude on the host, not jeremy who owns the file) can update
+# concept + INFERRED-edge rows without permissions errors.
+chmod g+w "$OUT/codegraph.db" || true
 echo "[codegraph-run] published $OUT/codegraph.db ($(stat -c%s "$OUT/codegraph.db") bytes)"
 
 t1=$(date +%s)
