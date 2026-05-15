@@ -32,11 +32,20 @@ import json
 import os
 import sqlite3
 import sys
+import time
 
 CODEGRAPH_DB = os.environ.get(
     'CODEGRAPH_DB',
     '/Users/Shared/aetherclaude/data/codegraph.db',
 )
+# events.db is the dashboard's central event store. We write a
+# 'codegraph:blast' row keyed by AETHER_TRACE_ID so the agent-walk
+# view can correlate this hook run with its corresponding TOOL event.
+EVENTS_DB = os.environ.get(
+    'EVENTS_DB',
+    '/Users/aetherclaude/data/events.db',
+)
+TRACE_ID = os.environ.get('AETHER_TRACE_ID', '')
 # Minimum risk_score to bother emitting the warning. Below this the
 # edit is on a leaf node nobody calls — noise.
 MIN_RISK_SCORE = 0.005
@@ -49,6 +58,50 @@ MAX_DEPTH = 3
 # Max files we'll scan in a single Edit. MultiEdit with hundreds of
 # touches → skip rather than spend 30 s computing blast radius.
 MAX_FILES = 8
+
+
+def log_to_events_db(file_path: str, risk_score: float, high_risk_count: int,
+                     symbols_count: int, callers_count: int,
+                     top_high_risk: list[dict]) -> None:
+    """Write a codegraph:blast row to events.db for agent-walk
+    correlation. Best-effort — failures here must never break the
+    hook."""
+    if not os.path.exists(EVENTS_DB):
+        return
+    summary = {
+        'file': file_path,
+        'risk_score': round(risk_score, 4),
+        'high_risk_count': high_risk_count,
+        'symbols_count': symbols_count,
+        'callers_count': callers_count,
+        'top': [
+            {'name': s['qualified_name'], 'bw': round(s['betweenness'] or 0, 4),
+             'd': s['distance']}
+            for s in top_high_risk[:5]
+        ],
+    }
+    try:
+        conn = sqlite3.connect(EVENTS_DB, timeout=2.0)
+        conn.execute(
+            'INSERT INTO events (timestamp, type, uid, binary_name, args, '
+            '                    policy, is_agent, source, trace_id) '
+            ' VALUES (?,?,?,?,?,?,?,?,?)',
+            (
+                time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                'TOOL',
+                965,
+                'codegraph:blast',
+                json.dumps(summary),
+                '',
+                1,
+                'codegraph',
+                TRACE_ID or None,
+            )
+        )
+        conn.commit()
+        conn.close()
+    except sqlite3.Error:
+        pass
 
 
 def emit_response(additional_context: str | None = None) -> None:
@@ -189,30 +242,14 @@ def transitive_callers(conn, seed_ids: list[int], max_depth: int) -> dict[int, i
     return seen
 
 
-def build_warning(symbols: list[dict], callers: dict[int, int], conn) -> str | None:
+def build_warning_from_data(symbols: list[dict], affected: list[dict],
+                            callers: dict[int, int], risk_score: float,
+                            high_risk: list[dict]) -> str | None:
     """Format the human-readable blast-radius summary that Claude
     will see as additional context. Returns None if the risk is
     too low to bother mentioning."""
-    if not callers:
-        return None
-    ids = list(callers.keys())
-    ph = ','.join('?' * len(ids))
-    rows = conn.execute(
-        f'SELECT id, qualified_name, betweenness, file_path '
-        f'  FROM symbols WHERE id IN ({ph})',
-        ids
-    ).fetchall()
-    affected = [
-        {**dict(r), 'distance': callers[r['id']]}
-        for r in rows
-    ]
-    risk_score = sum((s['betweenness'] or 0) for s in affected)
     if risk_score < MIN_RISK_SCORE:
         return None
-    high_risk = sorted(
-        [s for s in affected if (s['betweenness'] or 0) >= HIGH_RISK_BETWEENNESS],
-        key=lambda s: -(s['betweenness'] or 0),
-    )
 
     seed_names = ', '.join(
         f'{s["qualified_name"].split("::")[-1]} (bw={s["betweenness"] or 0:.4f})'
@@ -289,7 +326,37 @@ def main():
             return
         seed_ids = [s['id'] for s in all_symbols]
         callers = transitive_callers(conn, seed_ids, MAX_DEPTH)
-        warning = build_warning(all_symbols, callers, conn)
+        # Hydrate the affected set once for both the warning text
+        # and the events.db row.
+        affected: list[dict] = []
+        if callers:
+            ids = list(callers.keys())
+            ph = ','.join('?' * len(ids))
+            for r in conn.execute(
+                f'SELECT id, qualified_name, betweenness, file_path '
+                f'  FROM symbols WHERE id IN ({ph})',
+                ids
+            ):
+                affected.append({**dict(r), 'distance': callers[r['id']]})
+        risk_score = sum((s['betweenness'] or 0) for s in affected)
+        high_risk = sorted(
+            [s for s in affected if (s['betweenness'] or 0) >= HIGH_RISK_BETWEENNESS],
+            key=lambda s: -(s['betweenness'] or 0),
+        )
+        # Log to events.db so the agent-walk view can paint the
+        # corresponding TOOL dot. Only worth a row if the risk is
+        # non-trivial.
+        if risk_score >= MIN_RISK_SCORE:
+            log_to_events_db(
+                file_path=files[0],
+                risk_score=risk_score,
+                high_risk_count=len(high_risk),
+                symbols_count=len(all_symbols),
+                callers_count=len(callers),
+                top_high_risk=high_risk,
+            )
+        warning = build_warning_from_data(all_symbols, affected, callers,
+                                          risk_score, high_risk)
         emit_response(warning)
     finally:
         conn.close()

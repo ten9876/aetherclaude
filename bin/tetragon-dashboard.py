@@ -3961,8 +3961,26 @@ function renderSwimlane(){
     // land in. Case-insensitive substring match on args.
     const haystack=((e.args||'')+' '+(e.policy||'')).toLowerCase();
     const isAlert=haystack.includes('failed')||haystack.includes('blocked');
+    // Blast-radius enrichment: TOOL events for Edit/Write that the
+    // codegraph hook flagged carry a `blast_radius` field. Override
+    // fill so green/amber/red is the at-a-glance risk signal —
+    // clicking the dot opens the high-risk symbol list in the
+    // detail pane.
+    let extraStyle='';
+    let radius=5;
+    if(e.blast_radius){
+      const rs=e.blast_radius.risk_score||0;
+      // Thresholds match the hook's MIN_RISK_SCORE (0.005) and the
+      // dashboard's "yellow vs red" mental model.
+      const fill = rs>=0.5 ? '#ff4444' : rs>=0.05 ? '#ffaa00' : '#88ddaa';
+      extraStyle=` style="fill:${fill}"`;
+      radius=Math.min(9, 5 + Math.log10(1 + rs*100));
+    }
     const dotCls=isAlert?`event-dot alert-pulse ${colorCls}`:`event-dot ${colorCls}`;
-    svg+=`<circle class="${dotCls}" data-i="${i}" cx="${xCenter}" cy="${yCenter}" r="5"><title>${esc(e.type)} · ${esc(e.binary)} · ${esc((e.args||'').substring(0,80))}</title></circle>`;
+    const titleExtra = e.blast_radius
+      ? ` · blast risk ${e.blast_radius.risk_score} (${e.blast_radius.high_risk_count} high-risk)`
+      : '';
+    svg+=`<circle class="${dotCls}"${extraStyle} data-i="${i}" cx="${xCenter}" cy="${yCenter}" r="${radius}"><title>${esc(e.type)} · ${esc(e.binary)} · ${esc((e.args||'').substring(0,80))}${esc(titleExtra)}</title></circle>`;
   }
   svg+='</svg>';
   container.innerHTML=svg;
@@ -3988,6 +4006,33 @@ function renderDetail(){
   const e=_events[_selectedIdx];
   const stage=e.stage||0;
   const stageName=stage>0?STAGES[stage-1].name:'(uncategorized)';
+  let blastHtml='';
+  if(e.blast_radius){
+    const b=e.blast_radius;
+    const rs=b.risk_score||0;
+    const tier = rs>=0.5 ? 'HIGH' : rs>=0.05 ? 'MEDIUM' : 'low';
+    const tierColor = rs>=0.5 ? '#ff4444' : rs>=0.05 ? '#ffaa00' : '#88ddaa';
+    let topRows='';
+    if(b.top && b.top.length){
+      topRows='<div style="margin-top:6px;font-size:10px;color:#a0b0c0">Top high-risk callers:</div>';
+      for(const t of b.top){
+        topRows+=`<div style="font-family:'SF Mono',monospace;font-size:10px;padding:1px 0">`+
+                 `<span style="color:#ffaa00">bw=${t.bw}</span> `+
+                 `<span style="color:#607080">d=${t.d}</span> `+
+                 `<span style="color:#c8d8e8">${esc(t.name)}</span></div>`;
+      }
+    }
+    blastHtml='<div style="margin-top:10px;padding:8px 10px;background:#15131c;'+
+              'border-left:3px solid '+tierColor+';border-radius:3px">'+
+              '<div style="font-size:11px;color:'+tierColor+';font-weight:600">'+
+              'CODEGRAPH BLAST RADIUS · '+tier+' (risk '+rs+')</div>'+
+              '<div style="font-size:10px;color:#8090a0;margin-top:2px">'+
+              esc(b.symbols_count||0)+' symbol(s) edited · '+
+              esc(b.callers_count||0)+' transitive callers · '+
+              esc(b.high_risk_count||0)+' high-risk affected</div>'+
+              topRows+
+              '</div>';
+  }
   d.innerHTML='<h3>Event detail <span class="stage-pill">stage '+stage+' · '+esc(stageName)+'</span></h3>'+
     '<div class="row"><div class="k">timestamp</div><div class="v">'+esc(e.time)+'</div></div>'+
     '<div class="row"><div class="k">type</div><div class="v">'+esc(e.type)+'</div></div>'+
@@ -3996,7 +4041,8 @@ function renderDetail(){
     '<div class="row"><div class="k">uid</div><div class="v">'+esc(e.uid)+'</div></div>'+
     '<div class="row"><div class="k">policy</div><div class="v">'+esc(e.policy||'(none)')+'</div></div>'+
     '<div class="row"><div class="k">args</div><div class="v">'+esc(e.args)+'</div></div>'+
-    '<div class="row"><div class="k">trace_id</div><div class="v">'+esc(e.trace_id)+'</div></div>';
+    '<div class="row"><div class="k">trace_id</div><div class="v">'+esc(e.trace_id)+'</div></div>'+
+    blastHtml;
 }
 
 // --- Log stream pane (B) ---
@@ -5049,6 +5095,42 @@ a{{color:#0a6aba}}
                     })
                 events = [e for e in all_events if e['stage'] > 0]
                 dropped = len(all_events) - len(events)
+                # Attach blast-radius enrichment to TOOL events. The
+                # codegraph blast-radius hook fires immediately before
+                # each Edit/Write tool call and emits a row with
+                # source='codegraph', binary='codegraph:blast', args=
+                # JSON-encoded summary. We pair each blast row with
+                # the next claude:Edit/Write/MultiEdit event whose
+                # args (basename) matches, then drop the blast row
+                # from the swimlane (it's now metadata on the dot).
+                pending_blast = []
+                for e in all_events:
+                    if e['source'] == 'codegraph' and (e['binary'] or '').startswith('codegraph:blast'):
+                        try:
+                            pending_blast.append(json.loads(e['args']))
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                if pending_blast:
+                    edit_binaries = ('claude:Edit', 'claude:Write',
+                                     'claude:MultiEdit', 'claude:NotebookEdit')
+                    for ev in events:
+                        if not pending_blast:
+                            break
+                        binary = ev.get('binary') or ''
+                        if not binary.startswith(edit_binaries):
+                            continue
+                        ev_args = (ev.get('args') or '').strip()
+                        # Match blast-row's file basename to the tool
+                        # event's basename. tail_sessions stores only
+                        # basename in args, the blast row's `file`
+                        # field may be a full path.
+                        for i, blast in enumerate(pending_blast):
+                            blast_file = (blast.get('file') or '')
+                            blast_basename = blast_file.rsplit('/', 1)[-1]
+                            if blast_basename and blast_basename == ev_args:
+                                ev['blast_radius'] = blast
+                                pending_blast.pop(i)
+                                break
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
