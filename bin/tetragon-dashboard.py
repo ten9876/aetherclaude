@@ -83,7 +83,11 @@ PRIVATE_FONTS_DIR = os.environ.get(
 # /api/codegraph/* routes. Built by bin/codegraph-extract.py +
 # codegraph-analyze.py on a nightly launchd schedule. Static JS assets
 # (Sigma.js + graphology) are vendored under the repo's assets/codegraph/.
-CODEGRAPH_DB = '/Users/aetherclaude/data/codegraph.db'
+# codegraph.db lives under /Users/Shared so the nightly refresh job
+# (which writes via a Colima/Docker container running under jeremy's
+# colima socket) can publish atomically without needing root or
+# aetherclaude-owned data dir write access.
+CODEGRAPH_DB = '/Users/Shared/aetherclaude/data/codegraph.db'
 CODEGRAPH_ASSETS_DIR = '/Users/Shared/aetherclaude/assets/codegraph'
 CLAUDE_PROJECTS_DIR = '/Users/aetherclaude/.claude/projects'
 # How many chars of prompt/response text to surface in the args column.

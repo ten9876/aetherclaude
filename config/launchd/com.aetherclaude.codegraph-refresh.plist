@@ -37,16 +37,26 @@
   <array>
     <string>/bin/bash</string>
     <string>-c</string>
-    <string>/usr/local/bin/docker run --rm --name codegraph-refresh -v /Users/aetherclaude/workspace/AetherSDR:/src:ro -v /Users/Shared/aetherclaude/bin:/tools:ro -v /Users/aetherclaude/data:/out aetherclaude-codegraph:latest /codegraph-run.sh</string>
+    <string>/opt/homebrew/bin/docker run --rm --name codegraph-refresh -v /Users/aetherclaude/workspace/AetherSDR:/src:ro -v /Users/Shared/aetherclaude/bin:/tools:ro -v /Users/Shared/aetherclaude/data:/out aetherclaude-codegraph:latest /codegraph-run.sh</string>
   </array>
 
+  <!--
+    Runs as jeremy because:
+      a) colima's docker socket lives in jeremy's home dir
+         (~/.colima/default/docker.sock) — only jeremy can talk to it
+      b) the output path /Users/Shared/aetherclaude/data is world-
+         writable, so the resulting codegraph.db is reachable by the
+         aetherclaude-owned dashboard process for reading.
+    If we ever spin up a system-wide colima, this can revert to
+    UserName=aetherclaude for tighter privilege separation.
+  -->
   <key>UserName</key>
-  <string>aetherclaude</string>
+  <string>jeremy</string>
 
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
-    <string>/Users/aetherclaude</string>
+    <string>/Users/jeremy</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/bin:/bin</string>
   </dict>
