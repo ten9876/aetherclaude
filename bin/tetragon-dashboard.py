@@ -3367,22 +3367,22 @@ function rebuildGraph(data) {
     nodeReducer: (node, data) => {
       const g = _state.graph;
       if (!g) return data;
-      // Search mode takes precedence: matches get a label + size
-      // boost, non-matches dim. This is the only feedback the search
-      // gives in renderLabels=false mode.
+      // Search mode: matches get a forced label + size boost; non-
+      // matches dim but keep their label attribute intact so hover
+      // still shows the full qualified name in the pill.
       if (_state.searchMatches.size > 0) {
         if (_state.searchMatches.has(node)) {
-          return { ...data, size: (data.size || 2) * 2.5, label: data.label, forceLabel: true, zIndex: 2 };
+          return { ...data, size: (data.size || 2) * 2.5, forceLabel: true, zIndex: 2 };
         }
-        return { ...data, color: '#1a2030', label: '', zIndex: 0 };
+        return { ...data, color: '#1a2030', zIndex: 0 };
       }
       const sel = _state.highlightedId;
       if (!sel) return data;
       const isSel = (node === sel);
       const isNeighbor = g.hasEdge(sel, node) || g.hasEdge(node, sel);
-      if (isSel) return { ...data, size: (data.size || 2) * 2.2, label: data.label, forceLabel: true, zIndex: 2 };
-      if (isNeighbor) return { ...data, label: data.label, forceLabel: true, zIndex: 1 };
-      return { ...data, color: '#1a2030', label: '', zIndex: 0 };
+      if (isSel) return { ...data, size: (data.size || 2) * 2.2, forceLabel: true, zIndex: 2 };
+      if (isNeighbor) return { ...data, forceLabel: true, zIndex: 1 };
+      return { ...data, color: '#1a2030', zIndex: 0 };
     },
     edgeReducer: (edge, data) => {
       const g = _state.graph;
@@ -3486,35 +3486,6 @@ document.getElementById('min-degree').addEventListener('input', e => {
   }, 250);
 });
 
-function applySearchLabelMasking(g) {
-  // Stash the real label in _origLabel the first time we mask, then
-  // clear the live label so Sigma's hover/render lookup (which falls
-  // back to the underlying attribute when the reducer returns a
-  // falsy label) doesn't show a truncated character on dimmed nodes.
-  g.forEachNode((nid, attr) => {
-    if (_state.searchMatches.has(nid)) {
-      if (attr._origLabel) {
-        g.setNodeAttribute(nid, 'label', attr._origLabel);
-        g.removeNodeAttribute(nid, '_origLabel');
-      }
-    } else {
-      if (attr.label) {
-        g.setNodeAttribute(nid, '_origLabel', attr.label);
-        g.setNodeAttribute(nid, 'label', '');
-      }
-    }
-  });
-}
-
-function clearSearchLabelMasking(g) {
-  g.forEachNode((nid, attr) => {
-    if (attr._origLabel) {
-      g.setNodeAttribute(nid, 'label', attr._origLabel);
-      g.removeNodeAttribute(nid, '_origLabel');
-    }
-  });
-}
-
 document.getElementById('search').addEventListener('input', e => {
   const q = e.target.value.toLowerCase().trim();
   _state.searchMatches.clear();
@@ -3523,15 +3494,11 @@ document.getElementById('search').addEventListener('input', e => {
   if (q) {
     let firstMatch = null;
     g.forEachNode((nid, attr) => {
-      // Match against the real label (may currently be masked to '');
-      // _origLabel holds the real one when masking is active.
-      const realLabel = attr._origLabel || attr.label;
-      if (realLabel && realLabel.toLowerCase().includes(q)) {
+      if (attr.label && attr.label.toLowerCase().includes(q)) {
         _state.searchMatches.add(nid);
         if (!firstMatch) firstMatch = nid;
       }
     });
-    applySearchLabelMasking(g);
     // Camera: only auto-zoom for a small match set, using Sigma's
     // node display coords (which are correctly normalized). For
     // many-match queries leave the camera as-is — the user already
@@ -3556,7 +3523,6 @@ document.getElementById('search').addEventListener('input', e => {
     }
     setStats(`${_state.searchMatches.size} match${_state.searchMatches.size===1?'':'es'} for "${q}"`);
   } else {
-    clearSearchLabelMasking(g);
     setStats(`${g.order} nodes · ${g.size} edges`);
   }
   _state.sigma.refresh();
