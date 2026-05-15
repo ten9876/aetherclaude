@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aetherclaude.codegraph-watcher</string>
+
+  <!--
+    Polls AetherSDR's git HEAD every 60 s. When HEAD differs from the
+    codegraph's recorded src_head_sha, fires the codegraph-refresh
+    launchd job so the staleness banner clears within ~3 min of a
+    push — instead of waiting until the 03:00 nightly window.
+
+    Cheap: a single `git rev-parse HEAD` and one sqlite query per
+    tick. The watcher records last-triggered-SHA in a state file so
+    it never re-kicks for a SHA that's already in flight.
+  -->
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/python3</string>
+    <string>/Users/Shared/aetherclaude/bin/codegraph-watcher.py</string>
+  </array>
+
+  <key>UserName</key>
+  <string>jeremy</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/jeremy</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <!--
+    StartInterval=60 — fire every minute. Each invocation runs in
+    well under a second; the watcher exits immediately when HEAD is
+    in sync. Cheaper than KeepAlive+sleep loop and gives launchctl
+    list a useful exit-status signal.
+  -->
+  <key>StartInterval</key>
+  <integer>60</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/Shared/aetherclaude/logs/codegraph-watcher.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/Shared/aetherclaude/logs/codegraph-watcher.log</string>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+</dict>
+</plist>
