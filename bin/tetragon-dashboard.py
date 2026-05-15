@@ -3147,6 +3147,10 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
   .trace-swatch { width:8px; height:8px; border-radius:50%; flex:0 0 8px; }
   .trace-row .tfile { color:#809090; flex:1; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; }
   .trace-row .tact { color:#607080; }
+  /* HTML 3D-overlay labels — pill style matching the 2D label
+   * renderer. Positioned absolutely; the JS overlay loop sets
+   * `transform: translate(x,y)` each frame. */
+  .threed-label { position:absolute; top:0; left:0; padding:2px 6px; background:rgba(10,10,26,0.92); color:#e0e8f0; font-family:'SF Mono', monospace; font-size:11px; font-weight:600; border-radius:3px; border:1px solid #00bceb; white-space:nowrap; transform:translate(-9999px,-9999px); will-change:transform; }
   /* Refactor watch-list — high-betweenness symbols. Click jumps the
    * camera to the node and selects it in the detail panel. */
   .bridge-row { display:flex; align-items:baseline; gap:6px; padding:3px 6px; font-family:'SF Mono', monospace; font-size:10px; cursor:pointer; border-radius:3px; border-left:2px solid transparent; }
@@ -3185,6 +3189,10 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
 <div id="stale-banner"></div>
 <div id="sigma-container"></div>
 <div id="threed-container" style="position:fixed;top:48px;left:0;right:320px;bottom:0;display:none;background:#08081a"></div>
+<!-- HTML overlay for 3D labels. Positioned absolutely INSIDE
+     #threed-container by JS each frame; pointer-events:none so the
+     WebGL canvas still gets all the orbit/zoom mouse events. -->
+<div id="threed-label-layer" style="position:fixed;top:48px;left:0;right:320px;bottom:0;pointer-events:none;display:none;overflow:hidden"></div>
 <aside id="side">
   <h3>Node detail</h3>
   <div id="node-info"><div id="empty-state">Click a node to inspect.<br>Drag to pan, scroll to zoom.</div></div>
@@ -3628,10 +3636,95 @@ function refresh3DHighlight() {
 function show3DContainer() {
   document.getElementById('sigma-container').style.display = 'none';
   document.getElementById('threed-container').style.display = '';
+  document.getElementById('threed-label-layer').style.display = '';
 }
 function show2DContainer() {
   document.getElementById('threed-container').style.display = 'none';
+  document.getElementById('threed-label-layer').style.display = 'none';
   document.getElementById('sigma-container').style.display = '';
+  stop3DLabelLoop();
+}
+
+// HTML-overlay labels for 3D mode. We don't use SpriteText (needs an
+// external THREE that conflicts with 3d-force-graph's bundled one).
+// Instead, project each highlighted node's world position to screen
+// coords each frame and translate an absolutely-positioned <div>
+// pill there. Cheap: one matrix-mult per labeled node per frame.
+const _3dLabels = {
+  divs: new Map(),  // nodeId -> HTMLElement
+  rafId: 0,
+  tmpVec: null,     // borrowed THREE.Vector3 from the scene
+};
+
+function clear3DLabels() {
+  const layer = document.getElementById('threed-label-layer');
+  for (const div of _3dLabels.divs.values()) {
+    div.remove();
+  }
+  _3dLabels.divs.clear();
+}
+
+function build3DLabels() {
+  clear3DLabels();
+  if (!_3d.graph || _3d.selectedId == null) return;
+  const layer = document.getElementById('threed-label-layer');
+  const data = _3d.graph.graphData();
+  for (const n of data.nodes) {
+    if (!_3dIsHighlighted(n.id)) continue;
+    const div = document.createElement('div');
+    div.className = 'threed-label';
+    div.textContent = n.label || '';
+    div.style.borderColor = communityColor(n.community || 0);
+    layer.appendChild(div);
+    _3dLabels.divs.set(n.id, div);
+  }
+}
+
+function tick3DLabels() {
+  if (_3d.selectedId == null || _3dLabels.divs.size === 0) {
+    _3dLabels.rafId = 0;
+    return;
+  }
+  const camera = _3d.graph.camera();
+  const scene = _3d.graph.scene();
+  // Lazy-init a Vector3 borrowed from the scene's own Three.js
+  // namespace (3d-force-graph bundles its own; we don't import it).
+  if (!_3dLabels.tmpVec && scene && scene.position && scene.position.clone) {
+    _3dLabels.tmpVec = scene.position.clone();
+  }
+  if (!_3dLabels.tmpVec || !camera) {
+    _3dLabels.rafId = requestAnimationFrame(tick3DLabels);
+    return;
+  }
+  const layer = document.getElementById('threed-label-layer');
+  const rect = layer.getBoundingClientRect();
+  const data = _3d.graph.graphData();
+  const nodeById = new Map(data.nodes.map(n => [n.id, n]));
+  for (const [nid, div] of _3dLabels.divs) {
+    const n = nodeById.get(nid);
+    if (!n) { div.style.display = 'none'; continue; }
+    _3dLabels.tmpVec.set(n.x || 0, n.y || 0, n.z || 0);
+    _3dLabels.tmpVec.project(camera);
+    // z > 1 means the point is behind the camera frustum; hide.
+    if (_3dLabels.tmpVec.z > 1) { div.style.display = 'none'; continue; }
+    const sx = (_3dLabels.tmpVec.x + 1) * 0.5 * rect.width;
+    const sy = (1 - _3dLabels.tmpVec.y) * 0.5 * rect.height;
+    div.style.display = '';
+    // Anchor centered above the node sphere (rough offset; we don't
+    // know the projected sphere radius without more math).
+    div.style.transform = `translate(${sx - div.offsetWidth / 2}px, ${sy - div.offsetHeight - 16}px)`;
+  }
+  _3dLabels.rafId = requestAnimationFrame(tick3DLabels);
+}
+
+function start3DLabelLoop() {
+  if (_3dLabels.rafId) return;
+  _3dLabels.rafId = requestAnimationFrame(tick3DLabels);
+}
+function stop3DLabelLoop() {
+  if (_3dLabels.rafId) cancelAnimationFrame(_3dLabels.rafId);
+  _3dLabels.rafId = 0;
+  clear3DLabels();
 }
 
 async function switchTo3DView() {
@@ -3704,11 +3797,14 @@ function rebuild3DGraph(data) {
         _3d.neighborSet = new Set(_3d.adjacency.get(n.id) || []);
         select3DNode(n);
         refresh3DHighlight();
+        build3DLabels();
+        start3DLabelLoop();
       })
       .onBackgroundClick(() => {
         _3d.selectedId = null;
         _3d.neighborSet = new Set();
         refresh3DHighlight();
+        stop3DLabelLoop();
         document.getElementById('node-info').innerHTML =
           '<div id="empty-state">Click a node to inspect.<br>Drag to rotate, scroll to zoom.</div>';
       });
