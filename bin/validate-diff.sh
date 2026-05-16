@@ -15,12 +15,21 @@ log() {
     # the dashboard's tail_validation_log can attribute codeguard/validation
     # events to the correct trace deterministically, even under parallel
     # orchestrators where the global active-trace heuristic could pick the
-    # wrong one. Mirrors run-agent.sh's log() format.
+    # wrong one.
+    #
+    # Use UTC (-u + trailing Z) to match the timestamp format every other
+    # event source in the system writes (WEBHOOK, defenseclaw audit, MCP
+    # audit, claude transcripts — all UTC). Mixing local time here caused
+    # issue #34 cousin: the dashboard's db_trace_backfill_correlator's
+    # Pass 0 does a string compare to null out events that predate their
+    # trace's "true start", and a PDT timestamp sorts 7 hours before its
+    # corresponding UTC webhook arrival — so every CodeGuard event was
+    # silently NULLed out of Agent Walk attribution.
     local prefix=""
     if [ -n "${AETHER_TRACE_ID:-}" ]; then
         prefix=" [${AETHER_TRACE_ID:0:8}]"
     fi
-    echo "$(date "+%Y-%m-%dT%H:%M:%S")${prefix} VALIDATE: $1" >> "$LOGFILE"
+    echo "$(date -u "+%Y-%m-%dT%H:%M:%SZ")${prefix} VALIDATE: $1" >> "$LOGFILE"
 }
 
 ERRORS=0
