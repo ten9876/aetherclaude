@@ -10,7 +10,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const url = require('url');
 
-const UPSTREAM_REPO = 'ten9876/AetherSDR';
+const UPSTREAM_REPO = 'aethersdr/AetherSDR';
 const FORK_OWNER = 'AetherClaude';
 const ENV_FILE = '/Users/aetherclaude/.env';
 const APP_KEY_FILE = '/Users/aetherclaude/.github-app-key.pem';
@@ -67,7 +67,7 @@ async function getAppToken() {
     if (cachedToken && Date.now() < cachedExpiry) return cachedToken;
     const jwt = makeJWT();
     const installs = await ghAPI('GET','/app/installations',null,jwt,true);
-    // Pick the upstream (ten9876) installation, not the fork
+    // Pick the upstream (aethersdr org) installation, not the fork
     const upstream = installs.find(i => i.account.login === UPSTREAM_REPO.split('/')[0]) || installs[0];
     const tok = await ghAPI('POST',`/app/installations/${upstream.id}/access_tokens`,{permissions:{contents:'write',issues:'write',pull_requests:'write',actions:'read',metadata:'read'}},jwt,true);
     cachedToken = tok.token; cachedExpiry = Date.now() + 50*60*1000;

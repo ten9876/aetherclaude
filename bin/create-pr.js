@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 
 const HOME = process.env.HOME || '/Users/aetherclaude';
-const UPSTREAM_REPO = 'ten9876/AetherSDR';
+const UPSTREAM_REPO = 'aethersdr/AetherSDR';
 // No fork — push and PR are on the same upstream repo
 
 function loadEnv() {
@@ -99,7 +99,7 @@ async function main() {
 
     // Try each installation until one succeeds
     const installOrder = [
-        installs.find(i => i.account.login === 'ten9876'),
+        installs.find(i => i.account.login === 'aethersdr'),
         installs.find(i => i.account.login === 'AetherClaude')
     ].filter(Boolean);
 

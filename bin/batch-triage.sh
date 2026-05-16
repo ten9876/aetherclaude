@@ -27,7 +27,7 @@ HOME=/Users/aetherclaude
 PATH=/Users/aetherclaude/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export HOME PATH
 
-REPO=ten9876/AetherSDR
+REPO=aethersdr/AetherSDR
 WORKSPACE=/Users/aetherclaude/workspace/AetherSDR
 LOGDIR=/Users/aetherclaude/logs/batch-triage
 mkdir -p "$LOGDIR"

@@ -1144,14 +1144,14 @@ def scan_rings():
                         open_prs = []
                         try:
                             req_open = urllib.request.Request(
-                                'https://api.github.com/repos/ten9876/AetherSDR/pulls?state=open&per_page=100', headers=hdrs)
+                                'https://api.github.com/repos/aethersdr/AetherSDR/pulls?state=open&per_page=100', headers=hdrs)
                             open_prs = json.loads(opener.open(req_open, timeout=10).read().decode())
                         except: pass
                         # Fetch closed/merged PRs
                         closed_prs = []
                         try:
                             req_closed = urllib.request.Request(
-                                'https://api.github.com/repos/ten9876/AetherSDR/pulls?state=closed&sort=updated&direction=desc&per_page=100', headers=hdrs)
+                                'https://api.github.com/repos/aethersdr/AetherSDR/pulls?state=closed&sort=updated&direction=desc&per_page=100', headers=hdrs)
                             closed_prs = json.loads(opener.open(req_closed, timeout=10).read().decode())
                         except: pass
                         ac_open = [p for p in open_prs if p.get('user', {}).get('login') in agent_logins]
@@ -1192,7 +1192,7 @@ def scan_rings():
                 # Fetch recent discussions
                 try:
                     if token:
-                        gql_body = json.dumps({'query': 'query{repository(owner:"ten9876",name:"AetherSDR"){discussions(first:20,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number title category{name} comments{totalCount}}}}}'}).encode()
+                        gql_body = json.dumps({'query': 'query{repository(owner:"aethersdr",name:"AetherSDR"){discussions(first:20,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number title category{name} comments{totalCount}}}}}'}).encode()
                         req_d = urllib.request.Request(
                             'https://api.github.com/graphql', data=gql_body,
                             headers={'Authorization': f'bearer {token}', 'Content-Type': 'application/json', 'User-Agent': 'AetherClaude-Dashboard'})
@@ -2508,7 +2508,7 @@ if(link){const m=link.match(/\/(\d+)/g);if(m)num=m[m.length-1].substring(1)}
 const title=titles[num]||titles['d'+num]||titles['pr'+num]||'';
 const titleStr=title?` — ${title.substring(0,40)}`:'';
 if(link)ph+=`<div class="si"><span class="n"><span style="color:#505060;font-size:10px">${t}</span> <span style="color:${col}">${label}</span> <a href="${link}" target="_blank" style="color:#c8d8e8;text-decoration:none">#${num}${titleStr}</a></span></div>`;
-else{const ghUrl=a.num?`https://github.com/ten9876/AetherSDR/issues/${a.num}`:'';const numTitle=titles[a.num]||'';const numTitleStr=numTitle?` — ${numTitle.substring(0,40)}`:'';if(a.num)ph+=`<div class="si"><span class="n"><span style="color:#505060;font-size:10px">${t}</span> <span style="color:${col}">${label}</span> <a href="${ghUrl}" target="_blank" style="color:#c8d8e8;text-decoration:none">#${a.num}${numTitleStr}</a></span></div>`;else ph+=`<div class="si"><span class="n"><span style="color:#505060;font-size:10px">${t}</span> <span style="color:${col}">${label}</span></span></div>`;}
+else{const ghUrl=a.num?`https://github.com/aethersdr/AetherSDR/issues/${a.num}`:'';const numTitle=titles[a.num]||'';const numTitleStr=numTitle?` — ${numTitle.substring(0,40)}`:'';if(a.num)ph+=`<div class="si"><span class="n"><span style="color:#505060;font-size:10px">${t}</span> <span style="color:${col}">${label}</span> <a href="${ghUrl}" target="_blank" style="color:#c8d8e8;text-decoration:none">#${a.num}${numTitleStr}</a></span></div>`;else ph+=`<div class="si"><span class="n"><span style="color:#505060;font-size:10px">${t}</span> <span style="color:${col}">${label}</span></span></div>`;}
 }
 document.getElementById('pols').innerHTML=ph||'<div class="si"><span class="n muted">Waiting for agent activity...</span></div>';
 
@@ -2794,13 +2794,13 @@ fetch('/api/prs').then(r=>r.json()).then(d=>{
 let fh='';
 if(d.open&&d.open.length>0){
 fh+='<p style="color:#607080;margin-bottom:6px;font-weight:bold">Open PRs awaiting review:</p>';
-for(const p of d.open)fh+=`<div class="modal-finding MEDIUM" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/ten9876/AetherSDR/pull/${p.number}" target="_blank" style="color:#00b4d8;text-decoration:none">#${p.number}</a> ${esc(p.title)}${p.draft?' <span style="color:#607080;font-size:10px">(draft)</span>':''}</div>`}
+for(const p of d.open)fh+=`<div class="modal-finding MEDIUM" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/aethersdr/AetherSDR/pull/${p.number}" target="_blank" style="color:#00b4d8;text-decoration:none">#${p.number}</a> ${esc(p.title)}${p.draft?' <span style="color:#607080;font-size:10px">(draft)</span>':''}</div>`}
 if(d.merged&&d.merged.length>0){
 fh+='<p style="color:#607080;margin-bottom:6px;margin-top:12px;font-weight:bold">Recently merged:</p>';
-for(const p of d.merged)fh+=`<div class="modal-finding SAFE" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/ten9876/AetherSDR/pull/${p.number}" target="_blank" style="color:#00b4d8;text-decoration:none">#${p.number}</a> ${esc(p.title)}</div>`}
+for(const p of d.merged)fh+=`<div class="modal-finding SAFE" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/aethersdr/AetherSDR/pull/${p.number}" target="_blank" style="color:#00b4d8;text-decoration:none">#${p.number}</a> ${esc(p.title)}</div>`}
 if(d.rejected&&d.rejected.length>0){
 fh+='<p style="color:#607080;margin-bottom:6px;margin-top:12px;font-weight:bold">Rejected:</p>';
-for(const p of d.rejected)fh+=`<div class="modal-finding HIGH" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/ten9876/AetherSDR/pull/${p.number}" target="_blank" style="color:#00b4d8;text-decoration:none">#${p.number}</a> ${esc(p.title)}</div>`}
+for(const p of d.rejected)fh+=`<div class="modal-finding HIGH" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/aethersdr/AetherSDR/pull/${p.number}" target="_blank" style="color:#00b4d8;text-decoration:none">#${p.number}</a> ${esc(p.title)}</div>`}
 if(d.issues&&d.issues.length>0){
 const stateColors={done:'#00ff88',failed:'#ff4444',declined:'#607080',implement:'#ffaa00',waiting:'#44ddaa',triage:'#00b4d8','new':'#c8d8e8'};
 fh+='<p style="color:#607080;margin-bottom:6px;margin-top:12px;font-weight:bold">Issue pipeline (from DB):</p>';
@@ -2808,10 +2808,10 @@ for(const i of d.issues){
 const col=stateColors[i.state]||'#c8d8e8';
 const det=i.detail?` <span style="color:#607080;font-size:10px">— ${esc(i.detail.substring(0,60))}</span>`:'';
 const ts=fmtTime(i.last_seen);
-fh+=`<div class="modal-finding SAFE" style="margin-bottom:3px;padding:4px 8px;display:flex;align-items:center;gap:8px"><a href="https://github.com/ten9876/AetherSDR/issues/${i.number}" target="_blank" style="color:#00b4d8;text-decoration:none;min-width:40px">#${i.number}</a><span style="color:${col};font-weight:bold;min-width:70px">${i.state}</span><span style="color:#8090a0;font-size:10px;min-width:90px">${esc(i.last_action||'')}</span>${det}<span style="color:#505060;font-size:9px;margin-left:auto">${ts}</span></div>`}}
+fh+=`<div class="modal-finding SAFE" style="margin-bottom:3px;padding:4px 8px;display:flex;align-items:center;gap:8px"><a href="https://github.com/aethersdr/AetherSDR/issues/${i.number}" target="_blank" style="color:#00b4d8;text-decoration:none;min-width:40px">#${i.number}</a><span style="color:${col};font-weight:bold;min-width:70px">${i.state}</span><span style="color:#8090a0;font-size:10px;min-width:90px">${esc(i.last_action||'')}</span>${det}<span style="color:#505060;font-size:9px;margin-left:auto">${ts}</span></div>`}}
 if(d.discussions&&d.discussions.length>0){
 fh+='<p style="color:#607080;margin-bottom:6px;margin-top:12px;font-weight:bold">Discussions responded to:</p>';
-for(const disc of d.discussions)fh+=`<div class="modal-finding SAFE" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/ten9876/AetherSDR/discussions/${disc.number}" target="_blank" style="color:#00b4d8;text-decoration:none">#${disc.number}</a> ${esc(disc.title)} <span style="color:#607080;font-size:10px">${esc(disc.category)} · ${disc.comments} comments</span></div>`}
+for(const disc of d.discussions)fh+=`<div class="modal-finding SAFE" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/aethersdr/AetherSDR/discussions/${disc.number}" target="_blank" style="color:#00b4d8;text-decoration:none">#${disc.number}</a> ${esc(disc.title)} <span style="color:#607080;font-size:10px">${esc(disc.category)} · ${disc.comments} comments</span></div>`}
 document.getElementById('r9-pr-list').innerHTML=fh;
 }).catch(()=>{document.getElementById('r9-pr-list').innerHTML='<p style="color:#604040">Failed to load PR data.</p>'})}
 function showValidation(){

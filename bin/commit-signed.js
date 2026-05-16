@@ -20,7 +20,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 
 const HOME = process.env.HOME || '/Users/aetherclaude';
-const UPSTREAM_REPO = 'ten9876/AetherSDR';
+const UPSTREAM_REPO = 'aethersdr/AetherSDR';
 const [REPO_OWNER, REPO_NAME] = UPSTREAM_REPO.split('/');
 
 function loadEnv() {
@@ -96,11 +96,11 @@ async function main() {
         process.exit(1);
     }
 
-    // 1. Get installation token (using App ten9876 install)
+    // 1. Get installation token (using App aethersdr org install)
     const env = loadEnv();
     const jwt = makeJWT(env);
     const installs = await apiCall('GET', '/app/installations', null, jwt, true);
-    const inst = installs.find(i => i.account.login === 'ten9876') || installs[0];
+    const inst = installs.find(i => i.account.login === 'aethersdr') || installs[0];
     const perms = {permissions: {contents: 'write', pull_requests: 'write', metadata: 'read'}};
     const tokResp = await apiCall('POST', `/app/installations/${inst.id}/access_tokens`, perms, jwt, true);
     const token = tokResp.token;

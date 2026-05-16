@@ -42,7 +42,7 @@ LOGDIR="/Users/aetherclaude/logs"
 PROMPTDIR="/Users/aetherclaude/prompts"
 STATE_FILE="/Users/aetherclaude/state/last-poll.json"
 LOCKFILE="/tmp/aetherclaude-${LOCK_KEY}.lock"
-REPO="ten9876/AetherSDR"
+REPO="aethersdr/AetherSDR"
 MAX_ISSUES_PER_RUN=4
 MAX_PRS_PER_RUN=2
 MAX_DISCUSSIONS_PER_RUN=10
@@ -924,7 +924,7 @@ skill_respond_discussions() {
 import urllib.request, json, os, sys
 token = sys.stdin.readline().strip()
 opener = urllib.request.build_opener()
-body = json.dumps({'query': 'query { repository(owner: \"ten9876\", name: \"AetherSDR\") { discussions(first: 10, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { id number title author { login } category { name } comments { totalCount } locked createdAt } } } }'}).encode()
+body = json.dumps({'query': 'query { repository(owner: \"aethersdr\", name: \"AetherSDR\") { discussions(first: 10, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { id number title author { login } category { name } comments { totalCount } locked createdAt } } } }'}).encode()
 req = urllib.request.Request('https://api.github.com/graphql', data=body, headers={'Authorization': f'bearer {token}', 'Content-Type': 'application/json', 'User-Agent': 'AetherClaude'}, method='POST')
 print(json.dumps(json.loads(opener.open(req, timeout=10).read()).get('data',{}).get('repository',{}).get('discussions',{}).get('nodes',[])))
 " 2>/dev/null)
@@ -1087,9 +1087,9 @@ skill_process_issues() {
         # GUARD 1: Check if ANY PR exists for this issue branch — if so, skip entirely
         local branch="aetherclaude/issue-${number}"
         local any_pr
-        any_pr=$(github_api GET "/repos/${REPO}/pulls?head=ten9876:${branch}&state=all" "$token" | jq '. | length' 2>/dev/null || echo 0)
+        any_pr=$(github_api GET "/repos/${REPO}/pulls?head=aethersdr:${branch}&state=all" "$token" | jq '. | length' 2>/dev/null || echo 0)
         local any_pr_v2
-        any_pr_v2=$(github_api GET "/repos/${REPO}/pulls?head=ten9876:${branch}-v2&state=all" "$token" | jq '. | length' 2>/dev/null || echo 0)
+        any_pr_v2=$(github_api GET "/repos/${REPO}/pulls?head=aethersdr:${branch}-v2&state=all" "$token" | jq '. | length' 2>/dev/null || echo 0)
         local total_prs=$((any_pr + any_pr_v2))
         if [ "$total_prs" -gt 0 ]; then
             log "Issue #${number} — ${total_prs} PR(s) already exist, skipping"
@@ -1505,7 +1505,7 @@ except Exception:
             # Check for rejected PR (retry logic)
             local retry_context=""
             local closed_prs
-            closed_prs=$(github_api GET "/repos/${REPO}/pulls?head=ten9876:${branch}&state=closed" "$token")
+            closed_prs=$(github_api GET "/repos/${REPO}/pulls?head=aethersdr:${branch}&state=closed" "$token")
             local rejected_count
             rejected_count=$(echo "$closed_prs" | jq '[.[] | select(.merged_at == null)] | length')
             if [ "$rejected_count" -gt 0 ]; then

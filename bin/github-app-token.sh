@@ -44,10 +44,10 @@ proxy = os.environ.get(\"HTTPS_PROXY\", \"\"); opener = urllib.request.build_ope
 req = urllib.request.Request(\"https://api.github.com/app/installations\",
     headers={\"Authorization\": f\"Bearer {jwt}\", \"Accept\": \"application/vnd.github+json\", \"User-Agent\": \"AetherClaude\"})
 installs = json.loads(opener.open(req).read())
-# Pick the ten9876 installation (upstream repo) — not AetherClaude (fork)
+# Pick the aethersdr installation (upstream repo) — not AetherClaude (fork)
 install_id = None
 for inst in installs:
-    if inst['account']['login'] == 'ten9876':
+    if inst['account']['login'] == 'aethersdr':
         install_id = inst['id']
         break
 if not install_id:

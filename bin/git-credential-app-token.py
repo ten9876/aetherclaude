@@ -54,10 +54,10 @@ def main():
         headers={'Authorization': 'Bearer ' + jwt_token, 'Accept': 'application/vnd.github+json', 'User-Agent': 'AetherClaude'})
     installs = json.loads(opener.open(req).read())
 
-    # Find installation for ten9876 (upstream repo)
+    # Find installation for aethersdr (upstream repo)
     install_id = None
     for inst in installs:
-        if inst['account']['login'] == 'ten9876':
+        if inst['account']['login'] == 'aethersdr':
             install_id = inst['id']
             break
 

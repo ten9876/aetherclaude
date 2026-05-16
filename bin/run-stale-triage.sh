@@ -16,7 +16,7 @@ source /Users/aetherclaude/.env
 WORKSPACE="/Users/aetherclaude/workspace/AetherSDR"
 LOGDIR="/Users/aetherclaude/logs"
 STATE_FILE="/Users/aetherclaude/state/last-poll.json"
-REPO="ten9876/AetherSDR"
+REPO="aethersdr/AetherSDR"
 MAX_STALE_PER_RUN=20
 
 mkdir -p "$LOGDIR"

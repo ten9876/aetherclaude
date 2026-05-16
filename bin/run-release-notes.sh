@@ -15,7 +15,7 @@ source /Users/aetherclaude/.env
 
 WORKSPACE="/Users/aetherclaude/workspace/AetherSDR"
 LOGDIR="/Users/aetherclaude/logs"
-REPO="ten9876/AetherSDR"
+REPO="aethersdr/AetherSDR"
 
 mkdir -p "$LOGDIR"
 
