@@ -5128,11 +5128,14 @@ function renderSwimlane(){
       // Thresholds match the hook's MIN_RISK_SCORE (0.005) and the
       // dashboard's "yellow vs red" mental model.
       const fill = rs>=0.5 ? '#ff4444' : rs>=0.05 ? '#ffaa00' : '#88ddaa';
-      // Slight rim around the overlay so it pops against the TOOL pink
-      // even when colors are close (amber on pink, etc.). pointer-
-      // events:none so clicks pass through to the underlying Edit dot,
-      // whose handler shows the blast-radius detail in the right pane.
-      blastOverlays+=`<circle class="blast-dot" cx="${xCenter}" cy="${yCenter}" r="3" style="fill:${fill};stroke:#0a0a1a;stroke-width:1;pointer-events:none"><title>Blast risk ${rs} (${e.blast_radius.high_risk_count} high-risk symbols)</title></circle>`;
+      // r=4 (vs r=5 for the TOOL dot underneath) so the pink rim is
+      // visible around the overlay. Includes .event-dot class + data-i
+      // so the existing click handler binds and selecting the overlay
+      // reliably selects the right Edit event (vs. pointer-events:none,
+      // which made the click pass through to whichever dot happened to
+      // be on top in a busy lane). Black rim ensures it pops against
+      // the TOOL pink even when colors are close.
+      blastOverlays+=`<circle class="event-dot blast-dot color-GUARD" data-i="${i}" cx="${xCenter}" cy="${yCenter}" r="4" style="fill:${fill};stroke:#0a0a1a;stroke-width:1.2"><title>Blast risk ${rs} (${e.blast_radius.high_risk_count} high-risk symbols) — click for details</title></circle>`;
     }
   }
   // Append blast-radius overlays last so they stack ON TOP of the
