@@ -4824,6 +4824,33 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
   fill:#ff2222 !important;
   animation:alert-pulse 1.1s ease-in-out infinite;
 }
+/* Live mode indicator (replaces the player bar when polling) */
+.live-bar{display:none;align-items:center;gap:12px;padding:8px 20px;background:#102018;border-bottom:1px solid #205040;font-size:11px;color:#c8d8e8}
+.live-bar.on{display:flex}
+.live-bar .dot{width:8px;height:8px;border-radius:50%;background:#ff2222;animation:live-pulse 1.1s ease-in-out infinite;display:inline-block;vertical-align:middle}
+@keyframes live-pulse{0%,100%{opacity:1}50%{opacity:0.35}}
+.live-bar .label{color:#ff5555;font-weight:bold;letter-spacing:0.5px}
+.live-bar .meta{color:#607080}
+.live-bar button{background:#101025;color:#c8d8e8;border:1px solid #304050;padding:4px 12px;font-family:inherit;font-size:11px;border-radius:3px;cursor:pointer}
+.live-bar button:hover{border-color:#00bceb;color:#00bceb}
+.live-bar .switch-live{margin-left:auto;background:#102030;border-color:#205070;color:#88ccff}
+.live-bar .switch-live:hover{border-color:#88ccff;color:#bbe0ff}
+/* Live nudge pill on replay mode (when trace is still active) */
+.live-nudge{display:none;align-items:center;gap:10px;padding:6px 14px;margin:6px 20px;background:#102018;border:1px solid #205040;border-radius:14px;font-size:11px;color:#88ffaa;width:fit-content}
+.live-nudge.on{display:inline-flex}
+.live-nudge button{background:#205040;color:#bbffcc;border:1px solid #4a8060;padding:3px 10px;font-family:inherit;font-size:10px;border-radius:10px;cursor:pointer;letter-spacing:0.3px}
+.live-nudge button:hover{background:#306050;border-color:#88ffaa}
+/* New-trace banner */
+.new-trace-banner{display:none;align-items:center;gap:10px;padding:8px 14px;margin:6px 20px;background:#0c1a2e;border:1px solid #2050a0;border-radius:6px;font-size:11px;color:#bbe0ff}
+.new-trace-banner.on{display:flex}
+.new-trace-banner .dot{width:7px;height:7px;border-radius:50%;background:#3a90ff;animation:live-pulse 1.6s ease-in-out infinite}
+.new-trace-banner .info{flex:1}
+.new-trace-banner .info .id{color:#88ccff;font-family:'SF Mono',monospace}
+.new-trace-banner .info .sum{color:#7090b0;margin-left:6px}
+.new-trace-banner button{background:#102438;color:#bbe0ff;border:1px solid #2050a0;padding:3px 12px;font-family:inherit;font-size:10px;border-radius:3px;cursor:pointer}
+.new-trace-banner button:hover{background:#1a3a60;border-color:#88ccff}
+.new-trace-banner .dismiss{background:transparent;border-color:transparent;color:#506070}
+.new-trace-banner .dismiss:hover{background:transparent;color:#aabac8;border-color:transparent}
 </style></head><body>
 <header>
   <h1>Agent Walk</h1>
@@ -4863,6 +4890,22 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
   <button class="speed-btn" data-speed="64">64×</button>
   <div class="progress"><div class="bar" id="progress-bar"></div></div>
   <span class="ts-label" id="progress-ts">—</span>
+</div>
+<div class="live-bar" id="live-bar">
+  <span class="dot"></span><span class="label">LIVE</span>
+  <span class="meta">polling every 2s · <span id="live-events">0 events</span></span>
+  <button id="btn-stop-live" title="Stop polling and switch to replay">⏹ Stop &amp; switch to replay</button>
+</div>
+<div class="live-nudge" id="live-nudge">
+  This trace is still in-flight
+  <button id="btn-switch-live">▶ Switch to Live</button>
+</div>
+<div class="new-trace-banner" id="new-trace-banner">
+  <span class="dot"></span>
+  <span class="info">New trace started: <span class="id" id="ntb-id"></span><span class="sum" id="ntb-sum"></span></span>
+  <button id="ntb-switch">Switch</button>
+  <button id="ntb-newtab">New Tab</button>
+  <button class="dismiss" id="ntb-dismiss">Dismiss</button>
 </div>
 <div id="swim"></div>
 <div id="bottom-pane">
@@ -5293,6 +5336,179 @@ document.querySelectorAll('.speed-btn').forEach(b=>{
   });
 });
 
+// ── Live mode ───────────────────────────────────────────────────────
+// Polling-based live tail of a trace. Replaces the player bar with a
+// "🔴 LIVE" indicator. Auto-detects active traces and offers a nudge
+// pill on replay mode. Banner-prompts on parallel traces (Switch /
+// New Tab / Dismiss) rather than yanking the user's current view.
+let _liveMode=false,_liveTimer=null,_liveCursor='',_liveTraceId='';
+const _dismissedTraces=new Set();
+
+function startLive(traceId){
+  if(!traceId)return;
+  _liveMode=true;_liveTraceId=traceId;
+  // Cursor = latest event already loaded (or empty for first poll).
+  _liveCursor=_events.length?_events[_events.length-1].time:'';
+  document.getElementById('player').style.display='none';
+  document.getElementById('live-nudge').classList.remove('on');
+  document.getElementById('live-bar').classList.add('on');
+  updateLiveCounter();
+  if(_liveTimer)clearInterval(_liveTimer);
+  pollLive();  // immediate first poll
+  _liveTimer=setInterval(pollLive,2000);
+}
+
+function stopLive(opts){
+  opts=opts||{};
+  _liveMode=false;
+  if(_liveTimer){clearInterval(_liveTimer);_liveTimer=null}
+  document.getElementById('live-bar').classList.remove('on');
+  // If trace finished naturally, re-show the player so user can scrub
+  // the captured timeline. If user clicked Stop, do the same.
+  if(_events.length>0)document.getElementById('player').style.display='flex';
+}
+
+function pollLive(){
+  if(!_liveMode||!_liveTraceId)return;
+  const url='/api/agent-walk-live?trace='+encodeURIComponent(_liveTraceId)+
+    '&since='+encodeURIComponent(_liveCursor||'');
+  fetch(url).then(r=>r.json()).then(d=>{
+    if(!_liveMode)return;  // user stopped while in flight
+    if(d.error){console.warn('live poll error:',d.error);return}
+    if(d.events&&d.events.length){
+      _events.push(...d.events);
+      _liveCursor=d.cursor||_events[_events.length-1].time;
+      renderSwimlane();
+      logStreamAppendLive(d.events);
+      updateLiveCounter();
+    }else if(d.cursor){_liveCursor=d.cursor}
+    if(d.related&&d.related.length){
+      for(const t of d.related){
+        if(t.trace_id===_liveTraceId)continue;
+        if(_dismissedTraces.has(t.trace_id))continue;
+        showNewTraceBanner(t);
+        break;  // one banner at a time; next poll catches the rest
+      }
+    }
+    if(!d.active){
+      // Trace completed — banner the user and stop polling. The
+      // already-rendered swimlane stays as a static replay view.
+      stopLive({completed:true});
+      const meta=document.getElementById('meta');
+      if(meta&&!meta.querySelector('.completed-tag')){
+        const s=document.createElement('span');
+        s.className='completed-tag';s.style.cssText='margin-left:12px;color:#88ccff';
+        s.textContent='✓ Trace completed';
+        meta.appendChild(s);
+      }
+    }
+  }).catch(e=>{console.warn('live poll fetch failed:',e)});
+}
+
+function updateLiveCounter(){
+  const el=document.getElementById('live-events');
+  if(el)el.textContent=_events.length+' events';
+}
+
+// Append newly-arrived live events to the log stream pane via the
+// existing logStreamAppend(idx) helper. The placeholder ("Press ▶
+// Play …") is cleared on first call so the live rows appear cleanly.
+function logStreamAppendLive(newEvents){
+  const body=document.getElementById('log-stream-body');
+  if(body){
+    const placeholder=body.querySelector('.empty-state');
+    if(placeholder)placeholder.remove();
+  }
+  const startIdx=_events.length-newEvents.length;
+  for(let i=0;i<newEvents.length;i++){
+    logStreamAppend(startIdx+i);
+  }
+}
+
+function showNewTraceBanner(t){
+  const banner=document.getElementById('new-trace-banner');
+  document.getElementById('ntb-id').textContent=t.trace_id.substring(0,8)+'…';
+  document.getElementById('ntb-sum').textContent=' ('+t.event_count+' events) '+(t.summary||'').substring(0,60);
+  banner.dataset.traceId=t.trace_id;
+  banner.classList.add('on');
+}
+
+function hideNewTraceBanner(){
+  document.getElementById('new-trace-banner').classList.remove('on');
+}
+
+// Check if a just-loaded trace is still in-flight; if so, show the
+// nudge pill offering to switch to live mode.
+function maybeOfferLive(){
+  if(_events.length===0)return;
+  const last=_events[_events.length-1];
+  const lastMs=new Date(last.time).getTime();
+  const ageSec=(Date.now()-lastMs)/1000;
+  const hasCleanup=_events.some(e=>e.stage===10);
+  if(ageSec<30&&!hasCleanup){
+    document.getElementById('live-nudge').classList.add('on');
+  }else{
+    document.getElementById('live-nudge').classList.remove('on');
+  }
+}
+
+// Wrap loadTrace so we can (a) tear down any active poll before
+// switching traces, (b) offer live mode if the loaded trace is still
+// active, (c) auto-start live mode when URL carries ?live=1. The
+// original loadTrace doesn't return a promise, so we schedule the
+// post-load check on a short setTimeout — its internal fetch
+// completes in ~50-200ms; 300ms gives generous headroom without
+// being user-perceptible.
+const _origLoadTrace=loadTrace;
+loadTrace=function(traceId){
+  if(_liveMode)stopLive();
+  hideNewTraceBanner();
+  document.getElementById('live-nudge').classList.remove('on');
+  _origLoadTrace.call(this,traceId);
+  if(!traceId)return;
+  setTimeout(()=>{
+    const urlLive=new URLSearchParams(location.search).get('live')==='1';
+    if(urlLive&&_events.length>0){startLive(traceId)}
+    else{maybeOfferLive()}
+  },300);
+};
+
+// Wire live-mode buttons
+document.getElementById('btn-stop-live').addEventListener('click',()=>stopLive());
+document.getElementById('btn-switch-live').addEventListener('click',()=>{
+  const sel=document.getElementById('trace-select').value||
+    new URLSearchParams(location.search).get('trace');
+  if(sel)startLive(sel);
+});
+document.getElementById('ntb-switch').addEventListener('click',()=>{
+  const tid=document.getElementById('new-trace-banner').dataset.traceId;
+  if(!tid)return;
+  hideNewTraceBanner();
+  const u=new URL(location.href);u.searchParams.set('trace',tid);u.searchParams.set('live','1');
+  history.replaceState({},'',u);
+  // Reset and start live on the new trace
+  _events=[];_selectedIdx=-1;_liveCursor='';
+  document.getElementById('swim').innerHTML='';
+  logStreamClear();
+  document.getElementById('trace-select').value=tid;
+  // Fetch backlog via the normal endpoint, then start live tail
+  fetch('/api/agent-walk?trace='+encodeURIComponent(tid)).then(r=>r.json()).then(d=>{
+    _events=d.events||[];renderSwimlane();
+    startLive(tid);
+  });
+});
+document.getElementById('ntb-newtab').addEventListener('click',()=>{
+  const tid=document.getElementById('new-trace-banner').dataset.traceId;
+  if(!tid)return;
+  window.open('/agent-walk?trace='+encodeURIComponent(tid)+'&live=1','_blank');
+  hideNewTraceBanner();
+});
+document.getElementById('ntb-dismiss').addEventListener('click',()=>{
+  const tid=document.getElementById('new-trace-banner').dataset.traceId;
+  if(tid)_dismissedTraces.add(tid);
+  hideNewTraceBanner();
+});
+
 // Wire pickers
 document.getElementById('trace-select').addEventListener('change',ev=>{loadTrace(ev.target.value)});
 document.getElementById('trace-input').addEventListener('change',ev=>{loadTrace(ev.target.value.trim())});
@@ -5302,6 +5518,92 @@ window.addEventListener('resize',()=>{if(_events.length>0)renderSwimlane()});
 loadRecentTraces();
 </script>
 </body></html>"""
+
+def _classify_agent_walk_stage(typ, src, args, binary):
+    """Return 1..10 for the 10 walk stages; 0 if uncategorized.
+
+    Pure function over (type, source, args, binary). Used by both the
+    /api/agent-walk endpoint (replay — fetch all events for one trace)
+    and /api/agent-walk-live (live polling — only events since cursor).
+
+    Order matters — first match wins. The classifier is keyed off
+    observed real-trace shapes (see project_agent_walk_demo memory
+    for sample rows). Stage 0 events are filtered out at the caller."""
+    args = (args or '').lower()
+    src = (src or '').lower()
+    binary = (binary or '').lower()
+    # 1. Webhook arrival
+    if typ == 'WEBHOOK':
+        return 1
+    # 8. Prompt / Response — actual content of the LLM exchange
+    # (claude-transcript PROMPT/RESPONSE). DC's audit rows that
+    # describe the prompt/response (llm_prompt, llm_response,
+    # userpromptsubmit) stay at Stage 6 with the rest of the
+    # DefenseClaw observability stream — caught by the DC
+    # catch-all further down.
+    if src == 'claude-transcript' and typ in ('PROMPT', 'RESPONSE'):
+        return 8
+    # 5. Claude Code — session lifecycle (DC sessionstart) and
+    # every action Claude takes after a prompt is in flight:
+    # tool calls (Bash, Read, Edit, Write, Grep, Glob, WebFetch,
+    # ToolSearch, TodoWrite, Task, Agent, Skill, AskUserQuestion,
+    # TaskStop) and claude:MCP read calls. Prompt + response
+    # content lives at stage 8 above; DC verdicts at stage 6.
+    if src == 'defenseclaw' and (
+            'sessionstart' in args or 'session_start' in args):
+        return 5
+    if src == 'claude-code' and typ == 'TOOL' and binary.startswith('claude:'):
+        # claude:MCP write ops are a publish moment (stage 9);
+        # everything else (including claude:MCP reads) is a
+        # Claude action.
+        if binary == 'claude:mcp' and any(t in args for t in (
+                'comment_on_', 'create_pr', 'close_issue',
+                'create_pull_request', 'create_pr_review',
+                'comment_on_discussion', 'create_release',
+                'add_labels', 'remove_label')):
+            return 9
+        return 5
+    # 10. Cleanup / audit fan-out — DC lifecycle stop events
+    # only (the daemon emits 'gateway completed' for every
+    # verdict, which is NOT cleanup; restrict to explicit
+    # stop/end markers).
+    if src == 'defenseclaw' and any(t in args for t in (
+            'sessionend', 'session_end', 'sidecar stop',
+            'gateway stop', 'sink_health stop')):
+        return 10
+    # 9. GitHub publish via MCP — write ops only
+    if typ == 'MCP' and any(t in args for t in (
+            'comment_on_', 'create_pr', 'close_issue',
+            'create_pull_request', 'create_pr_review',
+            'comment_on_discussion', 'create_release',
+            ' post ', ' put ', ' patch ', ' delete ',
+            'post /repos', 'put /repos', 'patch /repos',
+            'delete /repos')):
+        return 9
+    # 7. MCP — server-side MCP activity
+    if typ == 'MCP':
+        return 7
+    # 4. Scanning — skill-scanner + mcp-scanner + codeguard family
+    if src in ('skill-scan', 'mcp-scan', 'vt-scan', 'prompt-scan', 'codeguard'):
+        return 4
+    if typ in ('SCAN', 'GUARD') and binary in ('skill-scanner', 'mcp-scanner', 'vt-scan', 'prompt-scanner', 'codeguard'):
+        return 4
+    # 6. Tool calls — DC verdict / tool-hook events for non-MCP tools
+    if src == 'defenseclaw' and (
+            'pretooluse' in args or 'posttooluse' in args
+            or 'tool' in args
+            or 'action=' in args or 'verdict' in args
+            or 'gateway completed' in args):
+        return 6
+    # 2. Orchestrator — run boundaries + state-machine work
+    if src == 'skill-dispatch' and (
+            'agent-run' in binary or 'orch-' in binary):
+        return 2
+    # 3. Skill selection — every other skill-dispatch event
+    if src == 'skill-dispatch':
+        return 3
+    return 0
+
 
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -6353,6 +6655,137 @@ a{{color:#0a6aba}}
             except Exception as ex:
                 self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
                 self._send_json({'traces': [], 'error': str(ex)})
+        elif self.path.startswith('/api/agent-walk-live'):
+            # Live-tail endpoint for Agent Walk. Client polls every ~2s
+            # with the timestamp of the last event it has seen. Server
+            # returns:
+            #   - new events for the trace since `since` (classified)
+            #   - cursor (timestamp of the latest event — pass back next poll)
+            #   - active (false once stage-10 cleanup event seen OR > 60s silent)
+            #   - related (OTHER traces that started in the same window —
+            #     drives the "new trace started" banner in the UI)
+            # Cheap: indexed query, ~ms per request. See project memory
+            # project_agent_walk_demo for the demo flow it enables.
+            from urllib.parse import urlparse, parse_qs
+            params = parse_qs(urlparse(self.path).query)
+            trace_id = params.get('trace', [''])[0].strip()
+            since = params.get('since', [''])[0].strip()
+            if not trace_id:
+                self.send_response(400); self.send_header('Content-Type', 'application/json'); self.end_headers()
+                self._send_json({'error': 'trace param required'})
+                return
+            try:
+                conn = sqlite3.connect(EVENTS_DB)
+                # New events for this trace since cursor (exclusive).
+                # When `since` is empty, returns all events for the trace
+                # (initial load fallback — but normally /api/agent-walk
+                # has been called first for the backlog).
+                if since:
+                    rows = conn.execute(
+                        "SELECT timestamp, type, uid, binary_name, args, policy, "
+                        "       is_agent, source, trace_id "
+                        "FROM events WHERE trace_id = ? AND timestamp > ? "
+                        "ORDER BY timestamp ASC, id ASC",
+                        (trace_id, since)
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT timestamp, type, uid, binary_name, args, policy, "
+                        "       is_agent, source, trace_id "
+                        "FROM events WHERE trace_id = ? "
+                        "ORDER BY timestamp ASC, id ASC",
+                        (trace_id,)
+                    ).fetchall()
+                all_events = []
+                for r in rows:
+                    ts, typ, uid, binary, args, policy, is_agent, source, tid = r
+                    all_events.append({
+                        'time': ts, 'type': typ, 'uid': uid, 'binary': binary,
+                        'args': args, 'policy': policy,
+                        'is_agent': bool(is_agent), 'source': source,
+                        'trace_id': tid,
+                        'stage': _classify_agent_walk_stage(typ, source, args, binary),
+                    })
+                events = [e for e in all_events if e['stage'] > 0]
+                # Cursor: latest timestamp we've now sent. Client passes
+                # this back as `since` next poll.
+                cursor = events[-1]['time'] if events else since
+                # Activity check: trace is still in-flight if its latest
+                # event is < 60s old AND no stage-10 cleanup event yet.
+                # Use the WHOLE trace's last event, not just this batch —
+                # quick query against the index.
+                trace_last_row = conn.execute(
+                    "SELECT MAX(timestamp) FROM events WHERE trace_id = ?",
+                    (trace_id,)).fetchone()
+                trace_last_ts = (trace_last_row[0] if trace_last_row else None) or ''
+                has_cleanup = False
+                for e in all_events:
+                    if e['stage'] == 10:
+                        has_cleanup = True
+                        break
+                active = True
+                if has_cleanup:
+                    active = False
+                elif trace_last_ts:
+                    try:
+                        last_dt = datetime.strptime(trace_last_ts[:19],
+                            '%Y-%m-%dT%H:%M:%S').replace(tzinfo=timezone.utc)
+                        if (datetime.now(timezone.utc) - last_dt).total_seconds() > 60:
+                            active = False
+                    except (ValueError, TypeError):
+                        pass
+                # Related traces: other traces that have a WEBHOOK or
+                # agent-run START event with timestamp > since. Cheap
+                # (indexed on timestamp) and limited to 10 for safety.
+                related = []
+                if since:
+                    rel_rows = conn.execute(
+                        "SELECT trace_id, MIN(timestamp) AS first_ts, COUNT(*) AS c "
+                        "FROM events "
+                        "WHERE trace_id IS NOT NULL "
+                        "  AND trace_id != ? "
+                        "  AND LENGTH(trace_id) > 8 "
+                        "  AND timestamp > ? "
+                        "  AND (type = 'WEBHOOK' "
+                        "       OR (source = 'skill-dispatch' "
+                        "           AND binary_name = 'skill:agent-run' "
+                        "           AND args = 'starting')) "
+                        "GROUP BY trace_id "
+                        "ORDER BY first_ts ASC LIMIT 10",
+                        (trace_id, since)
+                    ).fetchall()
+                    for (tid, first_ts, _c) in rel_rows:
+                        # Cheap event-count + 1-line summary for the banner.
+                        summary_row = conn.execute(
+                            "SELECT COUNT(*), "
+                            "       (SELECT args FROM events "
+                            "         WHERE trace_id=? AND type='WEBHOOK' "
+                            "         ORDER BY id ASC LIMIT 1) "
+                            "FROM events WHERE trace_id=?",
+                            (tid, tid)).fetchone()
+                        ec = summary_row[0] if summary_row else 0
+                        summary = (summary_row[1] if summary_row else '') or ''
+                        related.append({
+                            'trace_id': tid,
+                            'first_ts': first_ts,
+                            'event_count': ec,
+                            'summary': summary[:120],
+                        })
+                conn.close()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self._send_json({
+                    'trace_id': trace_id,
+                    'events': events,
+                    'cursor': cursor,
+                    'active': active,
+                    'related': related,
+                })
+            except Exception as ex:
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+                self._send_json({'events': [], 'related': [], 'active': False, 'error': str(ex)})
         elif self.path.startswith('/api/agent-walk'):
             # All events for one trace, ordered by timestamp. Plus a
             # classification of which of the 9 walk stages each event
@@ -6366,121 +6799,7 @@ a{{color:#0a6aba}}
                 self._send_json({'error': 'trace param required'})
                 return
 
-            def classify_stage(typ, src, args, binary):
-                """Return 1..10 for the 10 walk stages; 0 if uncategorized.
-                Order matters — first match wins. The classifier is keyed
-                off observed real-trace shapes (see project_agent_walk_demo
-                memory for sample rows). Stage 0 events are filtered out
-                of the response below."""
-                args = (args or '').lower()
-                src = (src or '').lower()
-                binary = (binary or '').lower()
-                # 1. Webhook arrival
-                if typ == 'WEBHOOK':
-                    return 1
-                # 8. Prompt / Response — actual content of the LLM exchange
-                # (claude-transcript PROMPT/RESPONSE). DC's audit rows that
-                # describe the prompt/response (llm_prompt, llm_response,
-                # userpromptsubmit) stay at Stage 6 with the rest of the
-                # DefenseClaw observability stream — caught by the DC
-                # catch-all further down.
-                if src == 'claude-transcript' and typ in ('PROMPT', 'RESPONSE'):
-                    return 8
-                # 5. Claude Code — session lifecycle (DC sessionstart) and
-                # every action Claude takes after a prompt is in flight:
-                # tool calls (Bash, Read, Edit, Write, Grep, Glob, WebFetch,
-                # ToolSearch, TodoWrite, Task, Agent, Skill, AskUserQuestion,
-                # TaskStop) and claude:MCP read calls. Prompt + response
-                # content lives at stage 8 above; DC verdicts at stage 6.
-                if src == 'defenseclaw' and (
-                        'sessionstart' in args or 'session_start' in args):
-                    return 5
-                if src == 'claude-code' and typ == 'TOOL' and binary.startswith('claude:'):
-                    # claude:MCP write ops are a publish moment (stage 9);
-                    # everything else (including claude:MCP reads) is a
-                    # Claude action.
-                    if binary == 'claude:mcp' and any(t in args for t in (
-                            'comment_on_', 'create_pr', 'close_issue',
-                            'create_pull_request', 'create_pr_review',
-                            'comment_on_discussion', 'create_release',
-                            'add_labels', 'remove_label')):
-                        return 9
-                    return 5
-                # 10. Cleanup / audit fan-out — DC lifecycle stop events
-                # only (the daemon emits 'gateway completed' for every
-                # verdict, which is NOT cleanup; restrict to explicit
-                # stop/end markers).
-                if src == 'defenseclaw' and any(t in args for t in (
-                        'sessionend', 'session_end', 'sidecar stop',
-                        'gateway stop', 'sink_health stop')):
-                    return 10
-                # 9. GitHub publish via MCP — write ops only
-                if typ == 'MCP' and any(t in args for t in (
-                        'comment_on_', 'create_pr', 'close_issue',
-                        'create_pull_request', 'create_pr_review',
-                        'comment_on_discussion', 'create_release',
-                        ' post ', ' put ', ' patch ', ' delete ',
-                        'post /repos', 'put /repos', 'patch /repos',
-                        'delete /repos')):
-                    return 9
-                # 7. MCP — server-side MCP activity (the MCP server itself
-                # writing to its audit log when handling a request).
-                # Distinct from claude:MCP which is the Claude-side
-                # invocation (handled in stage 5 above for reads, stage
-                # 9 for writes).
-                if typ == 'MCP':
-                    return 7
-                # 4. Scanning — skill-scanner + mcp-scanner specifically.
-                # These are Cisco AI Defense's pre-flight scanners that
-                # examine skills and MCP catalogs for malicious patterns
-                # (prompt injection, tool poisoning) before any agent
-                # activity. Other scanners (codeguard, prompt-scanner)
-                # are conceptually different and go elsewhere — codeguard
-                # to stage 6 (it's tool-call code validation) and
-                # prompt-scanner to stage 5 (it scans the prompt about
-                # to be sent to the model). Must come BEFORE stage 6
-                # because DC's 'gateway completed' catch-all there
-                # would otherwise swallow scan_finding rows.
-                # Codeguard is structurally another Cisco AI Defense scanner
-                # — it static-analyzes changed source files with the same
-                # CG-* rule set (CG-CRED, CG-EXEC, CG-NET, …). Same family
-                # as skill-scanner / mcp-scanner / prompt-scanner / vt-scan,
-                # so route to Stage 4 alongside them. Its own type='GUARD'
-                # is unique to codeguard, so the type check stays safe.
-                if src in ('skill-scan', 'mcp-scan', 'vt-scan', 'prompt-scan', 'codeguard'):
-                    return 4
-                if typ in ('SCAN', 'GUARD') and binary in ('skill-scanner', 'mcp-scanner', 'vt-scan', 'prompt-scanner', 'codeguard'):
-                    return 4
-                # DC audit rows describing scanner activity (skill/mcp/
-                # prompt/codeguard/plugin/scan_finding) stay in Stage 6
-                # with the rest of the DefenseClaw observability stream —
-                # the canonical scanner-output rows already populate
-                # Stage 4 via the source/binary checks above.
-                # 6. Tool calls — DC verdict / tool-hook events for
-                # non-MCP tools (Bash, Read, Edit, Grep, …). The DC
-                # daemon emits 'gateway completed — action=…' per
-                # PreToolUse/PostToolUse hook.
-                if src == 'defenseclaw' and (
-                        'pretooluse' in args or 'posttooluse' in args
-                        or 'tool' in args
-                        or 'action=' in args or 'verdict' in args
-                        or 'gateway completed' in args):
-                    return 6
-                # 2. Orchestrator — run boundaries (agent-run start/stop)
-                # plus the orchestrator's own state-machine and substep
-                # work (orch-state, orch-transition, orch-skip, orch-push,
-                # orch-pr, orch-validate, orch-claude-start, …). All emit
-                # as source='skill-dispatch' with binary='skill:orch-*' or
-                # 'skill:agent-run'.
-                if src == 'skill-dispatch' and (
-                        'agent-run' in binary or 'orch-' in binary):
-                    return 2
-                # 3. Skill selection — every other skill-dispatch event
-                if src == 'skill-dispatch':
-                    return 3
-                # Uncategorized — eslogger process events, tinyproxy
-                # connections, etc. Filtered out of the swimlane below.
-                return 0
+            classify_stage = _classify_agent_walk_stage
 
             try:
                 conn = sqlite3.connect(EVENTS_DB)
