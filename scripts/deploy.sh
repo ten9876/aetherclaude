@@ -91,9 +91,22 @@ for f in "$REPO_DIR"/config/launchd/*.plist; do
 done
 
 if [ "$RESTART" = true ]; then
-    echo "==> Kicking dashboard + agent to pick up script changes"
+    echo "==> Kicking dashboard to pick up script changes"
     sudo launchctl kickstart -k system/com.aetherclaude.dashboard 2>/dev/null || true
-    sudo launchctl kickstart -k system/com.aetherclaude.agent 2>/dev/null || true
+    # NOTE: Do NOT kickstart com.aetherclaude.agent here. That plist
+    # runs the same /Users/aetherclaude/bin/run-agent.sh that the
+    # dashboard's /webhook handler also spawns directly via
+    # subprocess.Popen for every incoming GitHub event. `launchctl
+    # kickstart -k` on macOS SIGTERMs every process matching the
+    # plist's ProgramArguments — including the dashboard-spawned
+    # in-flight orchestrators that are mid-PR-creation. Trace
+    # 5a19c310 (#2486) died exactly this way: commit-signed.js had
+    # just pushed the branch, the orch was 2 lines away from
+    # creating the PR, deploy ran, SIGTERM landed, branch left
+    # orphaned without a PR. The agent plist itself is a no-op
+    # service (no calendar/interval trigger, exits on missing argv);
+    # picking up script changes happens automatically on next webhook
+    # because each invocation execs the script fresh from the symlink.
 fi
 
 echo "==> Done"
