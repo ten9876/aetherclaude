@@ -5093,7 +5093,10 @@ function renderSwimlane(){
     svg+=`<line class="time-axis" x1="${tx}" y1="${axisY-3}" x2="${tx}" y2="${axisY+3}"/>`;
     svg+=`<text class="time-tick" x="${tx}" y="${axisY+16}" text-anchor="middle">${fmtTime(new Date(tt).toISOString())}</text>`;
   }
-  // Event dots — uncategorized (stage 0) go in a thin row above the swimlane
+  // Event dots — uncategorized (stage 0) go in a thin row above the swimlane.
+  // Blast-radius overlays are collected in a separate string and appended
+  // after the main loop so SVG z-order paints them on top of the Edit dots.
+  let blastOverlays='';
   for(let i=0;i<_events.length;i++){
     const e=_events[i];
     const stage=e.stage||0;
@@ -5110,26 +5113,31 @@ function renderSwimlane(){
     const haystack=((e.args||'')+' '+(e.policy||'')).toLowerCase();
     const isAlert=haystack.includes('failed')||haystack.includes('blocked');
     // Blast-radius enrichment: TOOL events for Edit/Write that the
-    // codegraph hook flagged carry a `blast_radius` field. Override
-    // fill so green/amber/red is the at-a-glance risk signal —
-    // clicking the dot opens the high-risk symbol list in the
-    // detail pane.
-    let extraStyle='';
-    let radius=5;
+    // codegraph hook flagged carry a `blast_radius` field. Render the
+    // Edit dot in its normal TOOL pink so the tool-call signal stays
+    // visible, then collect a small risk-colored overlay dot (added
+    // to the SVG AFTER all main dots so z-order paints it on top).
+    const radius=5;
+    const dotCls=isAlert?`event-dot alert-pulse ${colorCls}`:`event-dot ${colorCls}`;
+    const titleExtra = e.blast_radius
+      ? ` · blast risk ${e.blast_radius.risk_score} (${e.blast_radius.high_risk_count} high-risk)`
+      : '';
+    svg+=`<circle class="${dotCls}" data-i="${i}" cx="${xCenter}" cy="${yCenter}" r="${radius}"><title>${esc(e.type)} · ${esc(e.binary)} · ${esc((e.args||'').substring(0,80))}${esc(titleExtra)}</title></circle>`;
     if(e.blast_radius){
       const rs=e.blast_radius.risk_score||0;
       // Thresholds match the hook's MIN_RISK_SCORE (0.005) and the
       // dashboard's "yellow vs red" mental model.
       const fill = rs>=0.5 ? '#ff4444' : rs>=0.05 ? '#ffaa00' : '#88ddaa';
-      extraStyle=` style="fill:${fill}"`;
-      radius=Math.min(9, 5 + Math.log10(1 + rs*100));
+      // Slight rim around the overlay so it pops against the TOOL pink
+      // even when colors are close (amber on pink, etc.). pointer-
+      // events:none so clicks pass through to the underlying Edit dot,
+      // whose handler shows the blast-radius detail in the right pane.
+      blastOverlays+=`<circle class="blast-dot" cx="${xCenter}" cy="${yCenter}" r="3" style="fill:${fill};stroke:#0a0a1a;stroke-width:1;pointer-events:none"><title>Blast risk ${rs} (${e.blast_radius.high_risk_count} high-risk symbols)</title></circle>`;
     }
-    const dotCls=isAlert?`event-dot alert-pulse ${colorCls}`:`event-dot ${colorCls}`;
-    const titleExtra = e.blast_radius
-      ? ` · blast risk ${e.blast_radius.risk_score} (${e.blast_radius.high_risk_count} high-risk)`
-      : '';
-    svg+=`<circle class="${dotCls}"${extraStyle} data-i="${i}" cx="${xCenter}" cy="${yCenter}" r="${radius}"><title>${esc(e.type)} · ${esc(e.binary)} · ${esc((e.args||'').substring(0,80))}${esc(titleExtra)}</title></circle>`;
   }
+  // Append blast-radius overlays last so they stack ON TOP of the
+  // Edit/Write dots they enrich.
+  svg+=blastOverlays;
   svg+='</svg>';
   container.innerHTML=svg;
   // Wire click — selects detail + highlights matching log-stream row
