@@ -4840,6 +4840,7 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
 .color-TOOL{fill:#ff6688}
 .color-PROMPT{fill:#ff88dd}
 .color-RESPONSE{fill:#88ddff}
+.color-GUARD{fill:#ffdd44}
 .color-OTHER{fill:#404060}
 /* Bottom row: split into two panes — log stream (B) on the left,
  * event detail (C) on the right. Both fill the remaining vertical
@@ -4944,6 +4945,7 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
   <span><span class="swatch color-WEBHOOK"></span>Webhook</span>
   <span><span class="swatch color-SKILL"></span>Skill</span>
   <span><span class="swatch color-SCAN"></span>Scan</span>
+  <span><span class="swatch color-GUARD"></span>CodeGuard</span>
   <span><span class="swatch color-DEFENSE"></span>AI-Defense</span>
   <span><span class="swatch color-MCP"></span>MCP</span>
   <span><span class="swatch color-TOOL"></span>Tool</span>
