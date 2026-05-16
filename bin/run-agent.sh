@@ -473,9 +473,24 @@ run_claude() {
         wait "$claude_pid"
         exit_code=$?
 
-        # Clean up watchdog
-        kill "$watchdog_pid" 2>/dev/null
-        wait "$watchdog_pid" 2>/dev/null
+        # Clean up watchdog. Both `|| true` guards are LOAD-BEARING: the
+        # script runs under `set -euo pipefail`, and the watchdog subshell
+        # often races us — if it noticed claude exit on its 10s heartbeat
+        # tick BEFORE we get here, the subshell exited cleanly on its own
+        # and our `kill` returns 1 (no such process), tripping set -e
+        # and killing the orchestrator silently. (Verified the silent
+        # kill empirically on macOS bash 5.x: a `kill PID 2>/dev/null` of
+        # a dead PID exits the script with no log, no error, just trap-
+        # EXIT cleanup of the lockfile.) Same for `wait` — if the
+        # watchdog exited non-zero (e.g., killed by SIGTERM = 143, or
+        # exited because its `kill -0` loop check returned 1), wait
+        # surfaces that exit code and set -e kills us. Issue #2689's
+        # two failed implements (traces 10cc8900 and 2a27e480) both hit
+        # this — Claude completed, watchdog won the race, kill returned
+        # 1, orchestrator died at the kill line WITHOUT logging the
+        # commit_count check or the "no commits" warning.
+        kill "$watchdog_pid" 2>/dev/null || true
+        wait "$watchdog_pid" 2>/dev/null || true
 
         # Success → done.
         if [ "$exit_code" -eq 0 ]; then
