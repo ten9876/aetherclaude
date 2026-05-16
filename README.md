@@ -1,6 +1,6 @@
 # AetherClaude
 
-Autonomous GitHub issue triage agent for [AetherSDR](https://github.com/ten9876/AetherSDR) —
+Autonomous GitHub issue triage agent for [AetherSDR](https://github.com/aethersdr/AetherSDR) —
 a security-first AI coding agent that triages issues, implements fixes, reviews
 community PRs, detects duplicates, explains CI failures, and compiles release notes.
 
@@ -73,5 +73,5 @@ Apache 2.0 — see [LICENSE](LICENSE).
 
 ---
 
-Part of the [AetherSDR](https://github.com/ten9876/AetherSDR) project.
+Part of the [AetherSDR](https://github.com/aethersdr/AetherSDR) project.
 Maintained by Jeremy KK7GWY with AI assistance.
