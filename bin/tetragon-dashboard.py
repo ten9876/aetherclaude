@@ -4792,15 +4792,66 @@ async function init() {
     // Default landing view: 3D symbols. Directories / Communities /
     // 2D symbols are one dropdown click away.
     show3DContainer();
-    rebuild3DGraph(await fetchData(_state.minDegree));
+    const data = await fetchData(_state.minDegree);
+    rebuild3DGraph(data);
     startLiveOverlay();
     fetchBridges(20).then(renderBridgeList).catch(() => {});
     checkStaleness();
+    // Deep-link support: /codegraph?focus=<qualified_name> selects the
+    // matching node and aims the camera at it after the layout has had
+    // a chance to compute initial positions. Used by the Agent Walk
+    // blast-radius panel — clicking a high-risk caller jumps straight
+    // to its position in the 3D graph.
+    const focusName = new URLSearchParams(location.search).get('focus');
+    if (focusName) {
+      focusOnSymbol(focusName, data);
+    }
   } catch (e) {
     setStats('error: ' + e.message);
     document.getElementById('node-info').innerHTML = '<div id="empty-state" style="color:#ff6b6b">' + escapeHtml(e.message) + '<br><br>Has codegraph-extract.py been run? Run:<br><code>bin/codegraph-extract.py; bin/codegraph-analyze.py</code></div>';
   }
 }
+
+// Find a node by its qualified_name (which the API returns as the
+// node's `label` field — see /api/codegraph/data SQL: `qualified_name
+// AS label`) and select + camera-zoom to it. Used by the deep-link
+// flow from the Agent Walk blast-radius panel.
+function focusOnSymbol(qualifiedName, data) {
+  const node = (data.nodes || []).find(n => n.label === qualifiedName);
+  if (!node) {
+    // Common cause: the node was filtered out by the min-degree slider.
+    // Banner the user with the situation; they can drop min-degree and
+    // re-navigate via the same URL.
+    setStats(`focus: "${qualifiedName}" not in current view (try lowering min-degree)`);
+    return;
+  }
+  // Mirror what onNodeClick does — without the click. We need a brief
+  // delay so the 3d-force-graph simulation has settled initial node
+  // positions; querying node.x/y/z before the first tick gives undefined.
+  // 800ms is comfortable; the layout is usually settled by ~300ms but
+  // some larger graphs need longer.
+  setTimeout(() => {
+    _3d.currentNode = node;
+    _3d.selectedId = node.id;
+    _3d.neighborSet = new Set(_3d.adjacency.get(node.id) || []);
+    select3DNode(node);
+    refresh3DHighlight();
+    // Aim the camera. Position it `distance` units away along the
+    // axis from origin through the node so we look "at" it from
+    // outside the cluster. lookAt = node itself.
+    if (_3d.graph && typeof node.x === 'number') {
+      const distance = 120;
+      const dist = Math.hypot(node.x, node.y, node.z) || 1;
+      const ratio = 1 + distance / dist;
+      _3d.graph.cameraPosition(
+        { x: node.x * ratio, y: node.y * ratio, z: node.z * ratio },
+        { x: node.x, y: node.y, z: node.z },
+        1500
+      );
+    }
+  }, 800);
+}
+
 init();
 </script>
 </body>
@@ -5173,12 +5224,21 @@ function renderDetail(){
     const tierColor = rs>=0.5 ? '#ff4444' : rs>=0.05 ? '#ffaa00' : '#88ddaa';
     let topRows='';
     if(b.top && b.top.length){
-      topRows='<div style="margin-top:6px;font-size:10px;color:#a0b0c0">Top high-risk callers:</div>';
+      topRows='<div style="margin-top:6px;font-size:10px;color:#a0b0c0">Top high-risk callers <span style="color:#607080">(click to open in Codegraph 3D)</span>:</div>';
       for(const t of b.top){
+        // Deep-link to /codegraph?focus=<qualified_name> — the codegraph
+        // page's init() picks up the focus param, finds the matching
+        // node by label (= qualified_name), selects it, and animates
+        // the camera to its position. Opens in a new tab so the user
+        // doesn't lose their current Agent Walk view.
+        const focusUrl='/codegraph?focus='+encodeURIComponent(t.name);
         topRows+=`<div style="font-family:'SF Mono',monospace;font-size:10px;padding:1px 0">`+
                  `<span style="color:#ffaa00">bw=${t.bw}</span> `+
                  `<span style="color:#607080">d=${t.d}</span> `+
-                 `<span style="color:#c8d8e8">${esc(t.name)}</span></div>`;
+                 `<a href="${focusUrl}" target="_blank" style="color:#88ccff;text-decoration:none;border-bottom:1px dotted #506070" `+
+                 `onmouseover="this.style.color='#bbe0ff';this.style.borderBottomColor='#bbe0ff'" `+
+                 `onmouseout="this.style.color='#88ccff';this.style.borderBottomColor='#506070'">`+
+                 `${esc(t.name)}</a></div>`;
       }
     }
     blastHtml='<div style="margin-top:10px;padding:8px 10px;background:#15131c;'+
