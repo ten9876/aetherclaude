@@ -3207,7 +3207,7 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
      iframe so its CSS/JS doesn't fight our Sigma + 3d-force-graph
      stack. Sandboxed for safety; graphify's HTML loads vis-network
      from unpkg, so we have to allow same-origin scripts. -->
-<iframe id="graphify-frame" src="about:blank" style="position:fixed;top:48px;left:0;right:320px;bottom:0;display:none;background:#0f0f1a;width:calc(100% - 320px);border:0"></iframe>
+<iframe id="graphify-frame" src="about:blank" style="position:fixed;top:48px;left:0;display:none;background:#0f0f1a;border:0;width:calc(100vw - 320px);height:calc(100vh - 48px);margin:0;padding:0"></iframe>
 <aside id="side">
   <h3>Node detail</h3>
   <div id="node-info"><div id="empty-state">Click a node to inspect.<br>Drag to pan, scroll to zoom.</div></div>
