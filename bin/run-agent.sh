@@ -1568,15 +1568,39 @@ ${rejected_pr_comments:-No comments}"
             local commit_count
             commit_count=$(git -C "$WORKTREE" log main..HEAD --oneline 2>/dev/null | wc -l)
             if [ "$commit_count" -eq 0 ]; then
-                log "WARNING: Issue #${number} — Claude Code ran but made no commits"
-                record_action "$number" "implement" "failed" "failure" "Claude Code made no commits"
-                set_state "issue_${number}_state" "failed"
-                remove_label "$number" "claude-active" "$token"
-                cd "$WORKSPACE"
-                git worktree remove "$WORKTREE" --force 2>/dev/null
-                git branch -D "$branch" 2>/dev/null
-                processed=$((processed + 1))
-                break
+                # Salvage: Claude sometimes exits cleanly after writing files
+                # but without running git add/git commit (the `-p` print-mode
+                # CLI can interpret post-edit commentary text as a final
+                # answer and stop iterating). If the worktree has uncommitted
+                # changes, commit them ourselves rather than discard the
+                # work. See issue #2721 trace a8126990 — two correct surgical
+                # Edits made, then Claude bailed before the commit step.
+                if [ -n "$(git -C "$WORKTREE" status --porcelain 2>/dev/null)" ]; then
+                    local touched_files
+                    touched_files=$(git -C "$WORKTREE" status --porcelain 2>/dev/null | awk '{print $2}' | head -3 | tr '\n' ' ' | sed 's/ $//')
+                    log "Issue #${number} — Claude edited [${touched_files}] but didn't commit; salvaging"
+                    git -C "$WORKTREE" \
+                        -c user.name="aethersdr-agent[bot]" \
+                        -c user.email="aethersdr-agent@users.noreply.github.com" \
+                        add -A 2>/dev/null
+                    git -C "$WORKTREE" \
+                        -c user.name="aethersdr-agent[bot]" \
+                        -c user.email="aethersdr-agent@users.noreply.github.com" \
+                        commit --quiet -m "Fix #${number} (recovered after Claude Code exited before committing)" 2>/dev/null
+                    commit_count=$(git -C "$WORKTREE" log main..HEAD --oneline 2>/dev/null | wc -l)
+                fi
+
+                if [ "$commit_count" -eq 0 ]; then
+                    log "WARNING: Issue #${number} — Claude Code ran but made no commits"
+                    record_action "$number" "implement" "failed" "failure" "Claude Code made no commits"
+                    set_state "issue_${number}_state" "failed"
+                    remove_label "$number" "claude-active" "$token"
+                    cd "$WORKSPACE"
+                    git worktree remove "$WORKTREE" --force 2>/dev/null
+                    git branch -D "$branch" 2>/dev/null
+                    processed=$((processed + 1))
+                    break
+                fi
             fi
             log "Issue #${number} — ${commit_count} commit(s) from Claude Code"
 
