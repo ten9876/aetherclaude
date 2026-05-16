@@ -107,6 +107,31 @@ async function main() {
 
     // 2. Compute file changes vs origin/main
     git('fetch origin main --quiet', worktree);
+
+    // Rebase the local branch onto the just-fetched origin/main BEFORE
+    // diffing. Without this, the diff treats upstream additions that
+    // landed while Claude was working as deletions in the new commit —
+    // silently reverting the upstream PR. Issue #34 (incidents on
+    // AetherSDR #2714 and #2725) was exactly this: Claude's worktree
+    // was based on origin/main at time T, upstream merged a PR moving
+    // origin/main to T+1, and the diff against T+1 included T+1's
+    // additions as deletions because they were "missing" from the
+    // worktree. Rebasing first applies Claude's commits on top of
+    // current origin/main so the resulting diff contains only Claude's
+    // intended changes.
+    try {
+        git('-c user.name="aethersdr-agent[bot]" '
+            + '-c user.email="aethersdr-agent@users.noreply.github.com" '
+            + 'rebase origin/main', worktree);
+    } catch (e) {
+        try { git('rebase --abort', worktree); } catch (e2) {}
+        console.log(JSON.stringify({error:
+            'Failed to rebase onto origin/main (likely conflicts with '
+            + 'upstream changes that landed while Claude was working): '
+            + (e.message || String(e)).substring(0, 300)}));
+        process.exit(1);
+    }
+
     const baseSha = git('rev-parse origin/main', worktree);
     const status = git('diff --name-status origin/main', worktree);
 
