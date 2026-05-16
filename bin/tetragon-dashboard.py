@@ -13,7 +13,7 @@ if _os.path.exists(_env_path):
             _os.environ.setdefault(_k.strip(), _v.strip())
 # ──────────────────────────────────────────────────────────────────────────
 """
-AetherClaude Defense-in-Depth Dashboard v4
+AI-Agent Defense-in-Depth Dashboard v4
 Unified security observability across all 7 defense rings.
 """
 
@@ -2180,7 +2180,7 @@ def process_event(event):
         append_event(entry)
 
 HTML = r"""<!DOCTYPE html>
-<html><head><title>AetherClaude Defense-In-Depth Dashboard</title><meta charset="utf-8">
+<html><head><title>AI-Agent Defense-In-Depth Dashboard</title><meta charset="utf-8">
 <style>
 /* CiscoSans (Cisco's official brand typeface) — served from
    PRIVATE_FONTS_DIR (NOT in the git tree). Full family with seven
@@ -2321,7 +2321,7 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 
 <div class="header">
 <img src="/logo.png" style="height:48px;margin-right:16px;border-radius:50%">
-<div style="flex:1"><h1>AetherClaude Defense-In-Depth Dashboard</h1>
+<div style="flex:1"><h1>AI-Agent Defense-In-Depth Dashboard</h1>
 <div class="sub">Cisco Isovalent (Tetragon) &middot; Cisco DefenseClaw CodeGuard &middot; Cisco AI Defense &middot; MCP Token Isolation</div></div>
 <!-- Button stack: two rows of children inside the same header.
      Top row = primary nav + LIVE indicator. Bottom row = the wider
