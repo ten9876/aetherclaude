@@ -4836,6 +4836,13 @@ function focusOnSymbol(qualifiedName, data) {
     _3d.neighborSet = new Set(_3d.adjacency.get(node.id) || []);
     select3DNode(node);
     refresh3DHighlight();
+    // Render text labels on the focused node + every neighbor (mirrors
+    // onNodeClick's behavior). Without this the user lands on a sea
+    // of unlabeled dots and has to click to learn names — defeats the
+    // whole point of arriving via a deep-link from the Agent Walk
+    // blast-radius panel.
+    build3DLabels();
+    start3DLabelLoop();
     // Aim the camera. Position it `distance` units away along the
     // axis from origin through the node so we look "at" it from
     // outside the cluster. lookAt = node itself.
