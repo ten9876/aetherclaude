@@ -236,6 +236,15 @@ def append_event(entry):
             del memory_buffer[0]
     with db_write_lock:
         db_write_queue.append(entry)
+    # Fan out to any live-stream SSE subscribers. Non-blocking;
+    # drops on backpressure rather than stalling producers. Wrapped
+    # in try/except so a buggy subscriber can't take down the tail_*
+    # producer threads — event flow to the DB and dashboard must be
+    # preserved above all else.
+    try:
+        _agent_walk_publish(entry)
+    except Exception:
+        pass
     # Generate alerts for security events
     etype = entry.get('type', '')
     if etype == 'BLOCK':
@@ -268,6 +277,73 @@ lock = threading.Lock()
 # --- SQLite event store ---
 db_write_queue = []
 db_write_lock = threading.Lock()
+
+# ── Agent Walk live-stream subscribers ──────────────────────────────────
+# Server-Sent-Events fan-out for /api/agent-walk-stream. Each subscriber
+# holds a bounded Queue; append_event() pushes new entries into matching
+# queues without blocking (put_nowait drops on backpressure). The
+# endpoint thread drains its queue and writes to the client socket.
+# Heartbeat-driven, per Foundry-security-spec Principle III ("Liveness
+# By Heartbeat, Never By Clock") — the previous polling implementation
+# violated this by re-fetching every 2s regardless of whether anything
+# had changed.
+import queue as _queue_mod
+_agent_walk_subscribers = []  # list of {trace_id, q}
+_agent_walk_sub_lock = threading.Lock()
+_agent_walk_known_traces = set()  # trace_ids we've seen at least once
+_agent_walk_known_lock = threading.Lock()
+
+def _agent_walk_publish(entry):
+    """Push a freshly-appended event to any matching SSE subscribers.
+    Called from inside append_event(); MUST be non-blocking — the
+    producers are tail_* threads + the orchestrator's webhook path and
+    cannot afford to wait on a slow client. Uses put_nowait; drops on
+    backpressure."""
+    tid = entry.get('trace_id')
+    if not tid:
+        return
+    # First time we've seen this trace_id? Capture for related-trace
+    # notifications to other subscribers.
+    with _agent_walk_known_lock:
+        is_new_trace = tid not in _agent_walk_known_traces
+        if is_new_trace:
+            _agent_walk_known_traces.add(tid)
+            # Cap the set to prevent unbounded growth — drop oldest
+            # half (heuristic, not strictly LRU; good enough for traces
+            # which rotate naturally).
+            if len(_agent_walk_known_traces) > 10000:
+                # Keep half — set iteration order is insertion order in
+                # CPython 3.7+, so popping from the front drops oldest.
+                to_drop = len(_agent_walk_known_traces) // 2
+                it = iter(_agent_walk_known_traces)
+                for _ in range(to_drop):
+                    _agent_walk_known_traces.discard(next(it))
+    stage = _classify_agent_walk_stage(
+        entry.get('type'), entry.get('source'),
+        entry.get('args'), entry.get('binary'))
+    with _agent_walk_sub_lock:
+        for sub in _agent_walk_subscribers:
+            if sub['trace_id'] == tid:
+                if stage > 0:
+                    payload = {
+                        'kind': 'event',
+                        'entry': dict(entry, stage=stage),
+                    }
+                    try:
+                        sub['q'].put_nowait(payload)
+                    except _queue_mod.Full:
+                        pass
+            elif is_new_trace:
+                payload = {
+                    'kind': 'related',
+                    'trace_id': tid,
+                    'first_ts': entry.get('time', ''),
+                    'summary': (entry.get('args') or '')[:120],
+                }
+                try:
+                    sub['q'].put_nowait(payload)
+                except _queue_mod.Full:
+                    pass
 
 DB_MAX_BYTES = 1024 * 1024 * 1024   # 1 GiB FIFO cap on events.db
 DB_PRUNE_INTERVAL_SECS = 300         # check every 5 min
@@ -5336,73 +5412,86 @@ document.querySelectorAll('.speed-btn').forEach(b=>{
   });
 });
 
-// ── Live mode ───────────────────────────────────────────────────────
-// Polling-based live tail of a trace. Replaces the player bar with a
-// "🔴 LIVE" indicator. Auto-detects active traces and offers a nudge
-// pill on replay mode. Banner-prompts on parallel traces (Switch /
-// New Tab / Dismiss) rather than yanking the user's current view.
-let _liveMode=false,_liveTimer=null,_liveCursor='',_liveTraceId='';
+// ── Live mode (event-driven, SSE) ───────────────────────────────────
+// Subscribes to /api/agent-walk-stream via EventSource. The server
+// pushes each new event as it lands in append_event() — no wall-clock
+// poll. Honors Foundry-security-spec Principle III ("Liveness By
+// Heartbeat, Never By Clock"): the only periodic traffic on this
+// connection is a 15s `:ping` comment frame for keep-alive; payload
+// frames are 100% event-driven.
+let _liveMode=false,_liveES=null,_liveCursor='',_liveTraceId='';
 const _dismissedTraces=new Set();
 
 function startLive(traceId){
   if(!traceId)return;
   _liveMode=true;_liveTraceId=traceId;
-  // Cursor = latest event already loaded (or empty for first poll).
+  // Cursor = latest event already loaded; server picks up from there.
   _liveCursor=_events.length?_events[_events.length-1].time:'';
   document.getElementById('player').style.display='none';
   document.getElementById('live-nudge').classList.remove('on');
   document.getElementById('live-bar').classList.add('on');
   updateLiveCounter();
-  if(_liveTimer)clearInterval(_liveTimer);
-  pollLive();  // immediate first poll
-  _liveTimer=setInterval(pollLive,2000);
+  openLiveStream();
+}
+
+function openLiveStream(){
+  if(_liveES){try{_liveES.close()}catch(e){}}
+  const url='/api/agent-walk-stream?trace='+encodeURIComponent(_liveTraceId)+
+    '&since='+encodeURIComponent(_liveCursor||'');
+  const es=new EventSource(url);
+  _liveES=es;
+  es.addEventListener('message',ev=>{
+    if(!_liveMode){es.close();return}
+    let msg;try{msg=JSON.parse(ev.data)}catch(e){return}
+    if(msg.kind==='event'&&msg.entry){
+      _events.push(msg.entry);
+      _liveCursor=msg.entry.time||_liveCursor;
+      renderSwimlane();
+      logStreamAppendLive([msg.entry]);
+      updateLiveCounter();
+    }else if(msg.kind==='related'&&msg.trace_id){
+      if(_dismissedTraces.has(msg.trace_id))return;
+      if(msg.trace_id===_liveTraceId)return;
+      showNewTraceBanner({trace_id:msg.trace_id,event_count:1,summary:msg.summary||''});
+    }
+  });
+  es.addEventListener('backlog-done',ev=>{
+    let d;try{d=JSON.parse(ev.data)}catch(e){d={}}
+    if(d.cursor)_liveCursor=d.cursor;
+  });
+  es.addEventListener('complete',()=>{
+    // Trace finished — close stream, keep the captured swimlane visible
+    // in static replay mode so the user can scrub it.
+    if(_liveES){try{_liveES.close()}catch(e){}_liveES=null}
+    _liveMode=false;
+    document.getElementById('live-bar').classList.remove('on');
+    if(_events.length>0)document.getElementById('player').style.display='flex';
+    const meta=document.getElementById('meta');
+    if(meta&&!meta.querySelector('.completed-tag')){
+      const s=document.createElement('span');
+      s.className='completed-tag';s.style.cssText='margin-left:12px;color:#88ccff';
+      s.textContent='✓ Trace completed';
+      meta.appendChild(s);
+    }
+  });
+  // EventSource auto-reconnects after the default ~3s on transport
+  // errors. We just log; no manual retry needed.
+  es.addEventListener('error',()=>{
+    // Connection blip — EventSource will retry. If readyState===CLOSED
+    // the server explicitly ended it (e.g. shutdown); reopen ourselves
+    // after a brief delay so we recover from dashboard restarts.
+    if(es.readyState===EventSource.CLOSED&&_liveMode){
+      setTimeout(()=>{if(_liveMode)openLiveStream()},1500);
+    }
+  });
 }
 
 function stopLive(opts){
   opts=opts||{};
   _liveMode=false;
-  if(_liveTimer){clearInterval(_liveTimer);_liveTimer=null}
+  if(_liveES){try{_liveES.close()}catch(e){}_liveES=null}
   document.getElementById('live-bar').classList.remove('on');
-  // If trace finished naturally, re-show the player so user can scrub
-  // the captured timeline. If user clicked Stop, do the same.
   if(_events.length>0)document.getElementById('player').style.display='flex';
-}
-
-function pollLive(){
-  if(!_liveMode||!_liveTraceId)return;
-  const url='/api/agent-walk-live?trace='+encodeURIComponent(_liveTraceId)+
-    '&since='+encodeURIComponent(_liveCursor||'');
-  fetch(url).then(r=>r.json()).then(d=>{
-    if(!_liveMode)return;  // user stopped while in flight
-    if(d.error){console.warn('live poll error:',d.error);return}
-    if(d.events&&d.events.length){
-      _events.push(...d.events);
-      _liveCursor=d.cursor||_events[_events.length-1].time;
-      renderSwimlane();
-      logStreamAppendLive(d.events);
-      updateLiveCounter();
-    }else if(d.cursor){_liveCursor=d.cursor}
-    if(d.related&&d.related.length){
-      for(const t of d.related){
-        if(t.trace_id===_liveTraceId)continue;
-        if(_dismissedTraces.has(t.trace_id))continue;
-        showNewTraceBanner(t);
-        break;  // one banner at a time; next poll catches the rest
-      }
-    }
-    if(!d.active){
-      // Trace completed — banner the user and stop polling. The
-      // already-rendered swimlane stays as a static replay view.
-      stopLive({completed:true});
-      const meta=document.getElementById('meta');
-      if(meta&&!meta.querySelector('.completed-tag')){
-        const s=document.createElement('span');
-        s.className='completed-tag';s.style.cssText='margin-left:12px;color:#88ccff';
-        s.textContent='✓ Trace completed';
-        meta.appendChild(s);
-      }
-    }
-  }).catch(e=>{console.warn('live poll fetch failed:',e)});
 }
 
 function updateLiveCounter(){
@@ -6655,6 +6744,153 @@ a{{color:#0a6aba}}
             except Exception as ex:
                 self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
                 self._send_json({'traces': [], 'error': str(ex)})
+        elif self.path.startswith('/api/agent-walk-stream'):
+            # Server-Sent-Events live tail. Event-driven, per Foundry-
+            # security-spec Principle III ("Liveness By Heartbeat, Never
+            # By Clock"). Replaces the prior /api/agent-walk-live wall-
+            # clock polling endpoint.
+            #
+            # Frames:
+            #   data: {"kind":"event","entry":{...}}\n\n      — new event for this trace
+            #   data: {"kind":"related","trace_id":"...",...}\n\n — another trace started
+            #   data: {"kind":"complete"}\n\n                  — stage-10 cleanup seen
+            #   event: backlog-done\ndata: {"cursor":"..."}\n\n — initial backlog flushed
+            #   : ping\n\n                                     — 15s liveness heartbeat
+            #
+            # Client should use EventSource; browser handles auto-reconnect.
+            from urllib.parse import urlparse, parse_qs
+            params = parse_qs(urlparse(self.path).query)
+            trace_id = params.get('trace', [''])[0].strip()
+            since = params.get('since', [''])[0].strip()
+            if not trace_id:
+                self.send_response(400); self.send_header('Content-Type', 'application/json'); self.end_headers()
+                self._send_json({'error': 'trace param required'})
+                return
+            # SSE headers — Cache-Control:no-cache + X-Accel-Buffering:no
+            # ensure the cloudflared tunnel (and any proxy in front) flushes
+            # each frame immediately rather than buffering for compression.
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Cache-Control', 'no-cache')
+            self.send_header('Connection', 'keep-alive')
+            self.send_header('X-Accel-Buffering', 'no')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+
+            # Subscribe BEFORE the backlog query so we don't miss events
+            # arriving during the window between backlog-done and our
+            # first queue.get(). Backpressure: 500-entry bounded queue,
+            # producers drop on Full rather than block.
+            q = _queue_mod.Queue(maxsize=500)
+            sub = {'trace_id': trace_id, 'q': q}
+            with _agent_walk_sub_lock:
+                _agent_walk_subscribers.append(sub)
+
+            def _write_frame(payload_obj, event_name=None):
+                """Write one SSE frame. Returns False if the socket is
+                broken (caller should exit the drain loop)."""
+                try:
+                    if event_name:
+                        self.wfile.write(f'event: {event_name}\n'.encode())
+                    self.wfile.write(b'data: ')
+                    self.wfile.write(json.dumps(payload_obj).encode())
+                    self.wfile.write(b'\n\n')
+                    self.wfile.flush()
+                    return True
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return False
+
+            max_ts = since
+            try:
+                # Backlog: emit any events for this trace > since (same
+                # classifier as the SSE feed so dots line up identically).
+                conn = sqlite3.connect(EVENTS_DB)
+                if since:
+                    rows = conn.execute(
+                        "SELECT timestamp, type, uid, binary_name, args, "
+                        "       policy, is_agent, source, trace_id "
+                        "FROM events WHERE trace_id = ? AND timestamp > ? "
+                        "ORDER BY timestamp ASC, id ASC",
+                        (trace_id, since)).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT timestamp, type, uid, binary_name, args, "
+                        "       policy, is_agent, source, trace_id "
+                        "FROM events WHERE trace_id = ? "
+                        "ORDER BY timestamp ASC, id ASC",
+                        (trace_id,)).fetchall()
+                # Quick activity check for the trace
+                trace_last_row = conn.execute(
+                    "SELECT MAX(timestamp) FROM events WHERE trace_id = ?",
+                    (trace_id,)).fetchone()
+                conn.close()
+                trace_last_ts = (trace_last_row[0] if trace_last_row else None) or ''
+                saw_cleanup = False
+                for r in rows:
+                    ts, typ, uid, binary, args, policy, is_agent, source, tid = r
+                    stage = _classify_agent_walk_stage(typ, source, args, binary)
+                    if stage == 0:
+                        continue
+                    if stage == 10:
+                        saw_cleanup = True
+                    entry = {
+                        'time': ts, 'type': typ, 'uid': uid, 'binary': binary,
+                        'args': args, 'policy': policy,
+                        'is_agent': bool(is_agent), 'source': source,
+                        'trace_id': tid, 'stage': stage,
+                    }
+                    if not _write_frame({'kind': 'event', 'entry': entry}):
+                        return  # client gone; finally-block cleans up
+                    max_ts = ts
+                # Mark end of backlog
+                if not _write_frame({'cursor': max_ts}, event_name='backlog-done'):
+                    return
+                # If trace already finished, send complete and keep heart-
+                # beating briefly in case the client wants to confirm
+                # rather than tearing down immediately.
+                if saw_cleanup:
+                    _write_frame({}, event_name='complete')
+
+                # Drain queue indefinitely. 15s heartbeats keep the
+                # connection (and any intermediate proxy) alive without
+                # being a wall-clock data refresh — frames carry payload
+                # only when something actually happened. This is the
+                # heartbeat-driven liveness the Foundry spec calls for.
+                last_heartbeat = time.time()
+                while True:
+                    try:
+                        msg = q.get(timeout=15)
+                    except _queue_mod.Empty:
+                        # Heartbeat as SSE comment line; no data event.
+                        try:
+                            self.wfile.write(b': ping\n\n')
+                            self.wfile.flush()
+                            last_heartbeat = time.time()
+                            continue
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            return
+                    # Dedupe against backlog by timestamp — anything
+                    # at-or-before max_ts was already sent.
+                    entry = msg.get('entry') or {}
+                    ets = entry.get('time') or ''
+                    if msg.get('kind') == 'event' and ets and ets <= max_ts:
+                        continue
+                    if not _write_frame(msg):
+                        return
+                    if ets:
+                        max_ts = ets
+                    last_heartbeat = time.time()
+                    # If the event we just sent was stage-10, signal
+                    # completion so the client can stop the EventSource.
+                    if msg.get('kind') == 'event' and (entry.get('stage') == 10):
+                        _write_frame({}, event_name='complete')
+            finally:
+                with _agent_walk_sub_lock:
+                    try:
+                        _agent_walk_subscribers.remove(sub)
+                    except ValueError:
+                        pass
+            return
         elif self.path.startswith('/api/agent-walk-live'):
             # Live-tail endpoint for Agent Walk. Client polls every ~2s
             # with the timestamp of the last event it has seen. Server
