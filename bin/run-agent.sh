@@ -408,6 +408,7 @@ run_claude() {
                 --setting-sources user \
                 --strict-mcp-config \
                 --permission-mode bypassPermissions \
+                --add-dir /Users/aetherclaude/workspace/AetherSDR/plugins \
                 --allowedTools "$allowed_tools" \
                 --disallowedTools "Bash(sudo *),Bash(curl *),Bash(wget *),Bash(rm -rf *),Bash(ssh *),Bash(scp *),Bash(nc *),Bash(ncat *),Bash(dd *),Bash(mount *),Bash(chmod *),Bash(chown *),Bash(chsh *),Bash(passwd *),Bash(brew *),Bash(npm *),Bash(pip *),Bash(nft *),Bash(systemctl *),Bash(cat /Users/aetherclaude/.env),Bash(cat /Users/aetherclaude/.git-credentials),Bash(cat /Users/aetherclaude/.github-app-key.pem),Bash(echo \$*),Bash(env),Bash(printenv),Bash(set),WebFetch,WebSearch,Agent" \
                 --mcp-config /Users/aetherclaude/.claude/mcp-servers.json \
