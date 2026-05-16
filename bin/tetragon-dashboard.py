@@ -3190,7 +3190,7 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
       </select>
     </label>
     <label id="min-degree-label">min degree: <input type="range" id="min-degree" min="0" max="50" value="5"><span id="min-degree-val">5</span></label>
-    <label title="Drop nodes whose Louvain community has fewer than 3 members. Matches the filter Martin's graphify viz uses (~234 communities). Off by default; the unfiltered view shows the long tail of helpers/singletons too."><input type="checkbox" id="hide-singletons"> hide singleton communities</label>
+    <label id="hide-singletons-label" title="Drop nodes whose Louvain community has fewer than 3 members. Only applies to the Symbols (2D) and Symbols (3D) views — the other modes use separate aggregation endpoints."><input type="checkbox" id="hide-singletons"> hide singleton communities</label>
     <label>search: <input type="text" id="search" placeholder="symbol name..."></label>
     <button id="back-to-dirs" style="display:none;background:#101025;color:#00bceb;border:1px solid #00bceb;padding:3px 10px;border-radius:3px;font-size:11px;cursor:pointer">&larr; Back to directories</button>
   </div>
@@ -4748,6 +4748,22 @@ if (typeof ResizeObserver !== 'undefined') {
 // View-mode toggle. Default lands in directory view (bubble overview);
 // user can switch to flat symbol view via the dropdown or by drilling
 // into a directory.
+// Update the singleton-checkbox visual state — only Symbols (2D/3D)
+// honor the filter; everywhere else it's a no-op, so disable the
+// input and dim the label so the user knows toggling won't help.
+function updateSingletonCheckboxState() {
+  const symbolModes = new Set(['symbols', 'symbols3d']);
+  const active = symbolModes.has(_state.viewMode);
+  const cb = document.getElementById('hide-singletons');
+  const label = document.getElementById('hide-singletons-label');
+  cb.disabled = !active;
+  label.style.opacity = active ? '1' : '0.4';
+  label.style.cursor = active ? '' : 'not-allowed';
+  label.title = active
+    ? 'Drop nodes whose Louvain community has fewer than 3 members. Matches the filter Martin\'s graphify viz uses.'
+    : 'Filter only applies to Symbols (2D) / Symbols (3D) views. Other modes aggregate per-community already.';
+}
+
 document.getElementById('view-mode').addEventListener('change', e => {
   if (e.target.value === 'dirs') switchToDirectoryView();
   else if (e.target.value === 'communities') switchToCommunityView();
@@ -4755,6 +4771,7 @@ document.getElementById('view-mode').addEventListener('change', e => {
   else if (e.target.value === 'symbols3d') switchTo3DView();
   else if (e.target.value === 'graphify') switchToGraphifyView();
   else switchToSymbolView();
+  updateSingletonCheckboxState();
 });
 document.getElementById('back-to-dirs').addEventListener('click', () => {
   if (_state.drilledFrom === 'communities') switchToCommunityView();
@@ -4771,6 +4788,7 @@ async function init() {
     // 2D symbols are one dropdown click away.
     show3DContainer();
     rebuild3DGraph(await fetchData(_state.minDegree));
+    updateSingletonCheckboxState();
     startLiveOverlay();
     fetchBridges(20).then(renderBridgeList).catch(() => {});
     checkStaleness();
