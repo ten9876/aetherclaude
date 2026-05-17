@@ -57,7 +57,44 @@ Your task for this pass (IMPLEMENT):
    authoritative for command/status/VITA-49 behavior. (This is also
    Principle I of the constitution.)
 5. Implement the fix with focused, minimal changes.
-6. Commit with message: `Short description (#${ISSUE_NUMBER}). Principle <N>.`
+6. **Audit test-target link surface.** If your edits did **any** of the
+   following — even as a small "cleanup" step — you must verify every test
+   target that links the modified `.cpp` files still links cleanly:
+   - Moved a function/class/global from one `.cpp` to another
+   - Added a new `#include` of a project header that introduces a new
+     external-symbol reference (e.g., a logging category, a constant, a
+     helper function)
+   - Deleted a `Q_LOGGING_CATEGORY` / static definition and switched to a
+     declaration that lives elsewhere
+   - Replaced an inline implementation with a call into another TU
+   The main `AetherSDR` executable hides this because it links the full
+   `CORE_SOURCES` / `MODEL_SOURCES` / `GUI_SOURCES` lists. Test targets
+   deliberately link a minimal subset and will fail at link time with
+   `undefined reference to ...` when a new dependency isn't in their
+   source list. The fix is to add the dependency's `.cpp` (and any
+   transitive `.cpp` it pulls in via member variables) to the affected
+   test target's `add_executable(...)` block.
+   **Procedure:**
+   - For each `.cpp` you modified, grep `CMakeLists.txt` for the filename
+     to find every `add_executable(...)` block that lists it directly.
+   - For each such test target, mentally walk: does the test's source
+     list also include the `.cpp` that defines my new symbol reference?
+     If LogManager.cpp is now needed, does it have its own dependencies
+     (AsyncLogWriter.cpp → AppSettings.cpp) that must also be added?
+   - **Build every affected test target locally** before commit:
+     `cmake --build build --target <test_name>`. If link fails, add the
+     missing `.cpp` to the target's source list and rebuild until clean.
+   **Heuristic shortcut:** if your change involves the words "consolidate",
+   "extract", "share", "centralize", or "deduplicate", you should always
+   run this audit. Those words almost always imply cross-TU symbol motion.
+   **Example failure mode** (PR aethersdr/AetherSDR#2770): the agent moved
+   `lcAx25` from a local declaration in `AetherAx25LibmodemShim.cpp` to use
+   the shared one in `core/LogManager.cpp`. The main app linked fine but
+   `ax25_libmodem_shim_test` failed with `undefined reference to
+   AetherSDR::lcAx25()` because it linked only the shim's own sources.
+   Local test-target build would have caught this in seconds; instead CI
+   caught it after a full ~90-second build cycle.
+7. Commit with message: `Short description (#${ISSUE_NUMBER}). Principle <N>.`
    where `<N>` is the Roman-numeral identifier of the constitution principle
    the change honors most directly (e.g., `Principle III.` for a UI-naming
    fix). If multiple principles apply, cite the most load-bearing one. If
