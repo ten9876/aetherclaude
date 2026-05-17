@@ -343,20 +343,29 @@ def main():
             [s for s in affected if (s['betweenness'] or 0) >= HIGH_RISK_BETWEENNESS],
             key=lambda s: -(s['betweenness'] or 0),
         )
-        # Log to events.db so the agent-walk view can paint the
-        # corresponding TOOL dot. Only worth a row if the risk is
-        # non-trivial.
-        if risk_score >= MIN_RISK_SCORE:
-            log_to_events_db(
-                file_path=files[0],
-                risk_score=risk_score,
-                high_risk_count=len(high_risk),
-                symbols_count=len(all_symbols),
-                callers_count=len(callers),
-                top_high_risk=high_risk,
-            )
+        # ALWAYS log to events.db so Agent Walk can distinguish
+        # "hook fired and scanned" (green low-risk overlay) from
+        # "hook didn't fire at all" (no overlay). Previously we only
+        # logged when risk_score >= 0.005, which made low-risk edits
+        # look identical to non-scanned edits in the UI. Leaf-class
+        # edits (MainWindow.cpp, where 117/118 callers are self-calls
+        # inside the class itself) routinely fall below threshold;
+        # the user reading Agent Walk reads that as "the hook is
+        # broken" rather than "the hook scanned and found low risk".
+        log_to_events_db(
+            file_path=files[0],
+            risk_score=risk_score,
+            high_risk_count=len(high_risk),
+            symbols_count=len(all_symbols),
+            callers_count=len(callers),
+            top_high_risk=high_risk,
+        )
+        # Only emit the warning back to Claude when risk is non-trivial
+        # — Claude doesn't need a "scanned, no risk" footnote on every
+        # leaf edit. Threshold only gates the conversational injection,
+        # not the events.db audit row.
         warning = build_warning_from_data(all_symbols, affected, callers,
-                                          risk_score, high_risk)
+                                          risk_score, high_risk) if risk_score >= MIN_RISK_SCORE else None
         emit_response(warning)
     finally:
         conn.close()
