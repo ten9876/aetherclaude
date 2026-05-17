@@ -1657,14 +1657,45 @@ DEFENSECLAW_AUDIT_LOG = '/Users/aetherclaude/.defenseclaw/gateway.jsonl'
 def tail_defenseclaw_audit(logfile):
     """Tail the DefenseClaw v7 OTel-schema gateway audit log and surface
     each entry as a DEFENSE event in the stream. Schema reference:
-    docs/OBSERVABILITY-CONTRACT.md in the upstream repo."""
+    docs/OBSERVABILITY-CONTRACT.md in the upstream repo.
+
+    Rotation-aware: the DC daemon rotates gateway.jsonl when it hits ~50MB
+    (renaming to gateway-<ts>.jsonl and creating a fresh file at the same
+    path). Without inode tracking, our open handle stays pinned to the
+    renamed file and we silently stop ingesting forever. Trace 36ad8318
+    on 2026-05-17 lost its entire Stage 6 swimlane this way: rotation
+    fired at 08:13:37 UTC, the trace ran at 10:09 UTC, no DEFENSE events
+    surfaced. Now we re-stat the path on each EOF cycle and reopen if
+    the inode changed."""
+    def _open_and_seek_end(path):
+        fh = open(path, 'r')
+        fh.seek(0, 2)
+        return fh, os.fstat(fh.fileno()).st_ino
+
     while not os.path.exists(logfile):
         time.sleep(5)
-    with open(logfile, 'r') as f:
-        f.seek(0, 2)
+    f, current_inode = _open_and_seek_end(logfile)
+    try:
         while True:
             line = f.readline()
             if not line:
+                # Check for rotation: if the path now resolves to a
+                # different inode than our open handle, the daemon
+                # rotated under us. Reopen at end-of-file on the new
+                # file (don't replay old content — that would
+                # mis-attribute historical events to whatever trace is
+                # currently active).
+                try:
+                    path_inode = os.stat(logfile).st_ino
+                    if path_inode != current_inode:
+                        try: f.close()
+                        except: pass
+                        f, current_inode = _open_and_seek_end(logfile)
+                        continue
+                except FileNotFoundError:
+                    # File temporarily gone during rotation — wait and retry.
+                    time.sleep(2)
+                    continue
                 time.sleep(1)
                 continue
             line = line.strip()
@@ -1726,6 +1757,9 @@ def tail_defenseclaw_audit(logfile):
             }
             with lock:
                 append_event(entry)
+    finally:
+        try: f.close()
+        except: pass
 
 
 def tail_orchestrator_skills(logfile):
