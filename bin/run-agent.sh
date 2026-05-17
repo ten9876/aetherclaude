@@ -1975,9 +1975,18 @@ fi
 # Findings are logged but do NOT abort — the analyzer can produce false
 # positives on legitimate phrasings, and we want surface-level visibility
 # without breaking agent runs.
-if command -v mcp-scanner &>/dev/null \
-    && [ -x /Users/aetherclaude/bin/skills-to-prompts-json.py ] \
-    && [ -n "${EVENT_SKILLS:-}" ]; then
+# Observability: log WHY the prompt scanner skips when it does. Without
+# this, a missing binary or stripped exec bit silently disabled prompt
+# inspection from May 7 to May 16 (9 days) because the conditional just
+# fell through. The log line lets the dashboard's first-Ring-6 widget
+# show "Prompt scanner skipped: <reason>" rather than just zero.
+if ! command -v mcp-scanner &>/dev/null; then
+    log "Prompt scanner skipped: mcp-scanner not in PATH"
+elif [ ! -x /Users/aetherclaude/bin/skills-to-prompts-json.py ]; then
+    log "Prompt scanner skipped: skills-to-prompts-json.py not executable"
+elif [ -z "${EVENT_SKILLS:-}" ]; then
+    log "Prompt scanner skipped: no EVENT_SKILLS for this trigger"
+elif true; then
     PROMPTS_JSON="$LOGDIR/skill-prompts-latest.json"
     if [ "$EVENT_SKILLS" = "all" ]; then
         /Users/aetherclaude/bin/skills-to-prompts-json.py > "$PROMPTS_JSON" 2>/dev/null
