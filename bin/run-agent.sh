@@ -1607,9 +1607,15 @@ ${rejected_pr_comments:-No comments}"
                 # work. See issue #2721 trace a8126990 — two correct surgical
                 # Edits made, then Claude bailed before the commit step.
                 if [ -n "$(git -C "$WORKTREE" status --porcelain 2>/dev/null)" ]; then
-                    local touched_files
+                    local touched_count touched_files
+                    touched_count=$(git -C "$WORKTREE" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+                    # head -3 keeps the log line readable; report the true
+                    # count so multi-file changes aren't misrepresented.
+                    # Trace 04721520 (#2554) salvaged 15 files but the log
+                    # said "[CMakeLists.txt LogManager.cpp LogManager.h]"
+                    # — useful sample but misleading without the count.
                     touched_files=$(git -C "$WORKTREE" status --porcelain 2>/dev/null | awk '{print $2}' | head -3 | tr '\n' ' ' | sed 's/ $//')
-                    log "Issue #${number} — Claude edited [${touched_files}] but didn't commit; salvaging"
+                    log "Issue #${number} — Claude edited ${touched_count} file(s) [${touched_files}…] but didn't commit; salvaging"
                     git -C "$WORKTREE" \
                         -c user.name="aethersdr-agent[bot]" \
                         -c user.email="aethersdr-agent@users.noreply.github.com" \
@@ -1680,10 +1686,21 @@ ${rejected_pr_comments:-No comments}"
             # node exited non-zero post-success, orchestrator died at
             # the assignment with no log, no PR created.
             commit_result=$(/opt/homebrew/bin/node /Users/aetherclaude/bin/commit-signed.js \
-                "$branch" "$commit_msg" "$WORKTREE" 2>&1) && commit_exit=0 || commit_exit=$?
-            if echo "$commit_result" | jq -e '.error' >/dev/null 2>&1; then
+                "$branch" "$commit_msg" "$WORKTREE" 2>>"$LOGDIR/commit-signed-stderr.log") && commit_exit=0 || commit_exit=$?
+            # Note: stderr is now redirected to a sidecar file rather than
+            # being merged with stdout via 2>&1. Trace 04721520 (#2554) hit
+            # the case where node printed a punycode DeprecationWarning to
+            # stderr BEFORE commit-signed.js's success JSON on stdout. With
+            # 2>&1 the captured string was "WARNING\n{...json...}" — jq
+            # parse fails on the warning line (exit 5), the bare
+            # `signed_sha=$(echo "$commit_result" | jq …)` propagated that
+            # rc=5, set -e killed the orchestrator post-push, no PR opened.
+            # Sidecar file keeps the diagnostic value of stderr without
+            # corrupting our JSON parse.
+            if [ "$commit_exit" -ne 0 ] || echo "$commit_result" | jq -e '.error' >/dev/null 2>&1; then
                 local err
-                err=$(echo "$commit_result" | jq -r '.error')
+                err=$(echo "$commit_result" | jq -r '.error // empty' 2>/dev/null || echo "")
+                [ -z "$err" ] && err="commit-signed.js exited rc=${commit_exit} with no error JSON (see ${LOGDIR}/commit-signed-stderr.log)"
                 log "ERROR: signed commit failed for issue #${number}: ${err}"
                 record_action "$number" "push_failed" "failed" "failure" "commit-signed.js: ${err}"
                 set_state "issue_${number}_state" "failed"
@@ -1695,7 +1712,12 @@ ${rejected_pr_comments:-No comments}"
                 break
             fi
             local signed_sha
-            signed_sha=$(echo "$commit_result" | jq -r '.sha')
+            # `|| echo ""` guards the bare assignment from `set -e` if jq
+            # can't extract .sha (e.g. node emitted a stderr warning that
+            # contaminated stdout in some other future case). The branch
+            # is already on the remote at this point, so even if signed_sha
+            # is empty we still want to proceed to PR creation.
+            signed_sha=$(echo "$commit_result" | jq -r '.sha // empty' 2>/dev/null || echo "")
             log "Signed commit ${signed_sha:0:7} pushed to ${branch}"
 
             # ORCHESTRATOR: Create PR
