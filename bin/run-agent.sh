@@ -1315,10 +1315,22 @@ skill_process_issues() {
             # gets a footnote on the comment, not a state regression.
             check_citations "$number" "$token" || true
 
-            # Check if we asked questions (look for ? in our comment)
+            # Check if we asked questions (look for ? in our comment).
+            # `|| true` on the bare assignment is critical: this fetches
+            # from the GitHub API right after the citation-check PATCH,
+            # and any transient API blip (rate limit, brief 5xx, jq
+            # parse fail on a non-JSON error body) trips set -e and
+            # silently kills the whole orchestrator. Saw this pattern
+            # caught by the FATAL trap on traces a49338d0 (#2846),
+            # c0c86fc8 (#2847), 4dd4f11e (#2841), and others —
+            # TRIAGE → CITATION_CHECK → footnote → silent death,
+            # state never persisted, claude-active label never removed.
+            # Falling back to empty string is safe: the question-mark
+            # check below treats empty as "no questions asked".
             local our_comment
             our_comment=$(github_api GET "/repos/${REPO}/issues/${number}/comments?per_page=5" "$token" | \
-                jq -r '[.[] | select(.user.login == "aethersdr-agent[bot]")] | last | .body // ""')
+                jq -r '[.[] | select(.user.login == "aethersdr-agent[bot]")] | last | .body // ""' \
+                2>/dev/null || echo "")
 
             if echo "$our_comment" | grep -q "?"; then
                 record_action "$number" "triage" "waiting" "success" "Asked clarifying question"
