@@ -228,6 +228,42 @@ github_api_body() {
     rm -f "$tmpfile"
 }
 
+# Post a bot-authored comment/review with the public cost-band footer
+# attached and a precise audit row written. Takes the same arg shape as
+# `github_api_body POST` so callers swap one for the other in-place.
+#
+#   post_bot_comment <endpoint> <token> <payload_json> [<kind>]
+#
+# kind is one of: issue_comment (default), pr_review, pr_description,
+# discussion_comment. The helper extracts .body from the JSON payload,
+# appends the footer, re-injects it, posts, and backfills the resulting
+# comment URL into the audit row. A failure in bot-cost.py never blocks
+# the post — we fall back to the bare body.
+post_bot_comment() {
+    local endpoint="$1" token="$2" payload="$3" kind="${4:-issue_comment}"
+
+    local body wrapped new_payload response url target
+    body=$(printf '%s' "$payload" | jq -r '.body // empty' 2>/dev/null || echo "")
+    wrapped=$(printf '%s' "$body" | /Users/aetherclaude/bin/bot-cost.py wrap \
+                --kind "$kind" --endpoint "$endpoint" --body - 2>/dev/null) \
+        || wrapped="$body"
+    new_payload=$(printf '%s' "$payload" | jq --arg b "$wrapped" '.body = $b' 2>/dev/null) \
+        || new_payload="$payload"
+
+    response=$(github_api_body POST "$endpoint" "$token" "$new_payload")
+    url=$(printf '%s' "$response" | jq -r '.html_url // empty' 2>/dev/null || echo "")
+    if [ -n "$url" ]; then
+        target=$(printf '%s' "$endpoint" | sed -nE 's|.*/(issues\|pulls)/([0-9]+)/.*|\1:\2|p' \
+                | sed 's/^issues:/issue:/; s/^pulls:/pr:/')
+        if [ -n "$target" ]; then
+            /Users/aetherclaude/bin/bot-cost.py backfill-url \
+                --target "$target" --url "$url" 2>/dev/null || true
+        fi
+    fi
+
+    printf '%s' "$response"
+}
+
 # Citation-resolution check (Foundry Principle I — Evidence Over Assertion,
 # partial form). Parses path:line / path:line-line citations from the latest
 # agent comment on an issue and verifies each against the workspace clone
@@ -656,7 +692,10 @@ skill_welcome_first_timers() {
             body="Welcome to AetherSDR, @${author}! Thanks for taking the time to open this issue.\n\nJeremy (KK7GWY) and I will take a look. If we need any additional details, we'll ask here.\n\nIf you have questions about the project, our [Discussions](https://github.com/${REPO}/discussions) page is a good place to start.\n\n— AetherClaude (automated agent for AetherSDR)"
         fi
 
-        github_api_body POST "/repos/${REPO}/issues/${number}/comments" "$token" "{\"body\":\"${body}\"}" > /dev/null 2>&1
+        local welcome_kind="issue_comment"
+        [ -n "$is_pr" ] && welcome_kind="pr_review"
+        post_bot_comment "/repos/${REPO}/issues/${number}/comments" "$token" \
+            "{\"body\":\"${body}\"}" "$welcome_kind" > /dev/null 2>&1
     done
 }
 
@@ -704,7 +743,8 @@ skill_check_bug_reports() {
 
         local comment="Thanks for reporting this, @${author}. To help us track it down, could you share a few more details?\n${missing_list}\n\nIf you can attach logs (Help → Support → File an Issue), that would be especially helpful.\n\n— AetherClaude (automated agent for AetherSDR)"
 
-        github_api_body POST "/repos/${REPO}/issues/${number}/comments" "$token" "{\"body\":\"${comment}\"}" > /dev/null 2>&1
+        post_bot_comment "/repos/${REPO}/issues/${number}/comments" "$token" \
+            "{\"body\":\"${comment}\"}" issue_comment > /dev/null 2>&1
 
         # Mark as waiting so skill_process_issues doesn't triage/implement while we await user reply
         add_label "$number" "awaiting-response" "$token"
@@ -1212,9 +1252,9 @@ skill_process_issues() {
 
         if [ "$out_of_scope" = true ]; then
             log "Issue #${number} is CI/workflow scope — declining"
-            github_api_body POST "/repos/${REPO}/issues/${number}/comments" "$token" \
+            post_bot_comment "/repos/${REPO}/issues/${number}/comments" "$token" \
                 "{\"body\":\"Thanks for filing this. This issue involves CI/CD workflows, build infrastructure, or release packaging — that is outside what I can help with, as I am restricted to source code changes in \`src/\` and \`docs/\`.\n\nJeremy will need to handle this one directly.\n\n— AetherClaude (automated agent for AetherSDR)\"}" \
-                > /dev/null 2>&1
+                issue_comment > /dev/null 2>&1
             record_action "$number" "declined" "declined" "success" "CI/workflow scope"
             set_state "issue_${number}_state" "declined"
             processed=$((processed + 1))
@@ -1263,9 +1303,9 @@ skill_process_issues() {
 
             if [ -n "$close_reason" ]; then
                 log "AUTO_CLOSE: Issue #${number} — ${close_reason}"
-                github_api_body POST "/repos/${REPO}/issues/${number}/comments" "$token" \
+                post_bot_comment "/repos/${REPO}/issues/${number}/comments" "$token" \
                     "{\"body\":\"Thanks for reaching out, but I don't have enough information here to investigate.\\n\\n**Fastest path to a fix:** open AetherSDR and go to **Help → Support → File an Issue**. This uses the AI-assisted bug report tool that auto-collects your OS, AetherSDR version, radio model and firmware, and a log bundle, then opens a pre-filled issue template. Just describe what happened and what you expected, and submit.\\n\\nI'm closing this issue — please file a new one (or reopen this one) with those details and I'll take another look.\\n\\n— AetherClaude (automated agent for AetherSDR)\"}" \
-                    > /dev/null 2>&1
+                    issue_comment > /dev/null 2>&1
                 github_api_body PATCH "/repos/${REPO}/issues/${number}" "$token" \
                     '{"state":"closed","state_reason":"not_planned"}' \
                     > /dev/null 2>&1
@@ -1468,9 +1508,9 @@ except Exception:
 
                 if [ "$days_waited" -ge "$stale_threshold" ]; then
                     log "Issue #${number} — ${days_waited} days without reply, closing as stale"
-                    github_api_body POST "/repos/${REPO}/issues/${number}/comments" "$token" \
+                    post_bot_comment "/repos/${REPO}/issues/${number}/comments" "$token" \
                         "{\"body\":\"Thanks for the report. Without the details requested above, I'm unable to reproduce this issue. Closing for now — please feel free to reopen with the requested information (OS, AetherSDR version, radio model and firmware, steps to reproduce) and we'll take another look.\\n\\n— AetherClaude (automated agent for AetherSDR)\"}" \
-                        > /dev/null 2>&1
+                        issue_comment > /dev/null 2>&1
                     github_api_body PATCH "/repos/${REPO}/issues/${number}" "$token" \
                         '{"state":"closed","state_reason":"not_planned"}' \
                         > /dev/null 2>&1
@@ -1664,9 +1704,9 @@ ${rejected_pr_comments:-No comments}"
                 last_bot_comment=$(github_api GET "/repos/${REPO}/issues/${number}/comments?per_page=50" "$token" | \
                     jq -r '[.[] | select(.user.login == "aethersdr-agent[bot]")] | last | .body // ""' | tr '[:upper:]' '[:lower:]')
                 if ! echo "$last_bot_comment" | grep -q "failed automated validation"; then
-                    github_api_body POST "/repos/${REPO}/issues/${number}/comments" "$token" \
+                    post_bot_comment "/repos/${REPO}/issues/${number}/comments" "$token" \
                         "{\"body\":\"Claude here \u2014 I attempted a fix for #${number} but it failed the automated validation gate (changes required files outside my allowed paths or modified protected files).\\n\\nI won't retry until you reply. If you'd like me to try a different approach, let me know.\\n\\n73, Jeremy KK7GWY \\u0026 Claude (AI dev partner)\"}" \
-                        > /dev/null 2>&1 || true
+                        issue_comment > /dev/null 2>&1 || true
                 fi
                 cd "$WORKSPACE"
                 git worktree remove "$WORKTREE" --force 2>/dev/null
@@ -1822,8 +1862,8 @@ body = (
 print(json.dumps({'body': body}))
 PYEOF
                 )
-                github_api_body POST "/repos/${REPO}/issues/${number}/comments" "$token" \
-                    "$comment_json" \
+                post_bot_comment "/repos/${REPO}/issues/${number}/comments" "$token" \
+                    "$comment_json" issue_comment \
                     > /dev/null 2>&1 || true
                 remove_label "$number" "claude-active" "$token"
                 # Eligibility was the maintainer's authorization to write
