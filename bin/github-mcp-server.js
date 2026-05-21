@@ -9,6 +9,7 @@ const https = require('https');
 const fs = require('fs');
 const crypto = require('crypto');
 const url = require('url');
+const { execFileSync } = require('child_process');
 
 const UPSTREAM_REPO = 'aethersdr/AetherSDR';
 const FORK_OWNER = 'AetherClaude';
@@ -32,6 +33,30 @@ const CRED_RE = [/ghp_[A-Za-z0-9]{36}/, /ghs_[A-Za-z0-9]{36}/, /github_pat_[A-Za
 function validateContent(text, maxLen) {
     if (text.length > (maxLen || MAX_COMMENT_LENGTH)) throw new Error(`BLOCKED: Content too long (${text.length})`);
     if (CRED_RE.some(p => p.test(text))) throw new Error('BLOCKED: Content contains credential pattern');
+}
+
+// Append the public cost-band footer + log a precise audit row for a
+// bot-authored post. Failures are swallowed — we never block a post on
+// cost-tracking; the caller still sends the bare body. kind ∈
+// {issue_comment, pr_review, pr_description, discussion_comment}.
+function attachCostFooter(body, kind, target) {
+    try {
+        return execFileSync('/Users/aetherclaude/bin/bot-cost.py', [
+            'wrap',
+            '--kind', kind,
+            '--target', target,
+            '--body', '-',
+        ], { input: body, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
+    } catch(e) {
+        return body;
+    }
+}
+function backfillCostUrl(target, urlStr) {
+    try {
+        execFileSync('/Users/aetherclaude/bin/bot-cost.py', [
+            'backfill-url', '--target', target, '--url', urlStr,
+        ], { stdio: 'ignore' });
+    } catch(e) { /* audit-only; non-fatal */ }
 }
 
 function loadEnv() {
@@ -140,18 +165,18 @@ async function handleToolCall(name, args) {
         switch(name) {
         case 'read_issue': { const i=await ghAPI('GET',`/repos/${UPSTREAM_REPO}/issues/${args.issue_number}`,null,t); result=JSON.stringify({number:i.number,title:i.title,body:i.body,state:i.state,labels:(i.labels||[]).map(l=>l.name),user:i.user.login,author_association:i.author_association,created_at:i.created_at,updated_at:i.updated_at,assignees:(i.assignees||[]).map(a=>a.login)}); break; }
         case 'list_issue_comments': { const c=await ghAPI('GET',`/repos/${UPSTREAM_REPO}/issues/${args.issue_number}/comments?per_page=50`,null,t); result=JSON.stringify(c.map(x=>({id:x.id,user:x.user.login,author_association:x.author_association,body:x.body,created_at:x.created_at}))); break; }
-        case 'comment_on_issue': { checkRateLimit(`ci_${args.issue_number}`,4); checkRateLimit('cg',100); validateContent(args.body); const c=await ghAPI('POST',`/repos/${UPSTREAM_REPO}/issues/${args.issue_number}/comments`,{body:args.body},t); result=JSON.stringify({id:c.id,url:c.html_url}); break; }
+        case 'comment_on_issue': { checkRateLimit(`ci_${args.issue_number}`,4); checkRateLimit('cg',100); const bodyCI=attachCostFooter(args.body,'issue_comment',`issue:${args.issue_number}`); validateContent(bodyCI); const c=await ghAPI('POST',`/repos/${UPSTREAM_REPO}/issues/${args.issue_number}/comments`,{body:bodyCI},t); backfillCostUrl(`issue:${args.issue_number}`,c.html_url); result=JSON.stringify({id:c.id,url:c.html_url}); break; }
         case 'search_issues': { const q=encodeURIComponent(`repo:${UPSTREAM_REPO} ${args.query}`); const d=await ghAPI('GET',`/search/issues?q=${q}&per_page=${Math.min(args.max_results||10,30)}`,null,t); result=JSON.stringify({total_count:d.total_count,items:(d.items||[]).map(i=>({number:i.number,title:i.title,state:i.state,user:i.user.login,labels:(i.labels||[]).map(l=>l.name),created_at:i.created_at,updated_at:i.updated_at,is_pull_request:!!i.pull_request}))}); break; }
         case 'list_open_prs': { const ps=await ghAPI('GET',`/repos/${UPSTREAM_REPO}/pulls?state=open&sort=created&direction=desc&per_page=${Math.min(args.max_results||10,30)}`,null,t); result=JSON.stringify(ps.map(p=>({number:p.number,title:p.title,user:p.user.login,author_association:p.author_association,head_sha:p.head.sha,head_ref:p.head.ref,labels:(p.labels||[]).map(l=>l.name),draft:p.draft,created_at:p.created_at,updated_at:p.updated_at}))); break; }
-        case 'create_pull_request': { checkRateLimit('pr',10); validateContent(args.title,200); validateContent(args.body,MAX_PR_BODY_LENGTH); const p=await ghAPI('POST',`/repos/${UPSTREAM_REPO}/pulls`,{title:args.title,body:args.body,head:`${FORK_OWNER}:${args.head}`,base:args.base,draft:true},t); result=JSON.stringify({number:p.number,url:p.html_url}); break; }
-        case 'create_pr_review': { checkRateLimit(`rv_${args.pr_number}`,1); checkRateLimit('rvg',10); validateContent(args.body); const r=await ghAPI('POST',`/repos/${UPSTREAM_REPO}/pulls/${args.pr_number}/reviews`,{body:args.body,event:'COMMENT'},t); result=JSON.stringify({id:r.id,state:r.state}); break; }
+        case 'create_pull_request': { checkRateLimit('pr',10); validateContent(args.title,200); const bodyPR=attachCostFooter(args.body,'pr_description',`pr:branch-${args.head}`); validateContent(bodyPR,MAX_PR_BODY_LENGTH); const p=await ghAPI('POST',`/repos/${UPSTREAM_REPO}/pulls`,{title:args.title,body:bodyPR,head:`${FORK_OWNER}:${args.head}`,base:args.base,draft:true},t); backfillCostUrl(`pr:branch-${args.head}`,p.html_url); result=JSON.stringify({number:p.number,url:p.html_url}); break; }
+        case 'create_pr_review': { checkRateLimit(`rv_${args.pr_number}`,1); checkRateLimit('rvg',10); const bodyRV=attachCostFooter(args.body,'pr_review',`pr:${args.pr_number}`); validateContent(bodyRV); const r=await ghAPI('POST',`/repos/${UPSTREAM_REPO}/pulls/${args.pr_number}/reviews`,{body:bodyRV,event:'COMMENT'},t); backfillCostUrl(`pr:${args.pr_number}`,r.html_url||''); result=JSON.stringify({id:r.id,state:r.state}); break; }
         case 'list_pr_files': { const f=await ghAPI('GET',`/repos/${UPSTREAM_REPO}/pulls/${args.pr_number}/files?per_page=100`,null,t); result=JSON.stringify(f.map(x=>({filename:x.filename,status:x.status,additions:x.additions,deletions:x.deletions,changes:x.changes,patch:x.patch?x.patch.substring(0,2000):null}))); break; }
         case 'get_pr_diff': { const r=await ghDiff(`/repos/${UPSTREAM_REPO}/pulls/${args.pr_number}`,t); const l=r.split('\n'); result=l.length>500?l.slice(0,500).join('\n')+`\n...(${l.length} lines)`:r; break; }
         case 'get_check_runs': { const d=await ghAPI('GET',`/repos/${UPSTREAM_REPO}/commits/${args.sha}/check-runs`,null,t); result=JSON.stringify({total_count:d.total_count,check_runs:(d.check_runs||[]).map(c=>({id:c.id,name:c.name,status:c.status,conclusion:c.conclusion,html_url:c.html_url,run_id:c.details_url?c.details_url.match(/runs\/(\d+)/)?.[1]:null}))}); break; }
         case 'get_ci_run_log': { const j=await ghAPI('GET',`/repos/${UPSTREAM_REPO}/actions/runs/${args.run_id}/jobs`,null,t); const f=(j.jobs||[]).find(x=>x.conclusion==='failure'); if(!f){result=JSON.stringify({message:'No failed jobs'});break;} result=JSON.stringify({job_name:f.name,conclusion:f.conclusion,failed_steps:(f.steps||[]).filter(s=>s.conclusion==='failure').map(s=>s.name),steps:(f.steps||[]).map(s=>({name:s.name,status:s.status,conclusion:s.conclusion}))}); break; }
         case 'list_discussions': { const[o,r]=UPSTREAM_REPO.split('/'); const g=await ghGQL(`query($o:String!,$r:String!,$l:Int!){repository(owner:$o,name:$r){discussions(first:$l,orderBy:{field:CREATED_AT,direction:DESC}){nodes{id number title author{login}createdAt updatedAt category{name}comments{totalCount}locked}}}}`,{o,r,l:Math.min(args.max_results||10,20)},t); result=JSON.stringify((g.data?.repository?.discussions?.nodes||[]).map(d=>({id:d.id,number:d.number,title:d.title,author:d.author?.login,category:d.category?.name,comment_count:d.comments?.totalCount||0,locked:d.locked,created_at:d.createdAt,updated_at:d.updatedAt}))); break; }
         case 'read_discussion': { const[o,r]=UPSTREAM_REPO.split('/'); const g=await ghGQL(`query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){discussion(number:$n){id number title body author{login}createdAt category{name}locked comments(first:50){nodes{id body author{login}createdAt}}}}}`,{o,r,n:args.discussion_number},t); const d=g.data?.repository?.discussion; if(!d)throw new Error(`Discussion #${args.discussion_number} not found`); result=JSON.stringify({id:d.id,number:d.number,title:d.title,body:d.body,author:d.author?.login,category:d.category?.name,locked:d.locked,created_at:d.createdAt,comments:(d.comments?.nodes||[]).map(c=>({id:c.id,author:c.author?.login,body:c.body,created_at:c.createdAt}))}); break; }
-        case 'comment_on_discussion': { checkRateLimit(`dc_${args.discussion_id}`,4); checkRateLimit('dcg',10); validateContent(args.body); const g=await ghGQL(`mutation($id:ID!,$b:String!){addDiscussionComment(input:{discussionId:$id,body:$b}){comment{id url}}}`,{id:args.discussion_id,b:args.body},t); const c=g.data?.addDiscussionComment?.comment; if(!c)throw new Error(g.errors?.map(e=>e.message).join('; ')||'GraphQL error'); result=JSON.stringify({id:c.id,url:c.url}); break; }
+        case 'comment_on_discussion': { checkRateLimit(`dc_${args.discussion_id}`,4); checkRateLimit('dcg',10); const bodyDC=attachCostFooter(args.body,'discussion_comment',`discussion:${args.discussion_id}`); validateContent(bodyDC); const g=await ghGQL(`mutation($id:ID!,$b:String!){addDiscussionComment(input:{discussionId:$id,body:$b}){comment{id url}}}`,{id:args.discussion_id,b:bodyDC},t); const c=g.data?.addDiscussionComment?.comment; if(!c)throw new Error(g.errors?.map(e=>e.message).join('; ')||'GraphQL error'); backfillCostUrl(`discussion:${args.discussion_id}`,c.url||''); result=JSON.stringify({id:c.id,url:c.url}); break; }
         case 'add_labels': { const r=await ghAPI('POST',`/repos/${UPSTREAM_REPO}/issues/${args.issue_number}/labels`,{labels:args.labels},t); result=JSON.stringify(Array.isArray(r)?r.map(l=>l.name):r); break; }
         case 'remove_label': { const r=await ghAPI('DELETE',`/repos/${UPSTREAM_REPO}/issues/${args.issue_number}/labels/${encodeURIComponent(args.label)}`,null,t); result=JSON.stringify(Array.isArray(r)?r.map(l=>l.name):r); break; }
         case 'close_issue': { const sr=args.state_reason||'completed'; const i=await ghAPI('PATCH',`/repos/${UPSTREAM_REPO}/issues/${args.issue_number}`,{state:'closed',state_reason:sr},t); result=JSON.stringify({number:i.number,state:i.state,state_reason:i.state_reason}); break; }
