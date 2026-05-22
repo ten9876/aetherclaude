@@ -722,6 +722,25 @@ skill_check_bug_reports() {
             continue
         fi
 
+        # ── Skip BRQ for "code-fix" bugs ────────────────────────────────
+        # A bug report that already identifies the file:line, proposes a
+        # fix in code, or cites a security/audit pass doesn't need radio
+        # model / firmware / steps to reproduce — those are runtime-
+        # context fields for behavioral bugs. Asking for them on a
+        # well-scoped code-quality finding is noise and stalls the issue.
+        # Three high-precision signals; ANY hit → skip:
+        #   1. file:line reference (src/foo.cpp:123 or :123-456)
+        #   2. proposed-fix section heading
+        #   3. security/audit pass reference
+        # See issue #2957 (atomic-rename TOCTOU on log symlink) — author
+        # gave file:line + code-block mitigation + audit memo cite; BRQ
+        # asked for radio model anyway.
+        if echo "$body" | grep -qEi '\b[a-z0-9_/.-]+\.(cpp|cc|cxx|c|h|hpp|py|js|ts|sh|md|qrc|yml|yaml|json):[0-9]+(-[0-9]+)?\b' \
+            || echo "$body" | grep -qEi '^##? *(mitigation|proposed fix|proposed solution|the fix|fix:)\b' \
+            || echo "$body" | grep -qEi '\b(audit (finding|memo|pass)|security pass|security audit)\b'; then
+            continue
+        fi
+
         # Check for missing fields
         local missing=()
         echo "$body" | grep -qi "radio.*model\|firmware\|flex-\|FLEX-" || missing+=("Radio model and firmware version")
