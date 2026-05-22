@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Cost-band footer + private audit logger for aethersdr-agent[bot] posts.
+"""Cost footer + audit logger for aethersdr-agent[bot] posts.
 
-Every comment, review, and PR description the bot posts gets a coarse
-public cost band appended to the body, and a precise audit row written
-to sqlite. The band hides the precise cost from anyone watching the
-bot's public output (so an attacker can't climb a gradient to find
-expensive prompt shapes), while still surfacing spikes visibly.
+Every comment, review, and PR description the bot posts gets a precise
+USD cost appended to the body, and a matching audit row written to
+sqlite. The original implementation used coarse cost bands to hide
+exact costs from public observers; operator preference is now precise
+amounts — visibility of per-post cost outweighs the gradient-attack
+concern (the orchestrator is single-tenant, posts are infrequent,
+and the audit row already stored the precise figure anyway).
 
 Invoked from bash (run-agent.sh) and node (create-pr.js,
 github-mcp-server.js). Two subcommands:
@@ -38,15 +40,6 @@ PRICING = {
 }
 FALLBACK_MODEL = 'claude-sonnet-4-6'
 
-# Bands [lo, hi); the last band has hi=inf.
-BANDS = [
-    (0.0,           0.05,           '< $0.05'),
-    (0.05,          0.20,           '$0.05–$0.20'),
-    (0.20,          1.00,           '$0.20–$1.00'),
-    (1.00,          5.00,           '$1.00–$5.00'),
-    (5.00, float('inf'),            '> $5.00'),
-]
-
 SESSION_GLOB = os.path.expanduser('~/.claude/projects/**/*.jsonl')
 DB_PATH      = os.environ.get('ACTIONS_DB',       '/Users/aetherclaude/data/issue-actions.db')
 OFFSET_FILE  = os.environ.get('BOT_COST_OFFSETS', '/Users/aetherclaude/data/.bot-cost-offsets.json')
@@ -62,21 +55,17 @@ def cost_for(model, totals):
     )
 
 
-def band_for(usd):
-    for lo, hi, label in BANDS:
-        if lo <= usd < hi:
-            return label
-    return BANDS[-1][2]
+def format_cost(usd):
+    """Always 4-decimal USD so cheap calls (<1¢) show non-zero digits.
+    Examples: $0.0001, $0.0123, $1.2345, $12.3456."""
+    return '${:.4f}'.format(usd)
 
 
-def format_footer(model, band):
-    # "<$0.05" and ">$5.00" already imply approximation; the middle
-    # bands get a "~" prefix to signal "rough" cost.
-    cost_str = band if (band.startswith('<') or band.startswith('>')) else '~' + band
+def format_footer(model, usd):
     return (
         '\n\n---\n'
         '<sub>\U0001f916 aethersdr-agent · cost: '
-        + cost_str + ' · model: ' + model + '</sub>'
+        + format_cost(usd) + ' · model: ' + model + '</sub>'
     )
 
 
@@ -187,7 +176,11 @@ def _ensure_schema(conn):
     conn.commit()
 
 
-def log_audit(model, totals, usd, band, kind, target, run_id):
+def log_audit(model, totals, usd, kind, target, run_id):
+    # The schema still has a `public_band` column (legacy from when this
+    # script published coarse bands publicly). We populate it with the
+    # precise cost string for backward-compat with anything reading the
+    # column; it's no longer a "band" but isn't worth a migration.
     ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
     try:
@@ -203,7 +196,7 @@ def log_audit(model, totals, usd, band, kind, target, run_id):
               totals['input_tokens'], totals['output_tokens'],
               totals['cache_read_input_tokens'],
               totals['cache_creation_input_tokens'],
-              usd, band, run_id))
+              usd, format_cost(usd), run_id))
         conn.commit()
     finally:
         conn.close()
@@ -243,15 +236,14 @@ def cmd_wrap(args):
     target = derive_target(args.target, args.endpoint, args.kind)
     model, totals = read_usage_since_marker()
     usd = cost_for(model, totals)
-    band = band_for(usd)
     try:
-        log_audit(model, totals, usd, band, args.kind, target,
+        log_audit(model, totals, usd, args.kind, target,
                   args.run_id or os.environ.get('RUN_ID', ''))
     except sqlite3.Error as e:
         # Never block a post on audit-log failure; surface to stderr.
         sys.stderr.write('bot-cost: audit log failed: {}\n'.format(e))
 
-    sys.stdout.write(body + format_footer(model, band))
+    sys.stdout.write(body + format_footer(model, usd))
 
 
 def cmd_backfill_url(args):
