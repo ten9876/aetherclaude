@@ -243,7 +243,17 @@ def cmd_wrap(args):
         # Never block a post on audit-log failure; surface to stderr.
         sys.stderr.write('bot-cost: audit log failed: {}\n'.format(e))
 
-    sys.stdout.write(body + format_footer(model, usd))
+    # Skip the footer entirely when there's no measurable usage delta
+    # (first-ever invocation seeds offsets at EOF and returns zero; some
+    # webhook-only short-circuit paths also produce no LLM calls). A
+    # "$0.0000" footer on those is misleading — operator reads it as
+    # "the model is free" or "the cost-tracker is broken". The audit
+    # row is still written above so we have a record that the post
+    # happened with zero attributed cost — useful diagnostic.
+    if usd <= 0:
+        sys.stdout.write(body)
+    else:
+        sys.stdout.write(body + format_footer(model, usd))
 
 
 def cmd_backfill_url(args):
