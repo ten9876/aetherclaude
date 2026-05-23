@@ -2021,9 +2021,20 @@ case "$TRIGGER_EVENT" in
         EVENT_SKILLS="continue-triage,implement-fix"
         EVENT_TOOLS="read_issue,list_issue_comments"
         ;;
-    check_run|workflow_run)
-        EVENT_SKILLS="explain-ci"
-        EVENT_TOOLS="get_ci_run_log,get_check_runs"
+    check_run|workflow_run|check_suite)
+        # CI completion drives BOTH:
+        #   - explain-ci: act on failures (post a CI-failure explainer)
+        #   - review-pr:  act on successes (the PR is now ripe for review)
+        # Without review-pr here, the only window to review a PR is the
+        # pull_request:opened webhook, which fires ~1s after the PR opens
+        # — long before CI has even started. review-pr's CI-status gate
+        # at skill_review_prs() then skips with status=pending, and the
+        # PR is never re-evaluated. Trace 446b7880 hit this: PR #3012 was
+        # opened, scanned, deferred for pending CI, and never picked up
+        # again. has_review guard inside the skill prevents double-posts
+        # if multiple check_runs in one suite each re-trigger us.
+        EVENT_SKILLS="explain-ci,review-pr"
+        EVENT_TOOLS="get_ci_run_log,get_check_runs,read_issue,list_open_prs,list_pr_files,get_pr_diff,create_pr_review"
         ;;
     discussion|discussion_comment)
         : # responder disabled — no scope
