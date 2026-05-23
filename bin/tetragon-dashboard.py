@@ -65,6 +65,17 @@ REFRESH_INTERVAL_MS = 3000
 TOKEN_REFRESH_SECS = 30
 RING_REFRESH_SECS = 15
 SESSION_DIR = '/Users/aetherclaude/.claude/projects'
+
+# Anthropic Max subscription. Bills on day SUBSCRIPTION_BILL_DAY of each
+# month for SUBSCRIPTION_AMOUNT_USD. The dashboard's ROI panel shows two
+# views: "This Cycle" (since the most-recent bill day) and "Lifetime"
+# (since the first bill cycle). Override via env if billing terms change.
+SUBSCRIPTION_BILL_DAY    = int(os.environ.get('CLAUDE_MAX_BILL_DAY',    4))
+SUBSCRIPTION_AMOUNT_USD  = float(os.environ.get('CLAUDE_MAX_AMOUNT_USD', 200))
+# Optional explicit subscription start date (YYYY-MM-DD). When unset,
+# auto-discovered as the most-recent bill day on or before the oldest
+# session JSONL's mtime.
+SUBSCRIPTION_START_DATE  = os.environ.get('CLAUDE_MAX_START_DATE', '')
 VALIDATION_LOG = '/Users/aetherclaude/logs/validation.log'
 MCP_AUDIT_LOG = '/Users/aetherclaude/logs/mcp-audit.log'
 ORCHESTRATOR_LOG = '/Users/aetherclaude/logs/orchestrator.log'
@@ -251,7 +262,13 @@ def append_event(entry):
         stats['alerts'].append({'time': entry.get('time', ''), 'msg': f"FIREWALL: {entry.get('args', '')}", 'severity': 'high'})
     elif entry.get('policy') == 'domain-filter':
         stats['alerts'].append({'time': entry.get('time', ''), 'msg': f"PROXY: {entry.get('args', '')}", 'severity': 'high'})
-token_stats = {'input': 0, 'output': 0, 'cache_read': 0, 'cache_create': 0, 'messages': 0}
+token_stats = {
+    'input': 0, 'output': 0, 'cache_read': 0, 'cache_create': 0, 'messages': 0,
+    'cycle_input': 0, 'cycle_output': 0, 'cycle_cache_read': 0,
+    'cycle_cache_create': 0, 'cycle_messages': 0,
+    'cycle_start_iso': '', 'subscription_amount_usd': SUBSCRIPTION_AMOUNT_USD,
+    'subscription_cycles_paid': 1, 'subscription_start_iso': '',
+}
 tool_stats = {'total': 0, 'breakdown': {}}
 ring_stats = {
     'agent_running': False,
@@ -1349,12 +1366,100 @@ def scan_rings():
         db_purge_if_needed(250)
         time.sleep(RING_REFRESH_SECS)
 
+# ── Anthropic Max billing cycle helpers ───────────────────────────────────
+# All math is in local time (the user's billing date is wall-clock local).
+def _current_cycle_start(now=None):
+    """Datetime of the most recent bill day at midnight local time. If
+    today's day-of-month is >= SUBSCRIPTION_BILL_DAY the cycle started
+    this month; otherwise it started on the bill day of the prior month."""
+    now = now or datetime.now()
+    if now.day >= SUBSCRIPTION_BILL_DAY:
+        return now.replace(day=SUBSCRIPTION_BILL_DAY, hour=0, minute=0,
+                           second=0, microsecond=0)
+    prev_month_last = now.replace(day=1) - timedelta(days=1)
+    return prev_month_last.replace(day=SUBSCRIPTION_BILL_DAY, hour=0, minute=0,
+                                   second=0, microsecond=0)
+
+def _discover_subscription_start():
+    """Honor CLAUDE_MAX_START_DATE if set. Otherwise: walk session JSONLs,
+    find the oldest mtime, round back to the most recent bill day on or
+    before it. Cached for the process lifetime — bill-day boundary moves
+    once a month, far slower than the dashboard's restart cadence."""
+    if SUBSCRIPTION_START_DATE:
+        try:
+            d = datetime.strptime(SUBSCRIPTION_START_DATE, '%Y-%m-%d')
+            return d.replace(hour=0, minute=0, second=0, microsecond=0)
+        except ValueError:
+            pass  # malformed — fall through to discovery
+    oldest = None
+    for f in glob.glob(os.path.join(SESSION_DIR, '**', '*.jsonl'), recursive=True):
+        try:
+            m = os.path.getmtime(f)
+        except OSError:
+            continue
+        if oldest is None or m < oldest:
+            oldest = m
+    if oldest is None:
+        return _current_cycle_start()
+    dt = datetime.fromtimestamp(oldest)
+    if dt.day >= SUBSCRIPTION_BILL_DAY:
+        return dt.replace(day=SUBSCRIPTION_BILL_DAY, hour=0, minute=0,
+                          second=0, microsecond=0)
+    prev_month_last = dt.replace(day=1) - timedelta(days=1)
+    return prev_month_last.replace(day=SUBSCRIPTION_BILL_DAY, hour=0, minute=0,
+                                   second=0, microsecond=0)
+
+def _bill_cycles_paid(start_date, now=None):
+    """Number of $200 charges since start_date (inclusive of the first
+    one on start_date). If today hasn't yet reached this month's bill
+    day, this month's charge hasn't happened yet so subtract one."""
+    now = now or datetime.now()
+    months = (now.year - start_date.year) * 12 + (now.month - start_date.month) + 1
+    if now.day < SUBSCRIPTION_BILL_DAY:
+        months -= 1
+    return max(1, months)
+
+# Parse the JSONL record's top-level `timestamp` ("2026-04-13T23:32:33.178Z")
+# into a naive local datetime so we can compare it to _current_cycle_start
+# (also local-naive). Returns None on any parse failure — caller decides.
+def _parse_record_ts(ts_str):
+    if not ts_str:
+        return None
+    try:
+        # Strip Z and fractional seconds for fromisoformat compat across
+        # Python versions, then convert UTC → local naive.
+        s = ts_str.rstrip('Z')
+        if '.' in s:
+            s = s.split('.', 1)[0]
+        dt_utc = datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+        return dt_utc.astimezone().replace(tzinfo=None)
+    except (ValueError, TypeError):
+        return None
+
+
 def scan_tokens():
     while True:
         try:
+            # Cycle boundary recomputed each scan tick — when the bill day
+            # rolls over at midnight, the next refresh picks it up.
+            cycle_start = _current_cycle_start()
+            sub_start   = _discover_subscription_start()
+            cycles_paid = _bill_cycles_paid(sub_start)
+
+            # Lifetime totals (all-time, matches pre-existing behavior).
             total_in = total_out = total_cr = total_cc = total_msgs = 0
+            # Current-cycle totals (records with timestamp >= cycle_start).
+            cyc_in   = cyc_out   = cyc_cr   = cyc_cc   = cyc_msgs   = 0
             for f in glob.glob(os.path.join(SESSION_DIR, '**', '*.jsonl'), recursive=True):
                 if '/subagents/' in f: continue
+                # mtime fast-path: if the file hasn't been touched since
+                # the cycle started, none of its records are in-cycle.
+                # Saves per-line timestamp parsing on the long tail of
+                # cold session files.
+                try:
+                    file_in_cycle = os.path.getmtime(f) >= cycle_start.timestamp()
+                except OSError:
+                    file_in_cycle = True
                 try:
                     with open(f) as fh:
                         for line in fh:
@@ -1362,11 +1467,20 @@ def scan_tokens():
                             d = json.loads(line)
                             u = d.get('message', {}).get('usage', {})
                             if u:
-                                total_in += u.get('input_tokens', 0)
-                                total_out += u.get('output_tokens', 0)
-                                total_cr += u.get('cache_read_input_tokens', 0)
-                                total_cc += u.get('cache_creation_input_tokens', 0)
+                                inp = u.get('input_tokens', 0)
+                                out = u.get('output_tokens', 0)
+                                cr  = u.get('cache_read_input_tokens', 0)
+                                cc  = u.get('cache_creation_input_tokens', 0)
+                                total_in += inp; total_out += out
+                                total_cr += cr;  total_cc += cc
                                 total_msgs += 1
+                                if file_in_cycle:
+                                    rec_dt = _parse_record_ts(d.get('timestamp'))
+                                    in_cycle = rec_dt is None or rec_dt >= cycle_start
+                                    if in_cycle:
+                                        cyc_in += inp; cyc_out += out
+                                        cyc_cr += cr;  cyc_cc += cc
+                                        cyc_msgs += 1
                 except: continue
             # Also count tool calls
             tool_total = 0
@@ -1391,6 +1505,17 @@ def scan_tokens():
                 token_stats['cache_read'] = total_cr
                 token_stats['cache_create'] = total_cc
                 token_stats['messages'] = total_msgs
+                # Cycle-scoped + billing-meta fields. Read by /api/events
+                # to render Cycle ROI alongside Lifetime ROI.
+                token_stats['cycle_input']      = cyc_in
+                token_stats['cycle_output']     = cyc_out
+                token_stats['cycle_cache_read'] = cyc_cr
+                token_stats['cycle_cache_create'] = cyc_cc
+                token_stats['cycle_messages']   = cyc_msgs
+                token_stats['cycle_start_iso']  = cycle_start.strftime('%Y-%m-%d')
+                token_stats['subscription_amount_usd'] = SUBSCRIPTION_AMOUNT_USD
+                token_stats['subscription_cycles_paid'] = cycles_paid
+                token_stats['subscription_start_iso']   = sub_start.strftime('%Y-%m-%d')
                 tool_stats['total'] = tool_total
                 tool_stats['breakdown'] = dict(tool_bd)
         except: pass
@@ -2550,14 +2675,33 @@ th+=`<div class="si"><span class="n">Cache Read</span><span class="c">${((t.cach
 th+=`<div class="si"><span class="n">Cache Create</span><span class="c">${((t.cache_create||0)/1e6).toFixed(1)}M</span></div>`;
 th+=`<div class="si"><span class="n">API Messages</span><span class="c">${t.messages||0}</span></div>`;
 th+=`<div class="si"><span class="n" style="color:#00ff88">API Cost (avoided)</span><span class="c" style="color:#00ff88">$${t.estimated_cost_usd||0}</span></div>`;
-const maxCost=200;
-const roi=(t.estimated_cost_usd||0)-maxCost;
-const roiColor=roi>=0?'#00ff88':'#ffaa00';
-const roiLabel=roi>=0?'ROI (profit)':'ROI (building)';
-const pct=Math.round(((t.estimated_cost_usd||0)/maxCost)*100);
-th+=`<div class="si"><span class="n">MAX Subscription</span><span class="c">$${maxCost}</span></div>`;
-th+=`<div class="si"><span class="n" style="color:${roiColor}">${roiLabel}</span><span class="c" style="color:${roiColor}">${roi>=0?'+':''}$${roi.toFixed(2)}</span></div>`;
-th+=`<div class="si"><span class="n">Breakeven</span><span class="c">${pct}%</span></div>`;
+// Two ROI views: current billing cycle (resets on the subscription bill
+// day each month) and lifetime (cumulative since the first cycle).
+// Server-provided so the JS doesn't need its own date math.
+const cyc=t.cycle||{},life=t.lifetime||{};
+const cycCost=cyc.estimated_cost_usd||0;
+const cycSub=cyc.subscription_amount_usd||200;
+const cycRoi=cycCost-cycSub;
+const cycRoiColor=cycRoi>=0?'#00ff88':'#ffaa00';
+const cycRoiLabel=cycRoi>=0?'Cycle ROI (profit)':'Cycle ROI (building)';
+const cycPct=Math.round((cycCost/cycSub)*100);
+const lifeCost=life.estimated_cost_usd||0;
+const lifeSub=life.subscription_total_usd||cycSub;
+const cycles=life.subscription_cycles_paid||1;
+const lifeRoi=lifeCost-lifeSub;
+const lifeRoiColor=lifeRoi>=0?'#00ff88':'#ffaa00';
+const lifeRoiLabel=lifeRoi>=0?'Lifetime ROI (profit)':'Lifetime ROI (building)';
+const lifePct=Math.round((lifeCost/lifeSub)*100);
+th+=`<div class="si"><span class="n">— This Cycle (since ${cyc.cycle_start_iso||'?'}) —</span><span class="c"></span></div>`;
+th+=`<div class="si"><span class="n">MAX Subscription</span><span class="c">$${cycSub}</span></div>`;
+th+=`<div class="si"><span class="n">Cycle API Cost</span><span class="c">$${cycCost.toFixed(2)}</span></div>`;
+th+=`<div class="si"><span class="n" style="color:${cycRoiColor}">${cycRoiLabel}</span><span class="c" style="color:${cycRoiColor}">${cycRoi>=0?'+':''}$${cycRoi.toFixed(2)}</span></div>`;
+th+=`<div class="si"><span class="n">Cycle Breakeven</span><span class="c">${cycPct}%</span></div>`;
+th+=`<div class="si"><span class="n">— Lifetime (since ${life.subscription_start_iso||'?'}, ${cycles} cycle${cycles===1?'':'s'}) —</span><span class="c"></span></div>`;
+th+=`<div class="si"><span class="n">Lifetime Subscription</span><span class="c">$${lifeSub.toFixed(2)}</span></div>`;
+th+=`<div class="si"><span class="n">Lifetime API Cost</span><span class="c">$${lifeCost.toFixed(2)}</span></div>`;
+th+=`<div class="si"><span class="n" style="color:${lifeRoiColor}">${lifeRoiLabel}</span><span class="c" style="color:${lifeRoiColor}">${lifeRoi>=0?'+':''}$${lifeRoi.toFixed(2)}</span></div>`;
+th+=`<div class="si"><span class="n">Lifetime Breakeven</span><span class="c">${lifePct}%</span></div>`;
 document.getElementById('tp').innerHTML=th;
 // Binaries
 // GitHub Activity from MCP breakdown
@@ -6760,7 +6904,7 @@ a{{color:#0a6aba}}
             display = list(reversed(display))
             with lock:
                 d = {'events': display, 'total': buf_total, 'filtered': len(filtered),
-                     'stats':{'total_events':stats['total_events'],'exec_count':stats['exec_count'],'kprobe_count':stats['kprobe_count'],'exit_count':stats['exit_count'],'aetherclaude_events':stats['aetherclaude_events'],'network_connections':stats['network_connections'],'alert_count':len(stats['alerts']),'policy_hits':dict(stats['policy_hits']),'binaries_seen':dict(stats['binaries_seen']),'alerts':list(stats['alerts']),'suppressed':stats['suppressed'],'tokens':{'input':token_stats['input'],'output':token_stats['output'],'cache_read':token_stats['cache_read'],'cache_create':token_stats['cache_create'],'messages':token_stats['messages'],'total':token_stats['input']+token_stats['output'],'estimated_cost_usd':round(token_stats['input']/1e6*15+token_stats['output']/1e6*75,2)},'tools':{'total':tool_stats['total'],'breakdown':tool_stats['breakdown']}},'mcp_scan_details':ring_stats.get('r6_mcp_details',[]),'rings':dict(ring_stats)}
+                     'stats':{'total_events':stats['total_events'],'exec_count':stats['exec_count'],'kprobe_count':stats['kprobe_count'],'exit_count':stats['exit_count'],'aetherclaude_events':stats['aetherclaude_events'],'network_connections':stats['network_connections'],'alert_count':len(stats['alerts']),'policy_hits':dict(stats['policy_hits']),'binaries_seen':dict(stats['binaries_seen']),'alerts':list(stats['alerts']),'suppressed':stats['suppressed'],'tokens':{'input':token_stats['input'],'output':token_stats['output'],'cache_read':token_stats['cache_read'],'cache_create':token_stats['cache_create'],'messages':token_stats['messages'],'total':token_stats['input']+token_stats['output'],'estimated_cost_usd':round(token_stats['input']/1e6*15+token_stats['output']/1e6*75,2),'cycle':{'input':token_stats['cycle_input'],'output':token_stats['cycle_output'],'cache_read':token_stats['cycle_cache_read'],'cache_create':token_stats['cycle_cache_create'],'messages':token_stats['cycle_messages'],'estimated_cost_usd':round(token_stats['cycle_input']/1e6*15+token_stats['cycle_output']/1e6*75,2),'cycle_start_iso':token_stats['cycle_start_iso'],'subscription_amount_usd':token_stats['subscription_amount_usd']},'lifetime':{'estimated_cost_usd':round(token_stats['input']/1e6*15+token_stats['output']/1e6*75,2),'subscription_cycles_paid':token_stats['subscription_cycles_paid'],'subscription_total_usd':round(token_stats['subscription_amount_usd']*token_stats['subscription_cycles_paid'],2),'subscription_start_iso':token_stats['subscription_start_iso']}},'tools':{'total':tool_stats['total'],'breakdown':tool_stats['breakdown']}},'mcp_scan_details':ring_stats.get('r6_mcp_details',[]),'rings':dict(ring_stats)}
             self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Access-Control-Allow-Origin','*');self.end_headers()
             self._send_json(d)
         elif self.path.startswith('/api/ring-events'):
