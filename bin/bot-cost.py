@@ -40,6 +40,78 @@ PRICING = {
 }
 FALLBACK_MODEL = 'claude-sonnet-4-6'
 
+# ── Framework-tag sanitizer ─────────────────────────────────────────────────
+# Strip framework-internal XML-style tags from bot post bodies. These
+# tags don't appear in the bot's natural markdown output (verified across
+# 30 days of post-backfill scan); any instance in an outbound body means
+# either training-set residue, an upstream context that carried a prompt-
+# injection seed, or a model jailbreak. Never let them out — a downstream
+# LLM that reads PR comments via `gh pr view` could be derailed by them.
+#
+# Defense-in-depth: no confirmed live incident as of the initial deploy;
+# this closes the surface proactively before one materializes.
+FRAMEWORK_TAG_PATTERNS = [
+    # (regex, kind-for-telemetry). Order matters only for telemetry
+    # labeling — a tag that matches an earlier specific pattern gets
+    # that label rather than the namespace catch-all.
+    (re.compile(r'<system-reminder\b[^>]*>.*?</system-reminder>',
+                re.IGNORECASE | re.DOTALL),                  'system-reminder-paired'),
+    (re.compile(r'<system-reminder\b[^>]*/>', re.IGNORECASE), 'system-reminder-self-closing'),
+    (re.compile(r'<system\b[^>]*>.*?</system>',
+                re.IGNORECASE | re.DOTALL),                  'system-paired'),
+    (re.compile(r'<command-name\b[^>]*>.*?</command-name>',
+                re.IGNORECASE | re.DOTALL),                  'command-name'),
+    (re.compile(r'<task-notification\b[^>]*>.*?</task-notification>',
+                re.IGNORECASE | re.DOTALL),                  'task-notification'),
+    # Namespace catch-alls: any well-formed paired tag whose name is in
+    # the system-* / user-prompt-* / task-* / hook-* namespace. The \1
+    # backreference ensures open/close match (won't false-positive on
+    # legitimate prose that mentions "<system-something>" without a
+    # matching close).
+    (re.compile(r'<(system-[a-z][a-z0-9-]*)\b[^>]*>.*?</\1>',
+                re.IGNORECASE | re.DOTALL),                  'system-namespace'),
+    (re.compile(r'<(user-prompt-[a-z][a-z0-9-]*)\b[^>]*>.*?</\1>',
+                re.IGNORECASE | re.DOTALL),                  'user-prompt-namespace'),
+    (re.compile(r'<(task-[a-z][a-z0-9-]*)\b[^>]*>.*?</\1>',
+                re.IGNORECASE | re.DOTALL),                  'task-namespace'),
+    (re.compile(r'<(hook-[a-z][a-z0-9-]*)\b[^>]*>.*?</\1>',
+                re.IGNORECASE | re.DOTALL),                  'hook-namespace'),
+]
+
+# If the body shrinks below this many chars after scrubbing, the
+# original was overwhelmingly framework tags — almost certainly a
+# successful prompt-injection of the agent. Don't post silently; emit
+# a clear "blocked" marker so the operator notices and can investigate
+# the corresponding agent run.
+MIN_BODY_AFTER_SCRUB = 50
+
+
+def scrub_framework_tags(body):
+    """Strip framework-internal tags from body. Returns
+    (cleaned_body, [strip_events]). Each event = {kind, len, excerpt}.
+
+    Stripping is unconditional — code-fenced examples that legitimately
+    quote a tag will also be stripped. Acceptable trade-off for v1:
+    the bot's natural output doesn't write prose about prompt-injection
+    tag syntax, so false positives are unlikely. If that changes,
+    refine to skip inside ``` fences."""
+    strip_events = []
+    cleaned = body
+    for pattern, kind in FRAMEWORK_TAG_PATTERNS:
+        def _record(m, _kind=kind):
+            text = m.group(0)
+            strip_events.append({
+                'kind': _kind,
+                'len': len(text),
+                'excerpt': text[:120].replace('\n', ' '),
+            })
+            return ''
+        cleaned = pattern.sub(_record, cleaned)
+    # Strips often leave triple+ newlines; normalize and trim trailing.
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).rstrip()
+    return cleaned, strip_events
+
+
 SESSION_GLOB = os.path.expanduser('~/.claude/projects/**/*.jsonl')
 DB_PATH      = os.environ.get('ACTIONS_DB',       '/Users/aetherclaude/data/issue-actions.db')
 OFFSET_FILE  = os.environ.get('BOT_COST_OFFSETS', '/Users/aetherclaude/data/.bot-cost-offsets.json')
@@ -173,7 +245,50 @@ def _ensure_schema(conn):
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bca_target ON bot_cost_audit(source_target)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bca_ts     ON bot_cost_audit(timestamp_utc)")
+    # Sanitizer telemetry: every framework-tag strip recorded here. A
+    # row appears only when at least one tag was stripped — quiet on
+    # the common case of clean output. `aborted=1` indicates the post
+    # body shrank below MIN_BODY_AFTER_SCRUB and was replaced with a
+    # blocked-marker before sending.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bot_post_sanitize (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp_utc TEXT    NOT NULL,
+            target        TEXT    NOT NULL,
+            kind          TEXT    NOT NULL,
+            strip_count   INTEGER NOT NULL,
+            original_len  INTEGER NOT NULL,
+            final_len     INTEGER NOT NULL,
+            kinds         TEXT    NOT NULL,
+            excerpts      TEXT    NOT NULL,
+            aborted       INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bps_ts     ON bot_post_sanitize(timestamp_utc)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bps_target ON bot_post_sanitize(target)")
     conn.commit()
+
+
+def log_sanitize_audit(target, kind, strip_events, original_len, final_len, aborted):
+    """Record a sanitize event. Called only when strip_events is non-empty.
+    Best-effort — failures here must never block the post."""
+    ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    try:
+        _ensure_schema(conn)
+        conn.execute("""
+            INSERT INTO bot_post_sanitize (
+                timestamp_utc, target, kind, strip_count,
+                original_len, final_len, kinds, excerpts, aborted)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (ts, target, kind, len(strip_events),
+              original_len, final_len,
+              ','.join(e['kind'] for e in strip_events),
+              '\n---\n'.join(e['excerpt'] for e in strip_events),
+              1 if aborted else 0))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def log_audit(model, totals, usd, kind, target, run_id):
@@ -224,6 +339,19 @@ def derive_target(target_arg, endpoint, kind):
 
 # --- subcommand handlers -----------------------------------------------------
 
+_ABORT_MARKER = (
+    '⚠️ **Automated post blocked by output sanitizer.**\n\n'
+    'The bot\'s draft response was {stripped} of {orig} bytes ({pct}%) '
+    'framework-internal tags after sanitization — high confidence this '
+    'was either a prompt-injection seed in the upstream context, '
+    'training-set residue, or a model jailbreak.\n\n'
+    'See the `bot_post_sanitize` table in `issue-actions.db` for the '
+    'matched content; review the corresponding agent run before '
+    'unblocking the path.\n\n'
+    '— aethersdr-agent output sanitizer'
+)
+
+
 def cmd_wrap(args):
     if args.body_file:
         with open(args.body_file) as fh:
@@ -234,6 +362,37 @@ def cmd_wrap(args):
         body = args.body or ''
 
     target = derive_target(args.target, args.endpoint, args.kind)
+
+    # ── Output sanitizer (defense-in-depth) ────────────────────────────────
+    # Runs BEFORE cost-footer so a successful injection of the footer
+    # itself can't pass through. If the body shrinks under threshold,
+    # replace with a clear blocked marker rather than silently dropping
+    # the post — operator-visible failure beats silent data loss.
+    original_len = len(body)
+    body, strip_events = scrub_framework_tags(body)
+    final_len = len(body)
+    aborted = False
+    if strip_events:
+        aborted = final_len < MIN_BODY_AFTER_SCRUB
+        if aborted:
+            stripped = original_len - final_len
+            pct = round(stripped * 100 / max(original_len, 1))
+            body = _ABORT_MARKER.format(stripped=stripped, orig=original_len, pct=pct)
+            final_len = len(body)
+        try:
+            log_sanitize_audit(target, args.kind, strip_events,
+                               original_len, final_len, aborted)
+        except sqlite3.Error as e:
+            sys.stderr.write('bot-cost: sanitize audit log failed: {}\n'.format(e))
+        # Also surface to stderr so the orchestrator log captures it
+        # immediately (sqlite is silent). Stripped-but-not-aborted is
+        # interesting; aborted is alarming.
+        sys.stderr.write(
+            'bot-cost: scrubbed {} framework tag(s) from {} post (target={}, '
+            'kinds={}, aborted={})\n'.format(
+                len(strip_events), args.kind, target,
+                ','.join(e['kind'] for e in strip_events), aborted))
+
     model, totals = read_usage_since_marker()
     usd = cost_for(model, totals)
     try:
