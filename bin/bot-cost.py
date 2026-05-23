@@ -113,6 +113,7 @@ def scrub_framework_tags(body):
 
 
 SESSION_GLOB = os.path.expanduser('~/.claude/projects/**/*.jsonl')
+SESSION_ROOT = os.path.expanduser('~/.claude/projects')
 DB_PATH      = os.environ.get('ACTIONS_DB',       '/Users/aetherclaude/data/issue-actions.db')
 OFFSET_FILE  = os.environ.get('BOT_COST_OFFSETS', '/Users/aetherclaude/data/.bot-cost-offsets.json')
 
@@ -139,6 +140,58 @@ def format_footer(model, usd):
         '<sub>\U0001f916 aethersdr-agent · cost: '
         + format_cost(usd) + ' · model: ' + model + '</sub>'
     )
+
+
+def _sum_usage_records(paths, totals, model_seen):
+    """Read every line in each path, accumulate usage tokens into totals,
+    and return the most-recent model string seen. Shared by the
+    per-session and legacy offset readers."""
+    for path in paths:
+        try:
+            with open(path, 'rb') as fh:
+                chunk = fh.read()
+        except OSError:
+            continue
+        for raw in chunk.splitlines():
+            if b'"usage"' not in raw:
+                continue
+            try:
+                rec = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            msg = rec.get('message') or {}
+            u = msg.get('usage') or {}
+            if not u:
+                continue
+            for k in totals:
+                v = u.get(k, 0)
+                if isinstance(v, (int, float)):
+                    totals[k] += int(v)
+            m = msg.get('model')
+            if m:
+                model_seen = m
+    return model_seen
+
+
+def read_usage_for_session(session_id):
+    """Per-run scoped reader. Sums usage from:
+      - the main session JSONL: ~/.claude/projects/*/<session_id>.jsonl
+      - its sub-agent JSONLs:   ~/.claude/projects/*/<session_id>/subagents/agent-*.jsonl
+    Reads the FULL file each time (no offset tracking): the session JSONL
+    is created fresh per `run_claude` invocation and belongs entirely to
+    this run, so the whole file is the right delta to attribute. Sibling
+    sessions running concurrently are ignored — that's the whole point."""
+    totals = {
+        'input_tokens': 0,
+        'output_tokens': 0,
+        'cache_read_input_tokens': 0,
+        'cache_creation_input_tokens': 0,
+    }
+    main_paths = glob.glob(os.path.join(SESSION_ROOT, '*', session_id + '.jsonl'))
+    sub_paths  = glob.glob(os.path.join(SESSION_ROOT, '*', session_id,
+                                        'subagents', 'agent-*.jsonl'))
+    model_seen = _sum_usage_records(main_paths + sub_paths, totals, None)
+    return (model_seen or FALLBACK_MODEL), totals
 
 
 def read_usage_since_marker():
@@ -361,6 +414,15 @@ def cmd_wrap(args):
     else:
         body = args.body or ''
 
+    # Caller can pass --session-id explicitly, or set CLAUDE_SESSION_ID /
+    # LAST_CLAUDE_SESSION_ID in env. Env precedence: the orchestrator's
+    # run_claude exports LAST_CLAUDE_SESSION_ID before invoking helpers
+    # that may post comments.
+    session_id = (args.session_id
+                  or os.environ.get('CLAUDE_SESSION_ID')
+                  or os.environ.get('LAST_CLAUDE_SESSION_ID')
+                  or '').strip()
+
     target = derive_target(args.target, args.endpoint, args.kind)
 
     # ── Output sanitizer (defense-in-depth) ────────────────────────────────
@@ -393,7 +455,10 @@ def cmd_wrap(args):
                 len(strip_events), args.kind, target,
                 ','.join(e['kind'] for e in strip_events), aborted))
 
-    model, totals = read_usage_since_marker()
+    if session_id:
+        model, totals = read_usage_for_session(session_id)
+    else:
+        model, totals = read_usage_since_marker()
     usd = cost_for(model, totals)
     try:
         log_audit(model, totals, usd, args.kind, target,
@@ -448,6 +513,13 @@ def main():
     w.add_argument('--endpoint', default=None,
                    help='API path, e.g. /repos/o/r/issues/123/comments')
     w.add_argument('--run-id', default=None)
+    w.add_argument('--session-id', default=None,
+                   help='UUID of the claude session to attribute tokens '
+                        'to. Reads usage ONLY from this session\'s JSONL '
+                        'and its sub-agents, ignoring all other concurrent '
+                        'sessions. Falls back to env CLAUDE_SESSION_ID / '
+                        'LAST_CLAUDE_SESSION_ID, then to the legacy '
+                        'offset-marker reader if neither is set.')
     grp = w.add_mutually_exclusive_group(required=True)
     grp.add_argument('--body', help='inline body text, or "-" for stdin')
     grp.add_argument('--body-file', help='path to file containing body')

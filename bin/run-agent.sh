@@ -242,10 +242,22 @@ github_api_body() {
 post_bot_comment() {
     local endpoint="$1" token="$2" payload="$3" kind="${4:-issue_comment}"
 
-    local body wrapped new_payload response url target
+    local body wrapped new_payload response url target session_arg
     body=$(printf '%s' "$payload" | jq -r '.body // empty' 2>/dev/null || echo "")
+    # Pass the most-recent run_claude session ID through so bot-cost.py
+    # attributes only THIS run's tokens, not whatever happens to have
+    # been written across all session JSONLs since the last marker.
+    # Empty when post_bot_comment is called without a preceding claude
+    # call (e.g., bare welcome message) — bot-cost.py falls back to
+    # legacy offset behavior in that case, but the result is zero tokens
+    # since there was no LLM work.
+    session_arg=()
+    if [ -n "${LAST_CLAUDE_SESSION_ID:-}" ]; then
+        session_arg=(--session-id "$LAST_CLAUDE_SESSION_ID")
+    fi
     wrapped=$(printf '%s' "$body" | /Users/aetherclaude/bin/bot-cost.py wrap \
-                --kind "$kind" --endpoint "$endpoint" --body - 2>/dev/null) \
+                --kind "$kind" --endpoint "$endpoint" \
+                "${session_arg[@]}" --body - 2>/dev/null) \
         || wrapped="$body"
     new_payload=$(printf '%s' "$payload" | jq --arg b "$wrapped" '.body = $b' 2>/dev/null) \
         || new_payload="$payload"
@@ -425,6 +437,21 @@ run_claude() {
     local allowed_tools="${3:-$CLAUDE_ALLOWED_TOOLS_DEFAULT}"
     local claude_pid watchdog_pid
     local exit_code=0
+
+    # Mint a deterministic session ID and pass it to `claude --session-id`
+    # so the resulting JSONL lands at a path WE know in advance:
+    #   $session_dir/$claude_session_id.jsonl
+    # Two payoffs:
+    #   1. Heartbeat watchdog (below) targets the exact file instead of
+    #      `ls -t | head -1`, which mis-picks an unrelated session's JSONL
+    #      when concurrent runs share a cwd.
+    #   2. `bot-cost.py wrap` reads usage scoped to THIS session only
+    #      (main JSONL + its subagents/), so a post can't be charged for
+    #      tokens burned by a sibling agent's in-flight work. Exported
+    #      to LAST_CLAUDE_SESSION_ID so post_bot_comment can forward it.
+    local claude_session_id
+    claude_session_id=$(uuidgen | tr 'A-Z' 'a-z')
+    export LAST_CLAUDE_SESSION_ID="$claude_session_id"
     # Up to 3 attempts (1 initial + 2 retries) on transient Anthropic API
     # socket drops. Trace 42301770 (#2624) hit this: Claude was 7 min
     # into legitimate implement work when the API socket closed mid-
@@ -457,6 +484,7 @@ run_claude() {
             HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" NO_PROXY="$NO_PROXY" \
             claude -p "$prompt" \
                 --model opus \
+                --session-id "$claude_session_id" \
                 --setting-sources user \
                 --strict-mcp-config \
                 --permission-mode bypassPermissions \
@@ -496,14 +524,16 @@ run_claude() {
                 # JSONL entry before we judge it stale.
                 [ "$hb_elapsed" -lt 60 ] && continue
 
-                # Find the most-recently-modified JSONL in the active session
-                # dir. Multiple files exist when prior sessions touched the
-                # same cwd; the running one is always the newest.
-                local active_jsonl
-                active_jsonl=$(ls -t "$session_dir"/*.jsonl 2>/dev/null | head -1)
-                if [ -z "$active_jsonl" ] || [ ! -f "$active_jsonl" ]; then
-                    # No JSONL yet despite 60s — keep waiting; might be
-                    # a fresh session_dir name we miscomputed. Don't kill
+                # Target THIS run's JSONL by deterministic session ID
+                # (passed to `claude --session-id` above). The old
+                # `ls -t | head -1` heuristic picked the wrong file
+                # whenever a concurrent run shared the same cwd —
+                # could kill a healthy claude based on a sibling's
+                # stalled heartbeat.
+                local active_jsonl="$session_dir/$claude_session_id.jsonl"
+                if [ ! -f "$active_jsonl" ]; then
+                    # No JSONL yet despite 60s — keep waiting; claude
+                    # may not have written its first entry. Don't kill
                     # on absence alone.
                     continue
                 fi
