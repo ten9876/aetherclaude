@@ -6967,27 +6967,8 @@ a{{color:#0a6aba}}
             from urllib.parse import urlparse, parse_qs
             params = parse_qs(urlparse(self.path).query)
             limit = min(int(params.get('limit', ['25'])[0]), 100)
-            # Opt-in: ?include_skipped=1 returns traces that had no
-            # claude session — useful for diagnosing dispatcher skip
-            # rules (see trace 446b7880 investigation). Default hides
-            # them so the picker only shows runs that actually did
-            # work; an "orchestrator started → scanned → exited"
-            # trace has no review/comment to replay.
-            include_skipped = params.get('include_skipped', ['0'])[0] == '1'
             try:
                 conn = sqlite3.connect(EVENTS_DB)
-                # EXISTS subquery is the claude-activity gate. source
-                # = 'claude-code' covers every tool_use (Read, Bash,
-                # MCP, Edit, ...) that claude emits during a run; if
-                # the orchestrator skipped claude entirely (e.g.,
-                # dispatcher decided no eligible work), there are zero
-                # claude-code rows for that trace_id. Cheap to evaluate
-                # — events.trace_id has an index (idx_events_trace_id)
-                # and the optimizer stops at the first match.
-                claude_gate = "" if include_skipped else (
-                    " AND EXISTS (SELECT 1 FROM events e4 "
-                    " WHERE e4.trace_id = events.trace_id "
-                    "   AND e4.source = 'claude-code' LIMIT 1)")
                 rows = conn.execute(
                     "SELECT trace_id, "
                     "       MIN(timestamp) AS first_ts, "
@@ -7000,9 +6981,8 @@ a{{color:#0a6aba}}
                     "        WHERE e3.trace_id = events.trace_id AND e3.type='WEBHOOK' "
                     "        LIMIT 1) AS webhook_binary "
                     "FROM events "
-                    "WHERE trace_id IS NOT NULL AND LENGTH(trace_id) > 8"
-                    + claude_gate +
-                    " GROUP BY trace_id "
+                    "WHERE trace_id IS NOT NULL AND LENGTH(trace_id) > 8 "
+                    "GROUP BY trace_id "
                     "HAVING event_count > 5000 "
                     "ORDER BY first_ts DESC LIMIT ?",
                     (limit,)
