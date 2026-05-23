@@ -123,6 +123,17 @@ _last_webhook_trigger = 0
 # for pr-Y. Each key tracked independently.
 _last_webhook_trigger_per_key = {}
 
+# Set of trace_ids that contain at least one source='claude-code' event.
+# Populated lazily by append_event as events stream in, plus a one-time
+# startup warm-up from the events DB. Used by /api/agent-walk-traces to
+# hide skip-only traces from the picker dropdown — those traces have no
+# review/comment to replay, just a flat pre-flight swimlane.
+# In-memory cache rather than a correlated subquery on the hot events
+# table (the subquery approach caused "database is locked" errors and
+# 9s timeouts on every picker request — reverted in f273149).
+_claude_active_traces = set()
+_claude_active_lock = threading.Lock()
+
 # Active trace_id for the Agent Walk view. Mirrored from
 # /Users/aetherclaude/state/active-trace-id, which run-agent.sh writes
 # at orchestrator start and removes (via EXIT trap) at orchestrator end.
@@ -241,6 +252,14 @@ def append_event(entry):
     if _is_scrubber_noise(entry):
         stats['suppressed'] += 1
         return
+    # Mark trace as having claude activity (powers /api/agent-walk-traces
+    # picker filter — skip-only traces stay hidden). Cheap: set add +
+    # lock acquire on a small hot path.
+    if entry.get('source') == 'claude-code':
+        tid = entry.get('trace_id')
+        if tid:
+            with _claude_active_lock:
+                _claude_active_traces.add(tid)
     with memory_lock:
         memory_buffer.append(entry)
         if len(memory_buffer) > MEMORY_BUFFER_MAX:
@@ -1365,6 +1384,35 @@ def scan_rings():
         except: pass
         db_purge_if_needed(250)
         time.sleep(RING_REFRESH_SECS)
+
+# ── Claude-active-trace cache warm-up ─────────────────────────────────────
+# One-shot at startup: scan the events DB for trace_ids that have at
+# least one claude-code event, seed _claude_active_traces. After warm-up
+# the cache stays current via append_event. Bounded to recent 7 days to
+# keep the warm-up bounded; older traces age out of the picker's
+# event_count > 5000 filter anyway.
+def warmup_claude_active_traces():
+    time.sleep(2)  # let init_db / load_memory_buffer finish first
+    try:
+        conn = sqlite3.connect(EVENTS_DB, timeout=15.0)
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)
+                  ).strftime('%Y-%m-%dT%H:%M:%S')
+        rows = conn.execute(
+            "SELECT DISTINCT trace_id FROM events "
+            "WHERE source = 'claude-code' "
+            "  AND trace_id IS NOT NULL AND LENGTH(trace_id) > 8 "
+            "  AND timestamp >= ?",
+            (cutoff,)
+        ).fetchall()
+        conn.close()
+        with _claude_active_lock:
+            for r in rows:
+                _claude_active_traces.add(r[0])
+        print(f"warmup_claude_active_traces: seeded {len(rows)} trace_ids")
+    except Exception as ex:
+        # Warm-up failure is non-fatal — picker just shows fewer traces
+        # initially and refills as new events come in.
+        print(f"warmup_claude_active_traces failed: {ex}")
 
 # ── Anthropic Max billing cycle helpers ───────────────────────────────────
 # All math is in local time (the user's billing date is wall-clock local).
@@ -6967,8 +7015,18 @@ a{{color:#0a6aba}}
             from urllib.parse import urlparse, parse_qs
             params = parse_qs(urlparse(self.path).query)
             limit = min(int(params.get('limit', ['25'])[0]), 100)
+            # ?include_skipped=1 keeps traces with no claude activity
+            # in the result. Default hides them — skip-only traces
+            # (dispatcher scanned, found nothing eligible, exited) have
+            # no review/comment to replay. Diagnostic escape hatch
+            # mirrors what we used to investigate trace 446b7880.
+            include_skipped = params.get('include_skipped', ['0'])[0] == '1'
             try:
                 conn = sqlite3.connect(EVENTS_DB)
+                # Over-fetch when filtering so we still return ~limit
+                # rows after removing skip-only traces. 4x cap covers
+                # typical bot ratio (most CI-passed runs do work).
+                fetch_n = limit * 4 if not include_skipped else limit
                 rows = conn.execute(
                     "SELECT trace_id, "
                     "       MIN(timestamp) AS first_ts, "
@@ -6985,9 +7043,16 @@ a{{color:#0a6aba}}
                     "GROUP BY trace_id "
                     "HAVING event_count > 5000 "
                     "ORDER BY first_ts DESC LIMIT ?",
-                    (limit,)
+                    (fetch_n,)
                 ).fetchall()
                 conn.close()
+                # Apply the claude-activity filter against the in-memory
+                # cache — no extra DB hit. Cache is populated by
+                # append_event in real time + a 7-day warm-up at startup.
+                if not include_skipped:
+                    with _claude_active_lock:
+                        active = frozenset(_claude_active_traces)
+                    rows = [r for r in rows if r[0] in active][:limit]
                 traces = [{
                     'trace_id': r[0], 'first_ts': r[1], 'last_ts': r[2],
                     'event_count': r[3],
@@ -7766,6 +7831,7 @@ def main():
     threading.Thread(target=db_pruner,daemon=True).start()
     threading.Thread(target=db_trace_backfill_correlator,daemon=True).start()
     threading.Thread(target=track_active_trace,daemon=True).start()
+    threading.Thread(target=warmup_claude_active_traces,daemon=True).start()
     s=ThreadingHTTPServer((a.bind,a.port),H);print(f"Dashboard at http://{a.bind}:{a.port}")
     try:s.serve_forever()
     except KeyboardInterrupt:print("\nShutdown")
