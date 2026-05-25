@@ -7621,6 +7621,18 @@ a{{color:#0a6aba}}
             elif event_type in ('discussion', 'discussion_comment'):
                 num = (payload.get('discussion') or {}).get('number')
                 if num: lock_key = f'disc-{num}'
+            elif event_type in ('check_run', 'workflow_run'):
+                # Both payloads carry a pull_requests[] array of PR refs
+                # for runs triggered by PR pushes. First entry is the
+                # triggering PR. Scoping the lock_key to that PR means
+                # CI completions on different PRs don't debounce each
+                # other through the 60s global window. Runs not tied
+                # to a PR (e.g., main-branch push) fall through to
+                # lock_key='global', same as before.
+                root = payload.get(event_type, {}) or {}
+                prs = root.get('pull_requests') or []
+                if prs and isinstance(prs, list) and prs[0].get('number'):
+                    lock_key = f'pr-{prs[0]["number"]}'
             # Burst-adopt: if an orchestrator is already running for THIS
             # lock_key, reuse its trace_id rather than minting fresh.
             # Different-key webhooks proceed normally and spawn their own
@@ -7722,14 +7734,23 @@ a{{color:#0a6aba}}
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (action)'); return
             if event_type == 'pull_request' and action not in ('opened', 'synchronize', 'reopened', 'closed'):
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (action)'); return
-            # CI events: only react when a run has finished AND failed.
-            # Started / in_progress / passed runs are noise.
+            # CI events: react on completion, both pass and fail.
+            #   - failure → explain-ci posts a CI-failure explainer
+            #   - success → review-pr posts a review (PR is now ripe)
+            # In-progress / requested events are noise (no actionable
+            # state change). Other conclusions (cancelled, skipped,
+            # timed_out, neutral, stale, action_required) are dropped —
+            # neither skill has a meaningful response to them.
+            # Pre-fix this was "drop unless conclusion=failure", which
+            # silently swallowed every successful CI completion and
+            # prevented review-pr from ever firing on the CI path.
+            # See trace 54a69a50 (PR #3131 green CI → no review).
             if event_type in ('check_run', 'workflow_run'):
                 if action != 'completed':
                     self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (action)'); return
                 conclusion_root = payload.get(event_type, {}) or {}
-                if conclusion_root.get('conclusion') != 'failure':
-                    self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (CI passed)'); return
+                if conclusion_root.get('conclusion') not in ('failure', 'success'):
+                    self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (CI inconclusive)'); return
             # Releases: only react when a release is actually published.
             if event_type == 'release' and action != 'published':
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (action)'); return
