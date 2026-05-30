@@ -646,9 +646,16 @@ read_skill_goal() {
     local skill_name="$1"
     local skill_file="/Users/aetherclaude/skills/${skill_name}.md"
     [ -f "$skill_file" ] || { echo ""; return 0; }
-    sed -n '1{/^---$/!q;}; 1,/^---$/{ /^goal:[[:space:]]/p }' "$skill_file" \
-        | sed -E 's/^goal:[[:space:]]+//; s/^["'"'"']//; s/["'"'"']$//' \
-        | head -1
+    # Portable extraction (works on BSD sed / macOS — the orchestrator's
+    # production env — as well as GNU sed). Prior implementation used
+    # GNU-extended one-line range syntax `1{...};1,/.../{...}` which
+    # BSD sed rejects with "extra characters at the end of p command",
+    # silently returning empty so the /goal prefix was never emitted.
+    # `goal:` only appears in the YAML frontmatter (skill bodies use
+    # ${VAR} placeholders, not key:value lines), so a simple grep is
+    # safe without an explicit frontmatter range.
+    grep -m1 '^goal:[[:space:]]' "$skill_file" 2>/dev/null \
+        | sed -E 's/^goal:[[:space:]]+//; s/^["'"'"']//; s/["'"'"']$//'
 }
 
 # Render a skill prompt with `/goal` framing when the skill defines one.
