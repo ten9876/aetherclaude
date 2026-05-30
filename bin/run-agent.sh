@@ -634,6 +634,55 @@ render_skill() {
     echo "$template"
 }
 
+# Read the `goal:` field from a skill file's YAML frontmatter, if present.
+# Returns empty string when absent. Used by render_skill_full to optionally
+# wrap the rendered prompt with `/goal <condition>` so Claude iterates
+# until the per-skill completion condition is met (Claude Code v2.1.139+).
+# Frontmatter is a YAML block between the two `---` markers at the top
+# of the file. We extract the line `goal: <value>` from it; quoted/
+# multiline goals not supported (kept simple — single line is fine for
+# our skills).
+read_skill_goal() {
+    local skill_name="$1"
+    local skill_file="/Users/aetherclaude/skills/${skill_name}.md"
+    [ -f "$skill_file" ] || { echo ""; return 0; }
+    sed -n '1{/^---$/!q;}; 1,/^---$/{ /^goal:[[:space:]]/p }' "$skill_file" \
+        | sed -E 's/^goal:[[:space:]]+//; s/^["'"'"']//; s/["'"'"']$//' \
+        | head -1
+}
+
+# Render a skill prompt with `/goal` framing when the skill defines one.
+# Takes the skill NAME (not template content), looks up its `goal:`
+# frontmatter, substitutes ${VAR_NAME} placeholders in both the goal
+# string and the body, and emits:
+#   /goal <substituted-goal>
+#
+#   <substituted-body>
+# When no goal is defined, emits the body unchanged — call site can
+# migrate from render_skill incrementally.
+#
+# Usage: prompt=$(render_skill_full "review-pr" "PR_NUMBER" "$pr_number" ...)
+render_skill_full() {
+    local skill_name="$1"; shift
+    local body goal
+    body=$(load_skill "$skill_name") || return 1
+    goal=$(read_skill_goal "$skill_name")
+    # Substitute ${VAR_NAME} placeholders in BOTH goal and body. Same
+    # arg-pair format as render_skill — single pass over the pairs.
+    local saved_args=("$@")
+    while [ $# -ge 2 ]; do
+        local var="$1" val="$2"
+        body="${body//\$\{${var}\}/${val}}"
+        goal="${goal//\$\{${var}\}/${val}}"
+        shift 2
+    done
+    if [ -n "$goal" ]; then
+        printf '/goal %s\n\n%s\n' "$goal" "$body"
+    else
+        printf '%s\n' "$body"
+    fi
+}
+
 # --- Attachment download helper ---
 # Pre-fetches every GitHub-hosted image / log / file referenced in
 # the issue body or comments to a local dir under the working tree,
@@ -868,10 +917,13 @@ skill_review_prs() {
 
         local review_log="$LOGDIR/pr-review-${pr_number}-$(date +%Y%m%d-%H%M%S).log"
 
-        local skill_template
-        skill_template=$(load_skill "review-pr")
+        # render_skill_full prepends `/goal <condition>` from the skill
+        # file's frontmatter so Claude keeps iterating until the review
+        # is actually posted (Claude Code 2.1.139+ feature). Per-skill
+        # rollout — other skills still use render_skill until each one
+        # is verified with /goal.
         local prompt
-        prompt=$(render_skill "$skill_template" "PR_NUMBER" "$pr_number" "PR_TITLE" "$pr_title" "PR_AUTHOR" "$pr_author" "PR_FILES" "$pr_files" "PR_DIFF" "$sanitized_diff" "COPILOT_COMMENTS" "$copilot_comments")
+        prompt=$(render_skill_full "review-pr" "PR_NUMBER" "$pr_number" "PR_TITLE" "$pr_title" "PR_AUTHOR" "$pr_author" "PR_FILES" "$pr_files" "PR_DIFF" "$sanitized_diff" "COPILOT_COMMENTS" "$copilot_comments")
 
         cd "$WORKSPACE"
         run_claude "$prompt" "$review_log" || {
