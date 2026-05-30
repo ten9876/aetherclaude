@@ -2263,45 +2263,17 @@ if [ -f "$MENTION_FILE" ]; then
         # git-write/create_pull_request even if the user asks for them.
         # Implementation goes through the eligibility-label path, which
         # routes to implement-fix with the full default tool surface.
-        run_claude "You are AetherClaude. You were @mentioned in issue/PR #${MENTION_NUMBER}: ${mention_title}
-
-Read the full conversation below and respond with ONE helpful comment.
-
-Issue body:
-${mention_body}
-
-Comments:
-${mention_comments}
-
-YOUR ONLY ALLOWED ACTION IS TO POST A SINGLE COMMENT via
-mcp__aetherclaude-github__comment_on_issue.
-
-You CANNOT edit files, push code, create branches, or open pull
-requests in this conversational path — those tools are not available
-to you. Do not attempt them. Implementation of any fix happens through
-a separate orchestrator path that the maintainer authorizes by adding
-the 'aetherclaude-eligible' label to the issue.
-
-Respond appropriately:
-
-  - Question about the code/project: answer it. You may use Read,
-    Glob, Grep to investigate the code first.
-
-  - Request for a code fix or PR:
-      * Analyze the relevant code (Read/Glob/Grep).
-      * In your single comment, propose the fix as a code snippet
-        inside a fenced block, explaining the change.
-      * Tell them: 'A maintainer can authorize the orchestrator to
-        land this fix by adding the \`aetherclaude-eligible\` label.'
-      * If the label is already present on the issue (visible in the
-        labels above), say so — the orchestrator will handle the PR
-        on the next webhook cycle.
-
-  - Out of scope: explain why politely.
-
-End with the project signature: '73, Jeremy KK7GWY & Claude (AI dev partner)'.
-
-Working directory: ${WORKSPACE}" "$mention_log" "$CLAUDE_ALLOWED_TOOLS_MENTION" || {
+        # Prompt body lives in skills/mention-respond.md; render_skill_full
+        # prepends `/goal comment_on_issue has been called…` so claude
+        # iterates until the response is actually posted instead of
+        # exiting after analysis without commenting.
+        mention_prompt=$(render_skill_full "mention-respond" \
+            "MENTION_NUMBER" "$MENTION_NUMBER" \
+            "MENTION_TITLE" "$mention_title" \
+            "MENTION_BODY" "$mention_body" \
+            "MENTION_COMMENTS" "$mention_comments" \
+            "WORKSPACE" "$WORKSPACE")
+        run_claude "$mention_prompt" "$mention_log" "$CLAUDE_ALLOWED_TOOLS_MENTION" || {
             log "ERROR: @Mention response failed for #${MENTION_NUMBER}"
         }
         log "--- @Mention Response complete for #${MENTION_NUMBER} ---"
