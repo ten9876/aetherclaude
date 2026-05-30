@@ -28,15 +28,22 @@ from datetime import datetime, timezone
 
 # ---------------------------------------------------------------------------
 # PRICING — UPDATE-ME when Anthropic published prices change.
-# Source: https://www.anthropic.com/pricing (values as of 2026-01).
+# Source: https://www.anthropic.com/pricing (values as of 2026-05).
 # All rates are USD per 1,000,000 tokens.
-#   cache_read  ≈ 0.10x base input  (cached prompt-read discount)
-#   cache_create ≈ 1.25x base input (5-minute prompt-write surcharge)
+#   cache_read   ≈ 0.10x base input  (cached prompt-read discount)
+#   cache_create = 2.00x base input  (1-HOUR ephemeral cache surcharge)
+#
+# Cache_create uses the 1-hour rate, not the 5-minute rate (1.25x), because
+# Claude Code defaults to ephemeral_1h_input_tokens — confirmed by
+# inspecting session JSONLs (`cache_creation.ephemeral_1h_input_tokens`
+# is populated; 5m field stays at 0). Earlier table used 5-min rates and
+# was under-attributing cache writes by 37%.
 # ---------------------------------------------------------------------------
 PRICING = {
-    'claude-opus-4-7':   {'input': 15.0, 'cache_read': 1.50, 'cache_create': 18.75, 'output': 75.0},
-    'claude-sonnet-4-6': {'input':  3.0, 'cache_read': 0.30, 'cache_create':  3.75, 'output': 15.0},
-    'claude-haiku-4-5':  {'input':  1.0, 'cache_read': 0.10, 'cache_create':  1.25, 'output':  5.0},
+    'claude-opus-4-8':   {'input': 15.0, 'cache_read': 1.50, 'cache_create': 30.00, 'output': 75.0},
+    'claude-opus-4-7':   {'input': 15.0, 'cache_read': 1.50, 'cache_create': 30.00, 'output': 75.0},
+    'claude-sonnet-4-6': {'input':  3.0, 'cache_read': 0.30, 'cache_create':  6.00, 'output': 15.0},
+    'claude-haiku-4-5':  {'input':  1.0, 'cache_read': 0.10, 'cache_create':  2.00, 'output':  5.0},
 }
 FALLBACK_MODEL = 'claude-sonnet-4-6'
 

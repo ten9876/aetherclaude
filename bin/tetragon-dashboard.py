@@ -1391,6 +1391,18 @@ def scan_rings():
 # the cache stays current via append_event. Bounded to recent 7 days to
 # keep the warm-up bounded; older traces age out of the picker's
 # event_count > 5000 filter anyway.
+# Anthropic API-equivalent cost for an opus run. Mirrors bot-cost.py's
+# PRICING (opus-4-8 / 4-7 — same rates). Includes cache_read and
+# cache_create which the prior formula ignored — that under-attributed
+# the lifetime API-equivalent cost by ~25% for typical agent workloads.
+# Cache_create uses the 1-hour ephemeral rate (2.0x base input) — Claude
+# Code defaults to 1h cache, confirmed by inspecting JSONL records
+# (ephemeral_1h_input_tokens populated, 5m always 0).
+def _opus_api_equivalent_cost(inp, out, cache_read, cache_create):
+    return round(
+        inp/1e6 * 15.0 + out/1e6 * 75.0
+      + cache_read/1e6 * 1.50 + cache_create/1e6 * 30.0, 2)
+
 def warmup_claude_active_traces():
     time.sleep(2)  # let init_db / load_memory_buffer finish first
     try:
@@ -6952,7 +6964,7 @@ a{{color:#0a6aba}}
             display = list(reversed(display))
             with lock:
                 d = {'events': display, 'total': buf_total, 'filtered': len(filtered),
-                     'stats':{'total_events':stats['total_events'],'exec_count':stats['exec_count'],'kprobe_count':stats['kprobe_count'],'exit_count':stats['exit_count'],'aetherclaude_events':stats['aetherclaude_events'],'network_connections':stats['network_connections'],'alert_count':len(stats['alerts']),'policy_hits':dict(stats['policy_hits']),'binaries_seen':dict(stats['binaries_seen']),'alerts':list(stats['alerts']),'suppressed':stats['suppressed'],'tokens':{'input':token_stats['input'],'output':token_stats['output'],'cache_read':token_stats['cache_read'],'cache_create':token_stats['cache_create'],'messages':token_stats['messages'],'total':token_stats['input']+token_stats['output'],'estimated_cost_usd':round(token_stats['input']/1e6*15+token_stats['output']/1e6*75,2),'cycle':{'input':token_stats['cycle_input'],'output':token_stats['cycle_output'],'cache_read':token_stats['cycle_cache_read'],'cache_create':token_stats['cycle_cache_create'],'messages':token_stats['cycle_messages'],'estimated_cost_usd':round(token_stats['cycle_input']/1e6*15+token_stats['cycle_output']/1e6*75,2),'cycle_start_iso':token_stats['cycle_start_iso'],'subscription_amount_usd':token_stats['subscription_amount_usd']},'lifetime':{'estimated_cost_usd':round(token_stats['input']/1e6*15+token_stats['output']/1e6*75,2),'subscription_cycles_paid':token_stats['subscription_cycles_paid'],'subscription_total_usd':round(token_stats['subscription_amount_usd']*token_stats['subscription_cycles_paid'],2),'subscription_start_iso':token_stats['subscription_start_iso']}},'tools':{'total':tool_stats['total'],'breakdown':tool_stats['breakdown']}},'mcp_scan_details':ring_stats.get('r6_mcp_details',[]),'rings':dict(ring_stats)}
+                     'stats':{'total_events':stats['total_events'],'exec_count':stats['exec_count'],'kprobe_count':stats['kprobe_count'],'exit_count':stats['exit_count'],'aetherclaude_events':stats['aetherclaude_events'],'network_connections':stats['network_connections'],'alert_count':len(stats['alerts']),'policy_hits':dict(stats['policy_hits']),'binaries_seen':dict(stats['binaries_seen']),'alerts':list(stats['alerts']),'suppressed':stats['suppressed'],'tokens':{'input':token_stats['input'],'output':token_stats['output'],'cache_read':token_stats['cache_read'],'cache_create':token_stats['cache_create'],'messages':token_stats['messages'],'total':token_stats['input']+token_stats['output'],'estimated_cost_usd':_opus_api_equivalent_cost(token_stats['input'],token_stats['output'],token_stats['cache_read'],token_stats['cache_create']),'cycle':{'input':token_stats['cycle_input'],'output':token_stats['cycle_output'],'cache_read':token_stats['cycle_cache_read'],'cache_create':token_stats['cycle_cache_create'],'messages':token_stats['cycle_messages'],'estimated_cost_usd':_opus_api_equivalent_cost(token_stats['cycle_input'],token_stats['cycle_output'],token_stats['cycle_cache_read'],token_stats['cycle_cache_create']),'cycle_start_iso':token_stats['cycle_start_iso'],'subscription_amount_usd':token_stats['subscription_amount_usd']},'lifetime':{'estimated_cost_usd':_opus_api_equivalent_cost(token_stats['input'],token_stats['output'],token_stats['cache_read'],token_stats['cache_create']),'subscription_cycles_paid':token_stats['subscription_cycles_paid'],'subscription_total_usd':round(token_stats['subscription_amount_usd']*token_stats['subscription_cycles_paid'],2),'subscription_start_iso':token_stats['subscription_start_iso']}},'tools':{'total':tool_stats['total'],'breakdown':tool_stats['breakdown']}},'mcp_scan_details':ring_stats.get('r6_mcp_details',[]),'rings':dict(ring_stats)}
             self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Access-Control-Allow-Origin','*');self.end_headers()
             self._send_json(d)
         elif self.path.startswith('/api/ring-events'):
