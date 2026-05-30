@@ -69,7 +69,12 @@ Subsequent edits: commit to `main`, then on the Mac Mini run
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+GNU Affero General Public License v3.0 — see [LICENSE](LICENSE).
+
+AGPL-3.0's network copyleft clause matters here: AetherClaude is a hosted
+agent that interacts with users over GitHub. Anyone running a modified
+version of this code as a hosted service must make their modifications
+available to the users they're serving.
 
 ---
 
