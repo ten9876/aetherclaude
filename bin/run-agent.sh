@@ -2369,11 +2369,21 @@ case "$TRIGGER_EVENT" in
         :
         ;;
     check_run|workflow_run)
-        # CI failure (the dashboard only forwards `completed` runs with
-        # conclusion=failure). Run the explainer + give the issue pipeline
-        # a chance to surface retry context for the affected PR's source
-        # issue.
+        # CI completion. The dashboard webhook receiver now forwards
+        # both conclusion=failure AND conclusion=success (see commit
+        # f0d6cf2 on tetragon-dashboard). Dispatch all three:
+        #   - explain-ci:     act on failures (post a CI-failure explainer)
+        #   - review-pr:      act on successes (the PR is now ripe for review)
+        #   - process_issues: surface retry context for the affected PR's
+        #                     source issue regardless of pass/fail
+        # The May 25 series fixed receiver-forward + dispatcher EVENT_SKILLS
+        # scoping but neglected to set run_review_prs here — so CI-success
+        # webhooks correctly reached the orchestrator and the scanner
+        # allowlisted review-pr's tools, but skill_review_prs was never
+        # actually invoked. Trace 233bd1b0 (PR #3286 green CI → no review
+        # despite the orchestrator firing) was the smoking gun.
         run_explain_ci=1
+        run_review_prs=1
         run_process_issues=1
         ;;
     release)
