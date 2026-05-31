@@ -121,7 +121,7 @@ run_claude() {
     env -u GH_TOKEN -u GITHUB_TOKEN -u GH_APP_TOKEN -u GITHUB_APP_ID \
         HOME="$HOME" PATH="$PATH" \
         claude -p "$prompt" \
-            --model opus \
+            --model claude-opus-4-7 \
             --setting-sources user \
             --strict-mcp-config \
             --permission-mode bypassPermissions \

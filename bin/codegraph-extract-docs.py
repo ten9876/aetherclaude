@@ -81,7 +81,7 @@ HEADER_DIRS = ['src/core', 'src/models', 'src/gui']
 # around $1-3 on opus.
 MAX_BUDGET_USD = 2.50
 CLAUDE_BIN = '/opt/homebrew/bin/claude'
-CLAUDE_MODEL = 'opus'
+CLAUDE_MODEL = 'claude-opus-4-7'
 # Cap docs to ~40KB so we don't blow context on the biggest ones
 # (CHANGELOG can be 100K+ chars). Truncate cleanly at a heading.
 MAX_DOC_BYTES = 40_000

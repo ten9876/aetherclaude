@@ -456,7 +456,7 @@ run_claude() {
             HOME="$HOME" PATH="$PATH" \
             HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" NO_PROXY="$NO_PROXY" \
             claude -p "$prompt" \
-                --model opus \
+                --model claude-opus-4-7 \
                 --setting-sources user \
                 --strict-mcp-config \
                 --permission-mode bypassPermissions \
