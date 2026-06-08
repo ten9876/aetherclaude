@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aetherclaude.pf-enable</string>
+
+  <!--
+    Enables the pf firewall and creates the pflog0 interface at every boot.
+
+    Why this exists: macOS's com.apple.pfctl loads /etc/pf.conf at boot but does
+    NOT run `pfctl -e`, so pf stays DISABLED and the com.aetherclaude outbound-
+    isolation anchor sits loaded-but-unenforced until something enables pf. This
+    one-shot closes that gap so the network isolation is never silently down after
+    a reboot. The script is idempotent; RunAtLoad fires it once at boot.
+
+    Runs as root (the default for a LaunchDaemon) because pfctl/ifconfig require
+    it. Invoked via `/bin/bash <script>` (same convention as com.aetherclaude.
+    pfstats) so the deployed script needs no executable bit. The absolute install
+    path is the one machine-specific value here, slated to become a deploy-time
+    template (@BIN_DIR@) in the env-agnostic refactor.
+  -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/aetherclaude/bin/pf-enable.sh</string>
+  </array>
+
+  <!-- Fire once at boot; the script enables pf and exits. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- One-shot, not a daemon (no KeepAlive). If it fails on load,
+       ThrottleInterval prevents a tight relaunch loop. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/Shared/aetherclaude/logs/pf-enable.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/Shared/aetherclaude/logs/pf-enable.log</string>
+</dict>
+</plist>
