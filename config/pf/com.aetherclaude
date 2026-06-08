@@ -39,9 +39,13 @@ pass out quick proto tcp from any to 142.250.0.0/15 port 443 user 965
 # Claude OAuth login (AWS Cognito — dynamic IPs)
 pass out quick proto tcp from any to <anthropic_auth> port 443 user 965
 
-# Cloudflare tunnel (QUIC + TCP)
+# Cloudflare tunnel — edge transport on 7844 (QUIC=UDP, HTTP/2=TCP) + 443 for
+# API/fallback. UDP is any-port to the edge ranges; TCP must include 7844
+# because the http2 protocol dials the edge on TCP 7844 (not 443). On UDP-
+# hostile links (e.g. Starlink CGNAT) cloudflared runs with protocol: http2,
+# which is dropped unless TCP 7844 is permitted here.
 pass out quick proto udp from any to { 198.41.192.0/21 198.41.200.0/21 } user 965
-pass out quick proto tcp from any to { 198.41.192.0/21 198.41.200.0/21 } port 443 user 965
+pass out quick proto tcp from any to { 198.41.192.0/21 198.41.200.0/21 } port { 443 7844 } user 965
 
 # Allow established connection responses (dashboard, cloudflared)
 pass out quick proto tcp all user 965 flags A/A
