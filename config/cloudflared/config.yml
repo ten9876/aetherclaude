@@ -1,12 +1,22 @@
 tunnel: 6c4cfcc1-f51d-4843-bd19-b1895c6d335b
 credentials-file: /Users/aetherclaude/.cloudflared/6c4cfcc1-f51d-4843-bd19-b1895c6d335b.json
 
+# Force HTTP/2 (TCP 443) transport instead of the default QUIC (UDP 7844).
+# Starlink's CGNAT mangles long-lived UDP flows, making QUIC connections flap
+# ("sendmsg: network is down") which surfaces as intermittent Cloudflare 1033
+# errors. TCP egress is stable on this link; the pf anchor permits TCP 7844 to
+# the Cloudflare edge ranges (198.41.192.0/21, 198.41.200.0/21).
+protocol: http2
+
+# Origins use 127.0.0.1, not "localhost". /etc/hosts maps localhost to both
+# 127.0.0.1 and ::1, and cloudflared's Go resolver may dial the IPv6 ::1 first
+# — but the local services listen on IPv4 only, so that path yields an immediate
+# 502. Pinning to 127.0.0.1 forces IPv4 and removes the ambiguity.
 ingress:
   - hostname: dashboard.aethersdr.com
-    service: http://localhost:8080
+    service: http://127.0.0.1:8080
   - hostname: tui.aethersdr.com
-    service: http://localhost:7681
+    service: http://127.0.0.1:7681
   - hostname: ssh.aethersdr.com
-    service: ssh://localhost:22
+    service: ssh://127.0.0.1:22
   - service: http_status:404
-
