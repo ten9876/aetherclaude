@@ -859,6 +859,52 @@ skill_check_bug_reports() {
 }
 
 # =====================================================================
+# Review one PR: fetch diff/files/reviewer-context, render the review-pr
+# skill, and run Claude to post the review. Shared by skill_review_prs
+# (the CI-gated scan over open PRs) and the @mention path (an explicit
+# "@AetherClaude review this PR" request). Gating (draft/CI/already-
+# reviewed) is the caller's responsibility — this just performs the
+# review. Returns non-zero if the Claude run fails.
+# =====================================================================
+review_single_pr() {
+    local pr_number="$1" pr_title="$2" pr_author="$3" token="$4"
+
+    log "Reviewing PR #${pr_number}: ${pr_title} by @${pr_author}"
+
+    local pr_diff
+    pr_diff=$(echo "$token" | python3 /Users/aetherclaude/bin/gh-request.py GET "/repos/${REPO}/pulls/${pr_number}" | head -500)
+
+    local pr_files
+    pr_files=$(github_api GET "/repos/${REPO}/pulls/${pr_number}/files?per_page=50" "$token" | \
+        jq -r '.[].filename' | head -30)
+
+    local sanitized_diff
+    sanitized_diff=$(sanitize_input "$pr_diff")
+
+    # Fetch Copilot and other reviewer comments for context
+    local copilot_comments=""
+    copilot_comments=$(github_api GET "/repos/${REPO}/pulls/${pr_number}/comments?per_page=50" "$token" | \
+        jq -r '.[] | "[\(.user.login)] \(.path // ""):\(.line // "") — \(.body)"' 2>/dev/null | head -30 || echo "")
+
+    local review_log="$LOGDIR/pr-review-${pr_number}-$(date +%Y%m%d-%H%M%S).log"
+
+    # render_skill_full prepends `/goal <condition>` from the skill
+    # file's frontmatter so Claude keeps iterating until the review
+    # is actually posted (Claude Code 2.1.139+ feature). Per-skill
+    # rollout — other skills still use render_skill until each one
+    # is verified with /goal.
+    local prompt
+    prompt=$(render_skill_full "review-pr" "PR_NUMBER" "$pr_number" "PR_TITLE" "$pr_title" "PR_AUTHOR" "$pr_author" "PR_FILES" "$pr_files" "PR_DIFF" "$sanitized_diff" "COPILOT_COMMENTS" "$copilot_comments")
+
+    cd "$WORKSPACE"
+    run_claude "$prompt" "$review_log" || {
+        log "ERROR: PR review failed for #${pr_number}"
+        return 1
+    }
+    log "Reviewed PR #${pr_number}"
+}
+
+# =====================================================================
 # SKILL: PR Review (Claude Code — convention check)
 # =====================================================================
 skill_review_prs() {
@@ -905,39 +951,7 @@ skill_review_prs() {
             continue
         fi
 
-        log "Reviewing PR #${pr_number}: ${pr_title} by @${pr_author}"
-
-        local pr_diff
-        pr_diff=$(echo "$token" | python3 /Users/aetherclaude/bin/gh-request.py GET "/repos/${REPO}/pulls/${pr_number}" | head -500)
-
-        local pr_files
-        pr_files=$(github_api GET "/repos/${REPO}/pulls/${pr_number}/files?per_page=50" "$token" | \
-            jq -r '.[].filename' | head -30)
-
-        local sanitized_diff
-        sanitized_diff=$(sanitize_input "$pr_diff")
-
-        # Fetch Copilot and other reviewer comments for context
-        local copilot_comments=""
-        copilot_comments=$(github_api GET "/repos/${REPO}/pulls/${pr_number}/comments?per_page=50" "$token" | \
-            jq -r '.[] | "[\(.user.login)] \(.path // ""):\(.line // "") — \(.body)"' 2>/dev/null | head -30 || echo "")
-
-        local review_log="$LOGDIR/pr-review-${pr_number}-$(date +%Y%m%d-%H%M%S).log"
-
-        # render_skill_full prepends `/goal <condition>` from the skill
-        # file's frontmatter so Claude keeps iterating until the review
-        # is actually posted (Claude Code 2.1.139+ feature). Per-skill
-        # rollout — other skills still use render_skill until each one
-        # is verified with /goal.
-        local prompt
-        prompt=$(render_skill_full "review-pr" "PR_NUMBER" "$pr_number" "PR_TITLE" "$pr_title" "PR_AUTHOR" "$pr_author" "PR_FILES" "$pr_files" "PR_DIFF" "$sanitized_diff" "COPILOT_COMMENTS" "$copilot_comments")
-
-        cd "$WORKSPACE"
-        run_claude "$prompt" "$review_log" || {
-            log "ERROR: PR review failed for #${pr_number}"
-            continue
-        }
-        log "Reviewed PR #${pr_number}"
+        review_single_pr "$pr_number" "$pr_title" "$pr_author" "$token" || continue
         count=$((count + 1))
     done
 }
@@ -2247,36 +2261,59 @@ if [ -f "$MENTION_FILE" ]; then
     MENTION_NUMBER=$(cat "$MENTION_FILE")
     rm -f "$MENTION_FILE"
     if [ -n "$MENTION_NUMBER" ]; then
-        log "--- Skill: @Mention Response (Issue #${MENTION_NUMBER}) ---"
-
-        # Fetch the issue/PR and latest comments
+        # Fetch the issue/PR once — decides PR-review vs conversational reply.
         mention_data=$(github_api GET "/repos/${REPO}/issues/${MENTION_NUMBER}" "$APP_TOKEN")
-        mention_title=$(echo "$mention_data" | jq -r '.title // "Unknown"')
-        mention_body=$(sanitize_input "$(echo "$mention_data" | jq -r '.body // "No body"')")
-        mention_comments=$(sanitize_input "$(github_api GET "/repos/${REPO}/issues/${MENTION_NUMBER}/comments?per_page=20" "$APP_TOKEN" | jq -r '.[] | "[\(.user.login)] \(.body)"' 2>/dev/null || echo "No comments")")
+        mention_is_pr=$(echo "$mention_data" | jq -r 'if .pull_request then "yes" else "no" end')
 
-        mention_log="$LOGDIR/mention-${MENTION_NUMBER}-$(date +%Y%m%d-%H%M%S).log"
+        # The most recent human (non-bot) comment is, in practice, the one
+        # that @mentioned us. If this is a PR and that comment asks for a
+        # review, route to review-pr (full diff + create_pr_review) instead
+        # of the conversational mention responder, which has no PR-review
+        # capability. Without this, "@AetherClaude review this PR" silently
+        # no-ops — it lands in mention-respond, then the issue pipeline skips
+        # it because it is a PR.
+        mention_latest=$(github_api GET "/repos/${REPO}/issues/${MENTION_NUMBER}/comments?per_page=100" "$APP_TOKEN" \
+            | jq -r '[.[] | select(.user.login | test("\\[bot\\]") | not)] | last | .body // ""')
 
-        cd "$WORKSPACE"
-        # @Mention is conversational only. Tool surface is restricted to
-        # read + comment via CLAUDE_ALLOWED_TOOLS_MENTION — no Edit/Write/
-        # git-write/create_pull_request even if the user asks for them.
-        # Implementation goes through the eligibility-label path, which
-        # routes to implement-fix with the full default tool surface.
-        # Prompt body lives in skills/mention-respond.md; render_skill_full
-        # prepends `/goal comment_on_issue has been called…` so claude
-        # iterates until the response is actually posted instead of
-        # exiting after analysis without commenting.
-        mention_prompt=$(render_skill_full "mention-respond" \
-            "MENTION_NUMBER" "$MENTION_NUMBER" \
-            "MENTION_TITLE" "$mention_title" \
-            "MENTION_BODY" "$mention_body" \
-            "MENTION_COMMENTS" "$mention_comments" \
-            "WORKSPACE" "$WORKSPACE")
-        run_claude "$mention_prompt" "$mention_log" "$CLAUDE_ALLOWED_TOOLS_MENTION" || {
-            log "ERROR: @Mention response failed for #${MENTION_NUMBER}"
-        }
-        log "--- @Mention Response complete for #${MENTION_NUMBER} ---"
+        if [ "$mention_is_pr" = "yes" ] && echo "$mention_latest" | grep -iqE 'review'; then
+            log "--- Skill: PR Review (via @mention on PR #${MENTION_NUMBER}) ---"
+            mention_title=$(echo "$mention_data" | jq -r '.title // "Unknown"')
+            mention_author=$(echo "$mention_data" | jq -r '.user.login // "unknown"')
+            # Explicit request — review the named PR directly, bypassing the
+            # scan's already-reviewed/CI gates so re-review-on-demand works.
+            review_single_pr "$MENTION_NUMBER" "$mention_title" "$mention_author" "$APP_TOKEN" \
+                || log "ERROR: PR review (via @mention) failed for #${MENTION_NUMBER}"
+            log "--- PR Review (via @mention) complete for #${MENTION_NUMBER} ---"
+        else
+            log "--- Skill: @Mention Response (Issue #${MENTION_NUMBER}) ---"
+
+            mention_title=$(echo "$mention_data" | jq -r '.title // "Unknown"')
+            mention_body=$(sanitize_input "$(echo "$mention_data" | jq -r '.body // "No body"')")
+            mention_comments=$(sanitize_input "$(github_api GET "/repos/${REPO}/issues/${MENTION_NUMBER}/comments?per_page=20" "$APP_TOKEN" | jq -r '.[] | "[\(.user.login)] \(.body)"' 2>/dev/null || echo "No comments")")
+
+            mention_log="$LOGDIR/mention-${MENTION_NUMBER}-$(date +%Y%m%d-%H%M%S).log"
+
+            cd "$WORKSPACE"
+            # @Mention is conversational only. Tool surface is restricted to
+            # read + comment via CLAUDE_ALLOWED_TOOLS_MENTION — no Edit/Write/
+            # git-write/create_pull_request even if the user asks for them.
+            # Implementation goes through the eligibility-label path, which
+            # routes to implement-fix with the full default tool surface.
+            # Prompt body lives in skills/mention-respond.md; render_skill_full
+            # prepends `/goal comment_on_issue has been called…` so claude
+            # iterates until the response is actually posted instead of
+            # exiting after analysis without commenting.
+            mention_prompt=$(render_skill_full "mention-respond" \
+                "MENTION_NUMBER" "$MENTION_NUMBER" \
+                "MENTION_TITLE" "$mention_title" \
+                "MENTION_BODY" "$mention_body" \
+                "MENTION_COMMENTS" "$mention_comments" \
+                "WORKSPACE" "$WORKSPACE")
+            run_claude "$mention_prompt" "$mention_log" "$CLAUDE_ALLOWED_TOOLS_MENTION" || {
+                log "ERROR: @Mention response failed for #${MENTION_NUMBER}"
+            }
+            log "--- @Mention Response complete for #${MENTION_NUMBER} ---"
+        fi
     fi
 fi
 
