@@ -1389,8 +1389,8 @@ def scan_rings():
 # One-shot at startup: scan the events DB for trace_ids that have at
 # least one claude-code event, seed _claude_active_traces. After warm-up
 # the cache stays current via append_event. Bounded to recent 7 days to
-# keep the warm-up bounded; older traces age out of the picker's
-# event_count > 5000 filter anyway.
+# keep the warm-up bounded; the picker orders by first_ts DESC and shows
+# recent traces, so older ones fall off the list naturally.
 # Anthropic API-equivalent cost for an opus run. Mirrors bot-cost.py's
 # PRICING (opus-4-8 / 4-7 — same rates). Includes cache_read and
 # cache_create which the prior formula ignored — that under-attributed
@@ -7051,7 +7051,15 @@ a{{color:#0a6aba}}
                     "FROM events "
                     "WHERE trace_id IS NOT NULL AND LENGTH(trace_id) > 8 "
                     "GROUP BY trace_id "
-                    "HAVING event_count > 5000 "
+                    # No event-count threshold. Gating is on actual Claude
+                    # tool use via the _claude_active_traces filter below: a
+                    # trace is shown only if it has >=1 claude-code event.
+                    # Traces with only orchestrator/webhook/scan events (a
+                    # dispatcher run that scanned and exited) are excluded,
+                    # while real runs of any size are kept. The old
+                    # `event_count > 5000` gate hid every normal-sized run
+                    # (real runs are tens-to-hundreds of events) and only
+                    # surfaced traces inflated by transcript re-ingestion.
                     "ORDER BY first_ts DESC LIMIT ?",
                     (fetch_n,)
                 ).fetchall()
