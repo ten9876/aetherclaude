@@ -1798,8 +1798,8 @@ def _session_trace_lookup(filepath):
 def tail_sessions():
     """Watch Claude Code session files for tool_use events."""
     import glob, re
-    seen_files = set()
     last_positions = {}
+    startup_ts = time.time()
 
     while True:
         try:
@@ -1810,7 +1810,19 @@ def tail_sessions():
             for filepath in files:
                 try:
                     size = os.path.getsize(filepath)
-                    last_pos = last_positions.get(filepath, 0)
+                    # First sighting of this file. Same semantics as
+                    # tail_claude_transcripts: a file last modified before
+                    # the dashboard started is pre-existing history — skip
+                    # to EOF instead of replaying it. Replaying re-inserted
+                    # every historical tool_use into events.db on every
+                    # dashboard restart (the DB hit 915MB of duplicates).
+                    if filepath not in last_positions:
+                        try:
+                            mtime = os.path.getmtime(filepath)
+                        except OSError:
+                            continue
+                        last_positions[filepath] = 0 if mtime > startup_ts else size
+                    last_pos = last_positions[filepath]
 
                     # Skip if file hasn't grown
                     if size <= last_pos:
