@@ -41,8 +41,8 @@ from datetime import datetime, timezone
 # ---------------------------------------------------------------------------
 PRICING = {
     'claude-fable-5':    {'input': 10.0, 'cache_read': 1.00, 'cache_create': 20.00, 'output': 50.0},
-    'claude-opus-4-8':   {'input': 15.0, 'cache_read': 1.50, 'cache_create': 30.00, 'output': 75.0},
-    'claude-opus-4-7':   {'input': 15.0, 'cache_read': 1.50, 'cache_create': 30.00, 'output': 75.0},
+    'claude-opus-4-8':   {'input':  5.0, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.0},
+    'claude-opus-4-7':   {'input':  5.0, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.0},
     'claude-sonnet-4-6': {'input':  3.0, 'cache_read': 0.30, 'cache_create':  6.00, 'output': 15.0},
     'claude-haiku-4-5':  {'input':  1.0, 'cache_read': 0.10, 'cache_create':  2.00, 'output':  5.0},
 }
