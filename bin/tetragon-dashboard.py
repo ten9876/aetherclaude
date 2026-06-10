@@ -1398,10 +1398,13 @@ def scan_rings():
 # Cache_create uses the 1-hour ephemeral rate (2.0x base input) — Claude
 # Code defaults to 1h cache, confirmed by inspecting JSONL records
 # (ephemeral_1h_input_tokens populated, 5m always 0).
-def _opus_api_equivalent_cost(inp, out, cache_read, cache_create):
+def _api_equivalent_cost(inp, out, cache_read, cache_create):
+    # API-equivalent cost at Fable 5 rates (model in use since the
+    # 2026-06-10 cutover): input $10 / output $50 / cache-read $1.00 /
+    # cache-write $20.00 per MTok.
     return round(
-        inp/1e6 * 15.0 + out/1e6 * 75.0
-      + cache_read/1e6 * 1.50 + cache_create/1e6 * 30.0, 2)
+        inp/1e6 * 10.0 + out/1e6 * 50.0
+      + cache_read/1e6 * 1.00 + cache_create/1e6 * 20.0, 2)
 
 def warmup_claude_active_traces():
     time.sleep(2)  # let init_db / load_memory_buffer finish first
@@ -1497,6 +1500,30 @@ def _parse_record_ts(ts_str):
         return None
 
 
+TOKENOMICS_EPOCH_FILE = os.environ.get(
+    'TOKENOMICS_EPOCH_FILE', '/Users/aetherclaude/data/tokenomics-epoch')
+
+def _tokenomics_epoch():
+    """Optional reset baseline. If data/tokenomics-epoch holds an ISO
+    timestamp (naive local time), the token/cost counters - lifetime AND
+    cycle - only sum session records at/after it. Lets us zero the
+    tokenomics for a fresh tracking period (e.g. the Fable 5 cutover)
+    without deleting any session data; clear the file to restore full
+    history."""
+    try:
+        raw = open(TOKENOMICS_EPOCH_FILE).read().strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    for fmt in ('%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def scan_tokens():
     while True:
         try:
@@ -1504,6 +1531,9 @@ def scan_tokens():
             # rolls over at midnight, the next refresh picks it up.
             cycle_start = _current_cycle_start()
             sub_start   = _discover_subscription_start()
+            epoch = _tokenomics_epoch()
+            if epoch is not None and epoch > cycle_start:
+                cycle_start = epoch
             cycles_paid = _bill_cycles_paid(sub_start)
 
             # Lifetime totals (all-time, matches pre-existing behavior).
@@ -1517,9 +1547,13 @@ def scan_tokens():
                 # Saves per-line timestamp parsing on the long tail of
                 # cold session files.
                 try:
-                    file_in_cycle = os.path.getmtime(f) >= cycle_start.timestamp()
+                    _fm = os.path.getmtime(f)
                 except OSError:
-                    file_in_cycle = True
+                    _fm = None
+                # Tokenomics reset: skip files untouched since the epoch.
+                if epoch is not None and _fm is not None and _fm < epoch.timestamp():
+                    continue
+                file_in_cycle = (_fm is None) or (_fm >= cycle_start.timestamp())
                 try:
                     with open(f) as fh:
                         for line in fh:
@@ -1531,11 +1565,17 @@ def scan_tokens():
                                 out = u.get('output_tokens', 0)
                                 cr  = u.get('cache_read_input_tokens', 0)
                                 cc  = u.get('cache_creation_input_tokens', 0)
+                                rec_dt = (_parse_record_ts(d.get('timestamp'))
+                                          if (epoch is not None or file_in_cycle)
+                                          else None)
+                                # Tokenomics reset: drop pre-epoch records from
+                                # lifetime (and therefore cycle) totals.
+                                if epoch is not None and rec_dt is not None and rec_dt < epoch:
+                                    continue
                                 total_in += inp; total_out += out
                                 total_cr += cr;  total_cc += cc
                                 total_msgs += 1
                                 if file_in_cycle:
-                                    rec_dt = _parse_record_ts(d.get('timestamp'))
                                     in_cycle = rec_dt is None or rec_dt >= cycle_start
                                     if in_cycle:
                                         cyc_in += inp; cyc_out += out
@@ -6962,7 +7002,7 @@ a{{color:#0a6aba}}
             display = list(reversed(display))
             with lock:
                 d = {'events': display, 'total': buf_total, 'filtered': len(filtered),
-                     'stats':{'total_events':stats['total_events'],'exec_count':stats['exec_count'],'kprobe_count':stats['kprobe_count'],'exit_count':stats['exit_count'],'aetherclaude_events':stats['aetherclaude_events'],'network_connections':stats['network_connections'],'alert_count':len(stats['alerts']),'policy_hits':dict(stats['policy_hits']),'binaries_seen':dict(stats['binaries_seen']),'alerts':list(stats['alerts']),'suppressed':stats['suppressed'],'tokens':{'input':token_stats['input'],'output':token_stats['output'],'cache_read':token_stats['cache_read'],'cache_create':token_stats['cache_create'],'messages':token_stats['messages'],'total':token_stats['input']+token_stats['output'],'estimated_cost_usd':_opus_api_equivalent_cost(token_stats['input'],token_stats['output'],token_stats['cache_read'],token_stats['cache_create']),'cycle':{'input':token_stats['cycle_input'],'output':token_stats['cycle_output'],'cache_read':token_stats['cycle_cache_read'],'cache_create':token_stats['cycle_cache_create'],'messages':token_stats['cycle_messages'],'estimated_cost_usd':_opus_api_equivalent_cost(token_stats['cycle_input'],token_stats['cycle_output'],token_stats['cycle_cache_read'],token_stats['cycle_cache_create']),'cycle_start_iso':token_stats['cycle_start_iso'],'subscription_amount_usd':token_stats['subscription_amount_usd']},'lifetime':{'estimated_cost_usd':_opus_api_equivalent_cost(token_stats['input'],token_stats['output'],token_stats['cache_read'],token_stats['cache_create']),'subscription_cycles_paid':token_stats['subscription_cycles_paid'],'subscription_total_usd':round(token_stats['subscription_amount_usd']*token_stats['subscription_cycles_paid'],2),'subscription_start_iso':token_stats['subscription_start_iso']}},'tools':{'total':tool_stats['total'],'breakdown':tool_stats['breakdown']}},'mcp_scan_details':ring_stats.get('r6_mcp_details',[]),'rings':dict(ring_stats)}
+                     'stats':{'total_events':stats['total_events'],'exec_count':stats['exec_count'],'kprobe_count':stats['kprobe_count'],'exit_count':stats['exit_count'],'aetherclaude_events':stats['aetherclaude_events'],'network_connections':stats['network_connections'],'alert_count':len(stats['alerts']),'policy_hits':dict(stats['policy_hits']),'binaries_seen':dict(stats['binaries_seen']),'alerts':list(stats['alerts']),'suppressed':stats['suppressed'],'tokens':{'input':token_stats['input'],'output':token_stats['output'],'cache_read':token_stats['cache_read'],'cache_create':token_stats['cache_create'],'messages':token_stats['messages'],'total':token_stats['input']+token_stats['output'],'estimated_cost_usd':_api_equivalent_cost(token_stats['input'],token_stats['output'],token_stats['cache_read'],token_stats['cache_create']),'cycle':{'input':token_stats['cycle_input'],'output':token_stats['cycle_output'],'cache_read':token_stats['cycle_cache_read'],'cache_create':token_stats['cycle_cache_create'],'messages':token_stats['cycle_messages'],'estimated_cost_usd':_api_equivalent_cost(token_stats['cycle_input'],token_stats['cycle_output'],token_stats['cycle_cache_read'],token_stats['cycle_cache_create']),'cycle_start_iso':token_stats['cycle_start_iso'],'subscription_amount_usd':token_stats['subscription_amount_usd']},'lifetime':{'estimated_cost_usd':_api_equivalent_cost(token_stats['input'],token_stats['output'],token_stats['cache_read'],token_stats['cache_create']),'subscription_cycles_paid':token_stats['subscription_cycles_paid'],'subscription_total_usd':round(token_stats['subscription_amount_usd']*token_stats['subscription_cycles_paid'],2),'subscription_start_iso':token_stats['subscription_start_iso']}},'tools':{'total':tool_stats['total'],'breakdown':tool_stats['breakdown']}},'mcp_scan_details':ring_stats.get('r6_mcp_details',[]),'rings':dict(ring_stats)}
             self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Access-Control-Allow-Origin','*');self.end_headers()
             self._send_json(d)
         elif self.path.startswith('/api/ring-events'):
