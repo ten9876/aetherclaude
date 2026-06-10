@@ -7780,10 +7780,18 @@ a{{color:#0a6aba}}
                 event_type == 'pull_request'
                 and action in ('opened', 'synchronize', 'reopened', 'ready_for_review')
             )
+            # CI/system events (check_run, workflow_run) are NOT interactive
+            # maintainer activity — a CI failure on the maintainer's own PR is
+            # exactly when explain-ci should fire (and review-pr on success).
+            # Without this exemption, every CI completion triggered by ten9876's
+            # pushes was dropped here before reaching the CI-conclusion filter,
+            # silently disabling the CI-failure explainer for the operator's PRs.
+            maint_ci_event = event_type in ('check_run', 'workflow_run')
             if (sender == 'ten9876' and not is_mention
                     and not maint_eligibility_signal
                     and not maint_issue_opened
-                    and not maint_pr_actionable):
+                    and not maint_pr_actionable
+                    and not maint_ci_event):
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (maintainer)'); return
             # Skip irrelevant actions
             if event_type == 'issues' and action not in ('opened', 'edited', 'labeled', 'reopened', 'closed'):
