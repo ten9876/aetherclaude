@@ -1,0 +1,83 @@
+{
+  "name": "github.com/ten9876/aetherclaude",
+  "version": "v1.0.0",
+  "schema_version": "0.8.0",
+  "description": "AetherClaude is an autonomous, security-first GitHub agent for the AetherSDR project. It triages incoming issues, reviews pull requests, explains CI failures, detects duplicates, welcomes first-time contributors, and drafts fixes for maintainer-authorized issues. It runs Claude (claude-fable-5) via Claude Code inside a defense-in-depth sandbox: dedicated unprivileged user, pf egress firewall, Cisco Isovalent Tetragon eBPF runtime observability, MCP token-isolation gateway, AI-output scanners, and mandatory human review on every merge. All runs emit traces consumable in the AGNTCY observability schema via the dashboard's /api/agent-walk-otel endpoint.",
+  "authors": [
+    "Jeremy Fielder (KK7GWY)"
+  ],
+  "created_at": "2026-06-11T01:30:00Z",
+  "skills": [
+    {
+      "name": "natural_language_processing/analytical_reasoning/problem_solving",
+      "id": 10702
+    },
+    {
+      "name": "natural_language_processing/natural_language_generation/summarization",
+      "id": 10202
+    },
+    {
+      "name": "analytical_skills/coding_skills/text_to_code",
+      "id": 50201
+    },
+    {
+      "name": "analytical_skills/coding_skills/code_optimization",
+      "id": 50204
+    },
+    {
+      "name": "governance_compliance/audit_trail_summarization",
+      "id": 1303
+    },
+    {
+      "name": "governance_compliance/risk_classification",
+      "id": 1304
+    },
+    {
+      "name": "tool_interaction/tool_use_planning",
+      "id": 1403
+    },
+    {
+      "name": "advanced_reasoning_planning/long_horizon_reasoning",
+      "id": 1502
+    }
+  ],
+  "domains": [
+    {
+      "id": 102,
+      "name": "technology/software_engineering"
+    },
+    {
+      "id": 10202,
+      "name": "technology/software_engineering/devops"
+    }
+  ],
+  "locators": [
+    {
+      "type": "source_code",
+      "url": "https://github.com/ten9876/AetherClaude"
+    },
+    {
+      "type": "url",
+      "url": "https://dashboard.aethersdr.com"
+    }
+  ],
+  "modules": [
+    {
+      "name": "core/llm/model",
+      "id": 10201,
+      "data": {
+        "models": [
+          {
+            "provider": "anthropic",
+            "model": "claude-fable-5"
+          }
+        ]
+      }
+    }
+  ],
+  "annotations": {
+    "observability": "Traces exported in the AGNTCY observability schema (OTel GenAI semantic conventions + gen_ai.ioa.* extensions) at /api/agent-walk-otel?trace_id=<id>",
+    "security_architecture": "Nine-ring defense-in-depth: unprivileged UID + rbash, pf egress allowlist, Tetragon eBPF TracingPolicies, canary tripwires, tinyproxy egress audit, AI-output scanners (Cisco AI Defense), MCP token-isolation gateway, validation gate, mandatory human merge approval",
+    "governed_repository": "https://github.com/aethersdr/AetherSDR"
+  }
+}
