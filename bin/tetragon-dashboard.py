@@ -165,6 +165,28 @@ MEMORY_BUFFER_MAX = 10000
 memory_buffer = []  # Ordered by insertion time, newest at end
 memory_lock = threading.Lock()
 
+# Rate-limited logger for swallowed exceptions on structural paths (DB
+# writes, background-thread outer loops, webhook state writes). A silent
+# failure in one of these is the class of bug behind the events.db
+# corruption crash-loop and the dropped-CI-webhook regression. Logged to
+# stderr (-> dashboard-error.log), at most once per `every` seconds per
+# call-site so a recurring fault surfaces without flooding the log. Hot
+# per-line parse skips are deliberately left silent (expected + noisy).
+_err_log_last = {}
+_err_log_lock = threading.Lock()
+
+def _log_exc(where, exc=None, every=60.0):
+    now = time.monotonic()
+    with _err_log_lock:
+        if now - _err_log_last.get(where, 0.0) < every:
+            return
+        _err_log_last[where] = now
+    try:
+        detail = ('%s: %s' % (type(exc).__name__, exc)) if exc is not None else ''
+        print('[dash-err] %s %s' % (where, detail), file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
 # --- Secret redaction ---
 import re as _re
 _SECRET_PATTERNS = [
@@ -440,7 +462,7 @@ def db_batch_writer():
             )
             conn.commit()
             conn.close()
-        except: pass
+        except Exception as _e: _log_exc('db_batch_writer', _e)
 
 def init_db():
     conn = sqlite3.connect(EVENTS_DB)
@@ -611,7 +633,7 @@ def db_insert_event(entry):
         )
         conn.commit()
         conn.close()
-    except: pass
+    except Exception as _e: _log_exc('db_insert_event', _e)
 
 def db_query_events(limit=1000, source=None, event_type=None):
     try:
@@ -636,7 +658,8 @@ def db_query_events(limit=1000, source=None, event_type=None):
                  'args': r[4], 'policy': r[5], 'is_agent': bool(r[6]), 'source': r[7],
                  'trace_id': r[8]}
                 for r in reversed(rows)]
-    except:
+    except Exception as _e:
+        _log_exc('db_query_events', _e)
         return []
 
 # How long to look back when backfilling trace_ids. Older traces probably
@@ -868,7 +891,7 @@ def db_purge_if_needed(max_gb=250):
                 with open('/Users/aetherclaude/logs/orchestrator.log', 'a') as f:
                     f.write(f'{datetime.datetime.now().isoformat()} DASHBOARD: Purged {purge_count} events from DB ({size_gb:.1f}GB exceeded {max_gb}GB limit). {remaining} events remaining.\n')
             except: pass
-    except: pass
+    except Exception as _e: _log_exc('db_purge_if_needed', _e)
 
 def db_count():
     try:
@@ -1395,7 +1418,7 @@ def scan_rings():
                 except:
                     pass
 
-        except: pass
+        except Exception as _e: _log_exc('scan_rings', _e)
         db_purge_if_needed(250)
         time.sleep(RING_REFRESH_SECS)
 
@@ -1678,7 +1701,7 @@ def scan_tokens():
                 token_stats['subscription_start_iso']   = sub_start.strftime('%Y-%m-%d')
                 tool_stats['total'] = tool_total
                 tool_stats['breakdown'] = dict(tool_bd)
-        except: pass
+        except Exception as _e: _log_exc('scan_tokens', _e)
         time.sleep(TOKEN_REFRESH_SECS)
 
 def tail_validation_log(logfile):
@@ -1943,8 +1966,7 @@ def tail_sessions():
                             continue
                 except (PermissionError, FileNotFoundError):
                     continue
-        except:
-            pass
+        except Exception as _e: _log_exc('tail_sessions', _e)
         time.sleep(2)
 
 DEFENSECLAW_AUDIT_LOG = '/Users/aetherclaude/.defenseclaw/gateway.jsonl'
@@ -2054,7 +2076,7 @@ def tail_defenseclaw_audit(logfile):
                 append_event(entry)
     finally:
         try: f.close()
-        except: pass
+        except Exception as _e: _log_exc('tail_defenseclaw_audit', _e)
 
 
 def tail_orchestrator_skills(logfile):
@@ -8128,7 +8150,7 @@ a{{color:#0a6aba}}
                     mention_issue = payload.get('issue', payload.get('pull_request', {})).get('number', '')
                     with open(f'/Users/aetherclaude/state/mention.{lock_key}', 'w') as mf:
                         mf.write(str(mention_issue))
-                except: pass
+                except Exception as _e: _log_exc('webhook.mention_write', _e)
             # Stash the trigger event type so run-agent.sh can route to only
             # the relevant skills.
             # Format: "<event_type>:<action>" or "<event_type>:<action>:<label>"
@@ -8141,7 +8163,7 @@ a{{color:#0a6aba}}
                         trigger_str += f":{label_name}"
                 with open(f'/Users/aetherclaude/state/trigger-event.{lock_key}', 'w') as tf:
                     tf.write(trigger_str)
-            except: pass
+            except Exception as _e: _log_exc('webhook.trigger_write', _e)
             # Skip when adopted_running — the running orchestrator for
             # this same lock_key already has its trace_id, no need to
             # write or spawn again.
@@ -8149,7 +8171,7 @@ a{{color:#0a6aba}}
                 try:
                     with open(f'/Users/aetherclaude/state/trace-id.{lock_key}', 'w') as tf:
                         tf.write(trace_id)
-                except: pass
+                except Exception as _e: _log_exc('webhook.traceid_write', _e)
             # Trigger the orchestrator. Direct subprocess.Popen instead of
             # `launchctl kickstart` because launchd enforces one-instance-
             # per-service, which would block parallelism. Forking
