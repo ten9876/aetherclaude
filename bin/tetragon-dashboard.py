@@ -7070,6 +7070,127 @@ a{{color:#0a6aba}}
                 except Exception as ex:
                     self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
                     self._send_json({'events': [], 'total': 0, 'error': str(ex)})
+        elif self.path.startswith('/api/agent-walk-otel'):
+            # Export one agent-walk trace as OTLP/JSON spans following the
+            # AGNTCY observability schema (github.com/agntcy/observe), an
+            # extension of the OTel GenAI semantic conventions. Lets any
+            # OTel-compatible consumer (e.g. AGNTCY telemetry-hub backed by
+            # ClickHouse) ingest AetherClaude runs without bespoke glue.
+            # Point events are emitted as zero-duration child spans under a
+            # synthetic root span covering the whole orchestrator run.
+            import hashlib
+            from urllib.parse import urlparse, parse_qs
+            params = parse_qs(urlparse(self.path).query)
+            tid = (params.get('trace_id', [''])[0] or '').strip()
+            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+            if not re.fullmatch(r'[0-9a-f]{32}', tid):
+                self._send_json({'error': 'trace_id must be 32 lowercase hex chars'}); return
+
+            def _nanos(ts):
+                if not ts:
+                    return 0
+                s = ts.rstrip('Z')
+                frac = 0.0
+                if '.' in s:
+                    s, f = s.split('.', 1)
+                    try:
+                        frac = float('0.' + f)
+                    except ValueError:
+                        frac = 0.0
+                try:
+                    dt = datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    return 0
+                return int((dt.timestamp() + frac) * 1e9)
+
+            def _span_id(seed):
+                return hashlib.sha256(seed.encode()).hexdigest()[:16]
+
+            def _attr(k, v):
+                if isinstance(v, bool):
+                    return {'key': k, 'value': {'boolValue': v}}
+                if isinstance(v, int):
+                    return {'key': k, 'value': {'intValue': str(v)}}
+                return {'key': k, 'value': {'stringValue': str(v)}}
+
+            try:
+                conn = sqlite3.connect(EVENTS_DB)
+                rows = conn.execute(
+                    "SELECT id, timestamp, type, binary_name, args, source "
+                    "FROM events WHERE trace_id = ? ORDER BY id LIMIT 5000",
+                    (tid,)).fetchall()
+                conn.close()
+            except Exception as ex:
+                self._send_json({'error': str(ex)}); return
+            if not rows:
+                self._send_json({'resourceSpans': [], 'error': 'no events for trace_id'}); return
+
+            ts_vals = [t for t in (_nanos(r[1]) for r in rows) if t]
+            first_ts = min(ts_vals) if ts_vals else 0
+            last_ts = max(ts_vals) if ts_vals else first_ts
+            root_id = _span_id(tid + ':root')
+            start_cond = next((r[4] for r in rows if r[5] == 'webhook' and r[4]), '')
+            root_attrs = [
+                _attr('gen_ai.operation.name', 'invoke_agent'),
+                _attr('gen_ai.system', 'claude_code'),
+                _attr('gen_ai.agent.name', 'AetherClaude'),
+                _attr('gen_ai.agent.id', 'github.com/ten9876/aetherclaude'),
+                _attr('gen_ai.agent.description',
+                      'Autonomous GitHub issue-triage, PR-review and CI-explainer agent for AetherSDR'),
+                _attr('gen_ai.request.model', 'claude-fable-5'),
+                _attr('gen_ai.ioa.span_kind', 'agent'),
+                _attr('gen_ai.ioa.collection_method', 'instrumentation'),
+            ]
+            if start_cond:
+                root_attrs.append(_attr('gen_ai.ioa.start_condition', str(start_cond)[:200]))
+            spans = [{
+                'traceId': tid, 'spanId': root_id,
+                'name': 'invoke_agent AetherClaude', 'kind': 1,
+                'startTimeUnixNano': str(first_ts), 'endTimeUnixNano': str(last_ts),
+                'attributes': root_attrs, 'status': {'code': 1},
+            }]
+            for rid, ts, _etype, binary, args, source in rows:
+                t = _nanos(ts)
+                binary = binary or ''
+                if source == 'claude-code' and binary.startswith('claude:'):
+                    op, ioa_kind = 'execute_tool', 'tool'
+                    name = 'execute_tool ' + binary.split(':', 1)[1]
+                elif source == 'webhook':
+                    op, ioa_kind = 'receive_event', 'workflow'
+                    name = 'webhook ' + binary.replace('github:', '')
+                else:
+                    op, ioa_kind = 'process', 'workflow'
+                    name = ((source or 'event') + ' ' + binary).strip()
+                attrs = [
+                    _attr('gen_ai.operation.name', op),
+                    _attr('gen_ai.system', 'claude_code'),
+                    _attr('gen_ai.ioa.span_kind', ioa_kind),
+                ]
+                if op == 'execute_tool':
+                    attrs.append(_attr('gen_ai.tool.name', binary.split(':', 1)[1]))
+                if args:
+                    attrs.append(_attr('aetherclaude.event.detail', str(args)[:300]))
+                is_err = 'ERROR' in (args or '') or 'FATAL' in (args or '')
+                if is_err:
+                    attrs.append(_attr('error.type', 'agent_error'))
+                spans.append({
+                    'traceId': tid, 'spanId': _span_id(tid + ':' + str(rid)),
+                    'parentSpanId': root_id, 'name': name[:120], 'kind': 1,
+                    'startTimeUnixNano': str(t), 'endTimeUnixNano': str(t),
+                    'attributes': attrs,
+                    'status': {'code': 2 if is_err else 1},
+                })
+            self._send_json({'resourceSpans': [{
+                'resource': {'attributes': [
+                    _attr('service.name', 'aetherclaude'),
+                    _attr('service.namespace', 'aethersdr'),
+                    _attr('telemetry.sdk.name', 'aetherclaude-dashboard'),
+                ]},
+                'scopeSpans': [{
+                    'scope': {'name': 'aetherclaude.agntcy.observe', 'version': '1.0.0'},
+                    'spans': spans,
+                }],
+            }]})
         elif self.path.startswith('/api/agent-walk-traces'):
             # List recent traces for the picker dropdown. One row per
             # distinct trace_id, with summary (event count, time bounds,
