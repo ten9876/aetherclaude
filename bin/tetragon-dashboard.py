@@ -1561,6 +1561,85 @@ def _tokenomics_epoch():
     return None
 
 
+# ── Session-transcript retention ─────────────────────────────────────────────
+# The Claude Code session JSONLs under SESSION_DIR are append-only and never
+# pruned — they grow without bound (the corpus that scan_tokens and the tail
+# threads enumerate). This archiver MOVES (reversibly — not deletes) files
+# whose newest record is older than SESSION_RETENTION_DAYS out to
+# SESSION_ARCHIVE_DIR, bounding the live corpus and future growth. Age is read
+# from in-file content timestamps, NOT mtime: a crash recovery reset every
+# file's mtime to a single day, so mtime is useless for age here. The cutoff
+# is far older than the tokenomics epoch, so archived files contribute nothing
+# to the displayed token/cost totals, and their events are already persisted in
+# events.db, so the dashboard loses no data.
+SESSION_ARCHIVE_DIR = os.environ.get(
+    'SESSION_ARCHIVE_DIR', '/Users/aetherclaude/.claude/projects-archive')
+SESSION_RETENTION_DAYS = int(os.environ.get('SESSION_RETENTION_DAYS', '30'))
+SESSION_ARCHIVE_INTERVAL_SECS = 86400  # daily
+
+
+def _newest_record_ts(path):
+    """Newest record timestamp in an append-only session JSONL, read from the
+    file's tail so multi-MB files aren't read in full. Naive-local datetime
+    (matches _parse_record_ts), or None."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, 'rb') as fh:
+            if size > 65536:
+                fh.seek(size - 65536)
+                fh.readline()  # discard the partial first line after the seek
+            tail = fh.read().decode('utf-8', 'replace')
+    except OSError:
+        return None
+    newest = None
+    for line in tail.splitlines():
+        if '"timestamp"' not in line:
+            continue
+        try:
+            ts = json.loads(line).get('timestamp')
+        except ValueError:
+            continue
+        dt = _parse_record_ts(ts)
+        if dt is not None and (newest is None or dt > newest):
+            newest = dt
+    return newest
+
+
+def session_archiver():
+    time.sleep(120)  # let startup warm-ups finish before the first sweep
+    while True:
+        try:
+            cutoff = datetime.now() - timedelta(days=SESSION_RETENTION_DAYS)
+            moved = 0
+            moved_bytes = 0
+            for f in glob.glob(os.path.join(SESSION_DIR, '**', '*.jsonl'), recursive=True):
+                if '/subagents/' in f:
+                    continue
+                newest = _newest_record_ts(f)
+                # Never touch files newer than the cutoff, or whose age we
+                # couldn't determine (fail safe — keep it).
+                if newest is None or newest >= cutoff:
+                    continue
+                rel = os.path.relpath(f, SESSION_DIR)
+                dest = os.path.join(SESSION_ARCHIVE_DIR, rel)
+                try:
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    sz = os.path.getsize(f)
+                    os.replace(f, dest)  # same volume -> atomic rename
+                    moved += 1
+                    moved_bytes += sz
+                except OSError as _e:
+                    _log_exc('session_archiver.move', _e)
+            if moved:
+                print('[session-archiver] archived %d files (%.1f MB) with newest '
+                      'record older than %dd -> %s'
+                      % (moved, moved_bytes / 1e6, SESSION_RETENTION_DAYS, SESSION_ARCHIVE_DIR),
+                      file=sys.stderr, flush=True)
+        except Exception as _e:
+            _log_exc('session_archiver', _e)
+        time.sleep(SESSION_ARCHIVE_INTERVAL_SECS)
+
+
 # Incremental per-file aggregate cache for scan_tokens. Session JSONLs
 # are append-only, so a file whose (mtime,size) is unchanged since the
 # last scan contributes the same token/tool totals — no need to re-read
@@ -8230,6 +8309,7 @@ def main():
     threading.Thread(target=scan_rings,daemon=True).start()
     threading.Thread(target=db_batch_writer,daemon=True).start()
     threading.Thread(target=db_pruner,daemon=True).start()
+    threading.Thread(target=session_archiver,daemon=True).start()
     threading.Thread(target=db_trace_backfill_correlator,daemon=True).start()
     threading.Thread(target=track_active_trace,daemon=True).start()
     threading.Thread(target=warmup_claude_active_traces,daemon=True).start()
