@@ -428,6 +428,10 @@ def db_batch_writer():
             db_write_queue.clear()
         try:
             conn = sqlite3.connect(EVENTS_DB)
+            try:
+                conn.execute('PRAGMA synchronous=NORMAL')
+            except sqlite3.Error:
+                pass
             conn.executemany(
                 'INSERT INTO events (timestamp, type, uid, binary_name, args, policy, is_agent, source, trace_id) VALUES (?,?,?,?,?,?,?,?,?)',
                 [(e.get('time',''), e.get('type',''), e.get('uid',''),
@@ -440,6 +444,16 @@ def db_batch_writer():
 
 def init_db():
     conn = sqlite3.connect(EVENTS_DB)
+    # WAL lets the batch writer and the many read endpoints proceed
+    # concurrently instead of serializing on a single-writer lock; the
+    # mode is a persistent property of the DB file, so every later
+    # connection inherits it. synchronous=NORMAL is the standard
+    # durable-enough pairing for WAL.
+    try:
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA synchronous=NORMAL')
+    except sqlite3.Error:
+        pass
     conn.execute('''CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp TEXT,
@@ -1524,7 +1538,20 @@ def _tokenomics_epoch():
     return None
 
 
+# Incremental per-file aggregate cache for scan_tokens. Session JSONLs
+# are append-only, so a file whose (mtime,size) is unchanged since the
+# last scan contributes the same token/tool totals — no need to re-read
+# it. Previously scan_tokens re-read the ENTIRE ~700MB corpus TWICE every
+# 30s (a usage pass + a separate tool-count pass), which pegged a core
+# for ~3s each cycle and grew with history. Now only changed/new files
+# are read, once, computing lifetime + cycle + tool aggregates together.
+# Each entry: {'sig':(mtime,size), 'life':[in,out,cr,cc,msgs],
+#              'cyc':[in,out,cr,cc,msgs], 'tools':(total,{name:count})}.
+_tok_cache = {}
+_tok_cache_key = None  # (epoch_ts|None, cycle_start_ts) the cache was built under
+
 def scan_tokens():
+    global _tok_cache, _tok_cache_key
     while True:
         try:
             # Cycle boundary recomputed each scan tick — when the bill day
@@ -1536,68 +1563,101 @@ def scan_tokens():
                 cycle_start = epoch
             cycles_paid = _bill_cycles_paid(sub_start)
 
-            # Lifetime totals (all-time, matches pre-existing behavior).
-            total_in = total_out = total_cr = total_cc = total_msgs = 0
-            # Current-cycle totals (records with timestamp >= cycle_start).
-            cyc_in   = cyc_out   = cyc_cr   = cyc_cc   = cyc_msgs   = 0
+            epoch_ts = epoch.timestamp() if epoch is not None else None
+            cyc_ts = cycle_start.timestamp()
+            # Per-file 'cyc' and epoch-filtered 'life' aggregates are only
+            # valid for the (epoch, cycle_start) they were computed under.
+            # When either rolls over (monthly bill day, or an operator
+            # tokenomics reset), rebuild the cache from scratch.
+            cache_key = (epoch_ts, cyc_ts)
+            if cache_key != _tok_cache_key:
+                _tok_cache = {}
+                _tok_cache_key = cache_key
+
+            seen = set()
             for f in glob.glob(os.path.join(SESSION_DIR, '**', '*.jsonl'), recursive=True):
-                if '/subagents/' in f: continue
-                # mtime fast-path: if the file hasn't been touched since
-                # the cycle started, none of its records are in-cycle.
-                # Saves per-line timestamp parsing on the long tail of
-                # cold session files.
-                try:
-                    _fm = os.path.getmtime(f)
-                except OSError:
-                    _fm = None
-                # Tokenomics reset: skip files untouched since the epoch.
-                if epoch is not None and _fm is not None and _fm < epoch.timestamp():
+                if '/subagents/' in f:
                     continue
-                file_in_cycle = (_fm is None) or (_fm >= cycle_start.timestamp())
+                try:
+                    stt = os.stat(f)
+                except OSError:
+                    continue
+                # File untouched since the epoch reset → contributes nothing.
+                if epoch_ts is not None and stt.st_mtime < epoch_ts:
+                    continue
+                seen.add(f)
+                sig = (stt.st_mtime, stt.st_size)
+                ent = _tok_cache.get(f)
+                if ent is not None and ent['sig'] == sig:
+                    continue  # unchanged — reuse cached aggregate
+                # Cache miss / changed file: read ONCE, computing lifetime,
+                # cycle, and tool aggregates in a single pass.
+                life = [0, 0, 0, 0, 0]
+                cyc  = [0, 0, 0, 0, 0]
+                t_total = 0
+                t_bd = defaultdict(int)
+                file_in_cycle = stt.st_mtime >= cyc_ts
                 try:
                     with open(f) as fh:
                         for line in fh:
-                            if '"usage"' not in line: continue
-                            d = json.loads(line)
-                            u = d.get('message', {}).get('usage', {})
-                            if u:
-                                inp = u.get('input_tokens', 0)
-                                out = u.get('output_tokens', 0)
-                                cr  = u.get('cache_read_input_tokens', 0)
-                                cc  = u.get('cache_creation_input_tokens', 0)
-                                rec_dt = (_parse_record_ts(d.get('timestamp'))
-                                          if (epoch is not None or file_in_cycle)
-                                          else None)
-                                # Tokenomics reset: drop pre-epoch records from
-                                # lifetime (and therefore cycle) totals.
-                                if epoch is not None and rec_dt is not None and rec_dt < epoch:
-                                    continue
-                                total_in += inp; total_out += out
-                                total_cr += cr;  total_cc += cc
-                                total_msgs += 1
-                                if file_in_cycle:
-                                    in_cycle = rec_dt is None or rec_dt >= cycle_start
-                                    if in_cycle:
-                                        cyc_in += inp; cyc_out += out
-                                        cyc_cr += cr;  cyc_cc += cc
-                                        cyc_msgs += 1
-                except: continue
-            # Also count tool calls
+                            has_usage = '"usage"' in line
+                            has_tool  = '"tool_use"' in line
+                            if not has_usage and not has_tool:
+                                continue
+                            try:
+                                d = json.loads(line)
+                            except ValueError:
+                                continue
+                            msg = d.get('message', {})
+                            if has_usage:
+                                u = msg.get('usage', {})
+                                if u:
+                                    inp = u.get('input_tokens', 0)
+                                    out = u.get('output_tokens', 0)
+                                    cr  = u.get('cache_read_input_tokens', 0)
+                                    cc  = u.get('cache_creation_input_tokens', 0)
+                                    rec_dt = (_parse_record_ts(d.get('timestamp'))
+                                              if (epoch is not None or file_in_cycle)
+                                              else None)
+                                    # Tokenomics reset: drop pre-epoch records.
+                                    if epoch is not None and rec_dt is not None and rec_dt < epoch:
+                                        pass
+                                    else:
+                                        life[0] += inp; life[1] += out
+                                        life[2] += cr;  life[3] += cc; life[4] += 1
+                                        if file_in_cycle and (rec_dt is None or rec_dt >= cycle_start):
+                                            cyc[0] += inp; cyc[1] += out
+                                            cyc[2] += cr;  cyc[3] += cc; cyc[4] += 1
+                            if has_tool:
+                                for c in msg.get('content', []):
+                                    if c.get('type') == 'tool_use':
+                                        t_total += 1
+                                        t_bd[c.get('name', '?')] += 1
+                except OSError:
+                    continue
+                _tok_cache[f] = {'sig': sig, 'life': life, 'cyc': cyc,
+                                 'tools': (t_total, dict(t_bd))}
+
+            # Evict entries for files that disappeared (deleted/pruned).
+            if len(_tok_cache) > len(seen):
+                for gone in [k for k in _tok_cache if k not in seen]:
+                    del _tok_cache[gone]
+
+            # Aggregate across all cached per-file totals.
+            total_in = total_out = total_cr = total_cc = total_msgs = 0
+            cyc_in   = cyc_out   = cyc_cr   = cyc_cc   = cyc_msgs   = 0
             tool_total = 0
             tool_bd = defaultdict(int)
-            for f2 in glob.glob(os.path.join(SESSION_DIR, '**', '*.jsonl'), recursive=True):
-                if '/subagents/' in f2: continue
-                try:
-                    with open(f2) as fh2:
-                        for line2 in fh2:
-                            if '"tool_use"' not in line2: continue
-                            d2 = json.loads(line2)
-                            for c in d2.get('message', {}).get('content', []):
-                                if c.get('type') == 'tool_use':
-                                    name = c.get('name', '?')
-                                    tool_total += 1
-                                    tool_bd[name] += 1
-                except: continue
+            for ent in _tok_cache.values():
+                lf = ent['life']; cy = ent['cyc']
+                total_in += lf[0]; total_out += lf[1]
+                total_cr += lf[2]; total_cc += lf[3]; total_msgs += lf[4]
+                cyc_in += cy[0]; cyc_out += cy[1]
+                cyc_cr += cy[2]; cyc_cc += cy[3]; cyc_msgs += cy[4]
+                tt, bd = ent['tools']
+                tool_total += tt
+                for nm, ct in bd.items():
+                    tool_bd[nm] += ct
 
             with lock:
                 token_stats['input'] = total_in
