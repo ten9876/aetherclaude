@@ -6122,6 +6122,87 @@ def _classify_agent_walk_stage(typ, src, args, binary):
     return 0
 
 
+# ── Short-TTL response caches ────────────────────────────────────────────────
+# /api/events (stats block) and /api/agent-walk-traces (picker) are both
+# expensive to build and are polled continuously by the dashboard UI + TUI.
+# Each is cached for a second or two so a burst of concurrent polls reuses
+# one computed result instead of every request rebuilding it. The dashboard
+# is a live view; sub-second staleness on counters is imperceptible.
+STATS_PAYLOAD_TTL = 1.0   # seconds
+PICKER_CACHE_TTL  = 10.0  # seconds
+_stats_payload = {'ts': 0.0, 'data': None}
+_stats_payload_lock = threading.Lock()
+_picker_cache = {}        # (limit, include_skipped) -> (monotonic_ts, traces)
+_picker_cache_lock = threading.Lock()
+
+
+def build_stats_payload():
+    """Build the stats/tokens/rings/tools block served by /api/events,
+    cached for STATS_PAYLOAD_TTL. The underlying counters update
+    continuously in background threads; caching collapses concurrent
+    polls into a single build (the /api/events hot path was rebuilding
+    this whole nested dict on every request)."""
+    now = time.monotonic()
+    with _stats_payload_lock:
+        if _stats_payload['data'] is not None and now - _stats_payload['ts'] < STATS_PAYLOAD_TTL:
+            return _stats_payload['data']
+    with lock:
+        payload = {
+            'stats': {
+                'total_events': stats['total_events'],
+                'exec_count': stats['exec_count'],
+                'kprobe_count': stats['kprobe_count'],
+                'exit_count': stats['exit_count'],
+                'aetherclaude_events': stats['aetherclaude_events'],
+                'network_connections': stats['network_connections'],
+                'alert_count': len(stats['alerts']),
+                'policy_hits': dict(stats['policy_hits']),
+                'binaries_seen': dict(stats['binaries_seen']),
+                'alerts': list(stats['alerts']),
+                'suppressed': stats['suppressed'],
+                'tokens': {
+                    'input': token_stats['input'],
+                    'output': token_stats['output'],
+                    'cache_read': token_stats['cache_read'],
+                    'cache_create': token_stats['cache_create'],
+                    'messages': token_stats['messages'],
+                    'total': token_stats['input'] + token_stats['output'],
+                    'estimated_cost_usd': _api_equivalent_cost(
+                        token_stats['input'], token_stats['output'],
+                        token_stats['cache_read'], token_stats['cache_create']),
+                    'cycle': {
+                        'input': token_stats['cycle_input'],
+                        'output': token_stats['cycle_output'],
+                        'cache_read': token_stats['cycle_cache_read'],
+                        'cache_create': token_stats['cycle_cache_create'],
+                        'messages': token_stats['cycle_messages'],
+                        'estimated_cost_usd': _api_equivalent_cost(
+                            token_stats['cycle_input'], token_stats['cycle_output'],
+                            token_stats['cycle_cache_read'], token_stats['cycle_cache_create']),
+                        'cycle_start_iso': token_stats['cycle_start_iso'],
+                        'subscription_amount_usd': token_stats['subscription_amount_usd'],
+                    },
+                    'lifetime': {
+                        'estimated_cost_usd': _api_equivalent_cost(
+                            token_stats['input'], token_stats['output'],
+                            token_stats['cache_read'], token_stats['cache_create']),
+                        'subscription_cycles_paid': token_stats['subscription_cycles_paid'],
+                        'subscription_total_usd': round(
+                            token_stats['subscription_amount_usd'] * token_stats['subscription_cycles_paid'], 2),
+                        'subscription_start_iso': token_stats['subscription_start_iso'],
+                    },
+                },
+                'tools': {'total': tool_stats['total'], 'breakdown': tool_stats['breakdown']},
+            },
+            'mcp_scan_details': ring_stats.get('r6_mcp_details', []),
+            'rings': dict(ring_stats),
+        }
+    with _stats_payload_lock:
+        _stats_payload['ts'] = now
+        _stats_payload['data'] = payload
+    return payload
+
+
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path=='/':
@@ -7067,14 +7148,19 @@ a{{color:#0a6aba}}
                 return True
 
             with memory_lock:
-                filtered = [e for e in memory_buffer if _matches(e)]
                 buf_total = len(memory_buffer)
-            # Last 1000, newest first
-            display = filtered[-1000:]
-            display = list(reversed(display))
-            with lock:
-                d = {'events': display, 'total': buf_total, 'filtered': len(filtered),
-                     'stats':{'total_events':stats['total_events'],'exec_count':stats['exec_count'],'kprobe_count':stats['kprobe_count'],'exit_count':stats['exit_count'],'aetherclaude_events':stats['aetherclaude_events'],'network_connections':stats['network_connections'],'alert_count':len(stats['alerts']),'policy_hits':dict(stats['policy_hits']),'binaries_seen':dict(stats['binaries_seen']),'alerts':list(stats['alerts']),'suppressed':stats['suppressed'],'tokens':{'input':token_stats['input'],'output':token_stats['output'],'cache_read':token_stats['cache_read'],'cache_create':token_stats['cache_create'],'messages':token_stats['messages'],'total':token_stats['input']+token_stats['output'],'estimated_cost_usd':_api_equivalent_cost(token_stats['input'],token_stats['output'],token_stats['cache_read'],token_stats['cache_create']),'cycle':{'input':token_stats['cycle_input'],'output':token_stats['cycle_output'],'cache_read':token_stats['cycle_cache_read'],'cache_create':token_stats['cycle_cache_create'],'messages':token_stats['cycle_messages'],'estimated_cost_usd':_api_equivalent_cost(token_stats['cycle_input'],token_stats['cycle_output'],token_stats['cycle_cache_read'],token_stats['cycle_cache_create']),'cycle_start_iso':token_stats['cycle_start_iso'],'subscription_amount_usd':token_stats['subscription_amount_usd']},'lifetime':{'estimated_cost_usd':_api_equivalent_cost(token_stats['input'],token_stats['output'],token_stats['cache_read'],token_stats['cache_create']),'subscription_cycles_paid':token_stats['subscription_cycles_paid'],'subscription_total_usd':round(token_stats['subscription_amount_usd']*token_stats['subscription_cycles_paid'],2),'subscription_start_iso':token_stats['subscription_start_iso']}},'tools':{'total':tool_stats['total'],'breakdown':tool_stats['breakdown']}},'mcp_scan_details':ring_stats.get('r6_mcp_details',[]),'rings':dict(ring_stats)}
+                if not selected_types and not search:
+                    # No-filter hot path: slice the last 1000 directly
+                    # instead of materializing all ~10k events.
+                    display_src = memory_buffer[-1000:]
+                    filtered_count = buf_total
+                else:
+                    filtered = [e for e in memory_buffer if _matches(e)]
+                    filtered_count = len(filtered)
+                    display_src = filtered[-1000:]
+            display = list(reversed(display_src))
+            d = {'events': display, 'total': buf_total, 'filtered': filtered_count}
+            d.update(build_stats_payload())
             self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Access-Control-Allow-Origin','*');self.end_headers()
             self._send_json(d)
         elif self.path.startswith('/api/ring-events'):
@@ -7264,6 +7350,17 @@ a{{color:#0a6aba}}
             # no review/comment to replay. Diagnostic escape hatch
             # mirrors what we used to investigate trace 446b7880.
             include_skipped = params.get('include_skipped', ['0'])[0] == '1'
+            _pk = (limit, include_skipped)
+            _pnow = time.monotonic()
+            with _picker_cache_lock:
+                _phit = _picker_cache.get(_pk)
+            if _phit is not None and _pnow - _phit[0] < PICKER_CACHE_TTL:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self._send_json({'traces': _phit[1]})
+                return
             try:
                 conn = sqlite3.connect(EVENTS_DB)
                 # Over-fetch when filtering so we still return ~limit
@@ -7310,6 +7407,8 @@ a{{color:#0a6aba}}
                     'summary': r[4] or '(no webhook event)',
                     'binary': r[5] or '',
                 } for r in rows]
+                with _picker_cache_lock:
+                    _picker_cache[_pk] = (_pnow, traces)
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
