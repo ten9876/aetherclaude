@@ -350,6 +350,11 @@ _agent_walk_subscribers = []  # list of {trace_id, q}
 _agent_walk_sub_lock = threading.Lock()
 _agent_walk_known_traces = set()  # trace_ids we've seen at least once
 _agent_walk_known_lock = threading.Lock()
+# trace_id -> set of session JSONL paths, populated by tail_claude_transcripts
+# at file discovery. Lets /api/agent-walk find a trace's transcripts to build
+# the per-trace token timeline without scanning the whole corpus.
+_trace_session_files = {}
+_trace_files_lock = threading.Lock()
 
 def _agent_walk_publish(entry):
     """Push a freshly-appended event to any matching SSE subscribers.
@@ -2473,6 +2478,10 @@ def tail_claude_transcripts():
                     # orchestrator that created the file is running",
                     # which is the right correlation moment.
                     file_trace_id[path] = _trace_for_session_path(path)
+                    _tid = file_trace_id[path]
+                    if _tid:
+                        with _trace_files_lock:
+                            _trace_session_files.setdefault(_tid, set()).add(path)
                     if file_offsets[path] == size:
                         continue
                 # File shrank? Could be a rotation or rewrite. Reset.
@@ -5394,6 +5403,7 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
 .player .progress{flex:1;height:4px;background:#101025;border-radius:2px;position:relative;overflow:hidden;margin:0 12px}
 .player .progress .bar{position:absolute;left:0;top:0;height:100%;background:#00ff88;width:0;transition:width 0.05s linear}
 .player .progress .ts-label{color:#607080;font-size:10px;min-width:90px;text-align:right;font-family:'SF Mono',monospace}
+.player .tok-counter{color:#00ff88;font-size:11px;min-width:155px;text-align:right;font-weight:600;font-family:'SF Mono',monospace}
 .event-dot.hidden{opacity:0}
 .event-dot{transition:opacity 0.15s,r 0.1s}
 /* Alert dots — events whose args contain 'failed' or 'blocked' pulse
@@ -5475,6 +5485,7 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
   <button class="speed-btn" data-speed="64">64×</button>
   <div class="progress"><div class="bar" id="progress-bar"></div></div>
   <span class="ts-label" id="progress-ts">—</span>
+  <span class="tok-counter" id="tok-counter" title="Tokens (input+output) and API-equivalent cost at Fable 5 rates">—</span>
 </div>
 <div class="live-bar" id="live-bar">
   <span class="dot"></span><span class="label">LIVE</span>
@@ -5519,6 +5530,7 @@ let _playTimers=[],_progressInterval=null,_isPlaying=false,_speed=4,_replayStart
 // Step state — index of the latest event shown via Prev/Next stepping.
 // -1 means "no stepping in progress" (live mode, all dots visible).
 let _stepIdx=-1;
+let _tokenTimeline=[],_tokenTotal=null;
 
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function fmtTime(s){if(!s)return '';const dt=new Date(s);if(isNaN(dt))return s;const hms=dt.toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});const ms=String(dt.getMilliseconds()).padStart(3,'0');return `${hms}.${ms}`}
@@ -5549,6 +5561,8 @@ function loadTrace(traceId){
   fetch('/api/agent-walk?trace='+encodeURIComponent(traceId)).then(r=>r.json()).then(d=>{
     if(d.error){document.getElementById('swim').innerHTML='<div class="empty">'+esc(d.error)+'</div>';return}
     _events=d.events||[];_selectedIdx=-1;
+    _tokenTimeline=(d.token_timeline||[]).map(e=>({t:new Date(e.time).getTime(),i:e.input,o:e.output,cr:e.cache_read,cc:e.cache_create}));
+    _tokenTotal=d.token_total||null;showTokTotal();
     const meta=document.getElementById('meta');
     if(_events.length===0){meta.textContent='Trace has no events.';document.getElementById('swim').innerHTML='<div class="empty">No events for this trace.</div>';document.getElementById('player').style.display='none';return}
     document.getElementById('player').style.display='flex';
@@ -5812,6 +5826,26 @@ function logStreamSelect(idx){
 }
 
 // --- Replay player ---
+function _tokCost(i,o,cr,cc){
+  // API-equivalent cost at Fable 5 rates; mirrors _api_equivalent_cost (backend).
+  return i/1e6*10 + o/1e6*50 + cr/1e6*1.0 + cc/1e6*20.0;
+}
+function _setTokCounter(i,o,cr,cc){
+  const el=document.getElementById('tok-counter');
+  if(!el)return;
+  el.textContent='\u2b22 '+(i+o).toLocaleString('en-US')+' tok \u00b7 $'+_tokCost(i,o,cr,cc).toFixed(2);
+}
+// Sum the trace's token usage up to a virtual playback time (ms epoch) and
+// render it. Linear over the (small) timeline; called on each progress tick.
+function updateTokAt(ms){
+  let i=0,o=0,cr=0,cc=0;
+  for(const e of _tokenTimeline){if(e.t<=ms){i+=e.i;o+=e.o;cr+=e.cr;cc+=e.cc;}}
+  _setTokCounter(i,o,cr,cc);
+}
+function showTokTotal(){
+  if(_tokenTotal)_setTokCounter(_tokenTotal.input,_tokenTotal.output,_tokenTotal.cache_read,_tokenTotal.cache_create);
+  else _setTokCounter(0,0,0,0);
+}
 function startReplay(){
   if(_isPlaying||_events.length===0)return;
   _isPlaying=true;
@@ -5831,6 +5865,7 @@ function startReplay(){
   // dot — handled by the optional-chain on querySelector).
   // Reset the log stream so it starts empty and gets appended live.
   document.getElementById('log-stream-body').innerHTML='';
+  updateTokAt(t0);
   for(let i=0;i<_events.length;i++){
     const e=_events[i];
     const offsetMs=new Date(e.time).getTime()-t0;
@@ -5849,6 +5884,7 @@ function startReplay(){
     document.getElementById('btn-pause').disabled=true;
     if(_progressInterval){clearInterval(_progressInterval);_progressInterval=null}
     document.getElementById('progress-bar').style.width='100%';
+    showTokTotal();
   },_replayDuration/_speed+50));
   // Progress bar tick
   _progressInterval=setInterval(()=>{
@@ -5857,6 +5893,7 @@ function startReplay(){
     document.getElementById('progress-bar').style.width=pct+'%';
     const tCurrent=new Date(t0+elapsed*_speed);
     document.getElementById('progress-ts').textContent=fmtTime(tCurrent.toISOString());
+    updateTokAt(t0+elapsed*_speed);
   },50);
 }
 
@@ -5882,6 +5919,7 @@ function resetReplay(){
   _selectedIdx=-1;
   renderDetail();
   logStreamClear();
+  showTokTotal();
 }
 
 // Step to a specific event index. Hides dots after it, shows dots up to
@@ -5914,6 +5952,7 @@ function stepTo(idx){
   const pct=tN>t0?((tCur-t0)/(tN-t0))*100:100;
   document.getElementById('progress-bar').style.width=pct+'%';
   document.getElementById('progress-ts').textContent=fmtTime(_events[idx].time);
+  updateTokAt(new Date(_events[idx].time).getTime());
 }
 
 document.getElementById('btn-play').addEventListener('click',startReplay);
@@ -6112,6 +6151,8 @@ document.getElementById('ntb-switch').addEventListener('click',()=>{
   // Fetch backlog via the normal endpoint, then start live tail
   fetch('/api/agent-walk?trace='+encodeURIComponent(tid)).then(r=>r.json()).then(d=>{
     _events=d.events||[];renderSwimlane();
+    _tokenTimeline=(d.token_timeline||[]).map(e=>({t:new Date(e.time).getTime(),i:e.input,o:e.output,cr:e.cache_read,cc:e.cache_create}));
+    _tokenTotal=d.token_total||null;showTokTotal();
     startLive(tid);
   });
 });
@@ -7877,6 +7918,43 @@ a{{color:#0a6aba}}
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
+                # Per-trace token timeline from the trace's session JSONL
+                # usage records — powers the playback token counter (count +
+                # cost). Cheap: a trace maps to one or a few transcripts.
+                _tl = []
+                with _trace_files_lock:
+                    _tpaths = list(_trace_session_files.get(trace_id, ()))
+                for _tp in _tpaths:
+                    try:
+                        with open(_tp) as _tfh:
+                            for _tline in _tfh:
+                                if '"usage"' not in _tline:
+                                    continue
+                                try:
+                                    _trec = json.loads(_tline)
+                                except ValueError:
+                                    continue
+                                _u = (_trec.get('message') or {}).get('usage') or {}
+                                _tts = _trec.get('timestamp')
+                                if not _u or not _tts:
+                                    continue
+                                _tl.append({
+                                    'time': _tts,
+                                    'input': _u.get('input_tokens', 0),
+                                    'output': _u.get('output_tokens', 0),
+                                    'cache_read': _u.get('cache_read_input_tokens', 0),
+                                    'cache_create': _u.get('cache_creation_input_tokens', 0),
+                                })
+                    except OSError:
+                        continue
+                _tl.sort(key=lambda e: e['time'])
+                _ti = sum(e['input'] for e in _tl)
+                _to = sum(e['output'] for e in _tl)
+                _tcr = sum(e['cache_read'] for e in _tl)
+                _tcc = sum(e['cache_create'] for e in _tl)
+                _ttotal = {'input': _ti, 'output': _to, 'cache_read': _tcr,
+                           'cache_create': _tcc,
+                           'cost': _api_equivalent_cost(_ti, _to, _tcr, _tcc)}
                 self._send_json({
                     'trace_id': trace_id,
                     'events': events,
@@ -7884,6 +7962,8 @@ a{{color:#0a6aba}}
                     'last_ts': events[-1]['time'] if events else None,
                     'event_count': len(events),
                     'background_dropped': dropped,
+                    'token_timeline': _tl,
+                    'token_total': _ttotal,
                 })
             except Exception as ex:
                 self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
