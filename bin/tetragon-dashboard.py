@@ -507,9 +507,15 @@ def init_db():
         trace_id TEXT,
         timestamp TEXT,
         input INTEGER, output INTEGER,
-        cache_read INTEGER, cache_create INTEGER
+        cache_read INTEGER, cache_create INTEGER,
+        model TEXT
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_tt_trace ON trace_tokens(trace_id)')
+    try:
+        conn.execute('ALTER TABLE trace_tokens ADD COLUMN model TEXT')
+    except sqlite3.OperationalError as e:
+        if 'duplicate column' not in str(e).lower():
+            raise
     conn.execute('''CREATE TABLE IF NOT EXISTS codeguard_findings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         scan_time TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -1443,6 +1449,24 @@ def scan_rings():
 # Cache_create uses the 1-hour ephemeral rate (2.0x base input) — Claude
 # Code defaults to 1h cache, confirmed by inspecting JSONL records
 # (ephemeral_1h_input_tokens populated, 5m always 0).
+# Per-model API rates -- ($/MTok: input, output, cache_read, cache_create),
+# mirroring bot-cost.py PRICING. Used to price each agent-walk turn at the
+# model it actually ran on (the corpus spans fable-5 / opus-4-7 / opus-4-8).
+# Unknown or synthetic models fall back to Fable 5 (the current default).
+_MODEL_RATES = {
+    'claude-fable-5':    (10.0, 50.0, 1.00, 20.00),
+    'claude-opus-4-8':   ( 5.0, 25.0, 0.50, 10.00),
+    'claude-opus-4-7':   ( 5.0, 25.0, 0.50, 10.00),
+    'claude-sonnet-4-6': ( 3.0, 15.0, 0.30,  6.00),
+    'claude-haiku-4-5':  ( 1.0,  5.0, 0.10,  2.00),
+}
+_MODEL_RATES_DEFAULT = _MODEL_RATES['claude-fable-5']
+
+def _turn_cost(model, inp, out, cr, cc):
+    ri, ro, rcr, rcc = _MODEL_RATES.get(model or '', _MODEL_RATES_DEFAULT)
+    return round(inp / 1e6 * ri + out / 1e6 * ro + cr / 1e6 * rcr + cc / 1e6 * rcc, 6)
+
+
 def _api_equivalent_cost(inp, out, cache_read, cache_create):
     # API-equivalent cost at Fable 5 rates (model in use since the
     # 2026-06-10 cutover): input $10 / output $50 / cache-read $1.00 /
@@ -2030,7 +2054,8 @@ def session_token_reconciler():
                                 usage.append((ts, u.get('input_tokens', 0),
                                               u.get('output_tokens', 0),
                                               u.get('cache_read_input_tokens', 0),
-                                              u.get('cache_creation_input_tokens', 0)))
+                                              u.get('cache_creation_input_tokens', 0),
+                                              msg.get('model')))
                             c = msg.get('content')
                             if isinstance(c, list) and any(
                                     isinstance(b, dict) and b.get('type') == 'tool_use' for b in c):
@@ -2052,11 +2077,11 @@ def session_token_reconciler():
                 mx = watermark.get(tid)
                 for u in rows:
                     if mx is None or u[0] > mx:
-                        inserts.append((tid, u[0], u[1], u[2], u[3], u[4]))
+                        inserts.append((tid, u[0], u[1], u[2], u[3], u[4], u[5]))
             if inserts:
                 conn.executemany(
                     'INSERT INTO trace_tokens (trace_id,timestamp,input,output,'
-                    'cache_read,cache_create) VALUES (?,?,?,?,?,?)', inserts)
+                    'cache_read,cache_create,model) VALUES (?,?,?,?,?,?,?)', inserts)
                 conn.commit()
             conn.close()
         except Exception as _e:
@@ -5659,7 +5684,7 @@ function loadTrace(traceId){
   fetch('/api/agent-walk?trace='+encodeURIComponent(traceId)).then(r=>r.json()).then(d=>{
     if(d.error){document.getElementById('swim').innerHTML='<div class="empty">'+esc(d.error)+'</div>';return}
     _events=d.events||[];_selectedIdx=-1;
-    _tokenTimeline=(d.token_timeline||[]).map(e=>({t:new Date(e.time).getTime(),i:e.input,o:e.output,cr:e.cache_read,cc:e.cache_create}));
+    _tokenTimeline=(d.token_timeline||[]).map(e=>({t:new Date(e.time).getTime(),tok:(e.input||0)+(e.output||0),cost:e.cost||0}));
     _tokenTotal=d.token_total||null;showTokTotal();
     _tokenByTime={};(d.token_timeline||[]).forEach(x=>{_tokenByTime[x.time]=x;});
     const meta=document.getElementById('meta');
@@ -5790,12 +5815,12 @@ function renderDetail(){
   let tokHtml='';
   const _tk=_tokenByTime[e.time];
   if(_tk && (e.source==='claude-code'||e.source==='claude-transcript')){
-    const _c=_tokCost(_tk.input,_tk.output,_tk.cache_read,_tk.cache_create);
+    const _mdl=_tk.model?(' \u00b7 '+esc(String(_tk.model).replace('claude-',''))):'';
     tokHtml='<div class="row"><div class="k">turn tokens</div>'+
-      '<div class="v" title="Tokens for the assistant turn that emitted this event (shared if the turn made several tool calls)">'+
+      '<div class="v" title="Tokens + cost for the assistant turn that emitted this event (shared if the turn made several tool calls); priced per the model that turn used">'+
       'in '+_tk.input.toLocaleString('en-US')+' \u00b7 out '+_tk.output.toLocaleString('en-US')+
       ' \u00b7 cache '+(_tk.cache_read+_tk.cache_create).toLocaleString('en-US')+
-      ' \u00b7 <span style="color:#00ff88">$'+_c.toFixed(4)+'</span></div></div>';
+      ' \u00b7 <span style="color:#00ff88">$'+(_tk.cost||0).toFixed(4)+'</span>'+_mdl+'</div></div>';
   }
   let blastHtml='';
   if(e.blast_radius){
@@ -5938,25 +5963,21 @@ function logStreamSelect(idx){
 }
 
 // --- Replay player ---
-function _tokCost(i,o,cr,cc){
-  // API-equivalent cost at Fable 5 rates; mirrors _api_equivalent_cost (backend).
-  return i/1e6*10 + o/1e6*50 + cr/1e6*1.0 + cc/1e6*20.0;
-}
-function _setTokCounter(i,o,cr,cc){
+function _setTokCounter(tok,cost){
   const el=document.getElementById('tok-counter');
   if(!el)return;
-  el.textContent='\u2b22 '+(i+o).toLocaleString('en-US')+' tok \u00b7 $'+_tokCost(i,o,cr,cc).toFixed(2);
+  el.textContent='\u2b22 '+tok.toLocaleString('en-US')+' tok \u00b7 $'+cost.toFixed(2);
 }
 // Sum the trace's token usage up to a virtual playback time (ms epoch) and
 // render it. Linear over the (small) timeline; called on each progress tick.
 function updateTokAt(ms){
-  let i=0,o=0,cr=0,cc=0;
-  for(const e of _tokenTimeline){if(e.t<=ms){i+=e.i;o+=e.o;cr+=e.cr;cc+=e.cc;}}
-  _setTokCounter(i,o,cr,cc);
+  let tok=0,cost=0;
+  for(const e of _tokenTimeline){if(e.t<=ms){tok+=e.tok;cost+=e.cost;}}
+  _setTokCounter(tok,cost);
 }
 function showTokTotal(){
-  if(_tokenTotal)_setTokCounter(_tokenTotal.input,_tokenTotal.output,_tokenTotal.cache_read,_tokenTotal.cache_create);
-  else _setTokCounter(0,0,0,0);
+  if(_tokenTotal)_setTokCounter((_tokenTotal.input||0)+(_tokenTotal.output||0),_tokenTotal.cost||0);
+  else _setTokCounter(0,0);
 }
 function startReplay(){
   if(_isPlaying||_events.length===0)return;
@@ -6263,7 +6284,7 @@ document.getElementById('ntb-switch').addEventListener('click',()=>{
   // Fetch backlog via the normal endpoint, then start live tail
   fetch('/api/agent-walk?trace='+encodeURIComponent(tid)).then(r=>r.json()).then(d=>{
     _events=d.events||[];renderSwimlane();
-    _tokenTimeline=(d.token_timeline||[]).map(e=>({t:new Date(e.time).getTime(),i:e.input,o:e.output,cr:e.cache_read,cc:e.cache_create}));
+    _tokenTimeline=(d.token_timeline||[]).map(e=>({t:new Date(e.time).getTime(),tok:(e.input||0)+(e.output||0),cost:e.cost||0}));
     _tokenTotal=d.token_total||null;showTokTotal();
     _tokenByTime={};(d.token_timeline||[]).forEach(x=>{_tokenByTime[x.time]=x;});
     startLive(tid);
@@ -8038,11 +8059,13 @@ a{{color:#0a6aba}}
                 try:
                     _tc = sqlite3.connect(EVENTS_DB)
                     for _r in _tc.execute(
-                        'SELECT timestamp, input, output, cache_read, cache_create '
+                        'SELECT timestamp, input, output, cache_read, cache_create, model '
                         'FROM trace_tokens WHERE trace_id=? ORDER BY timestamp ASC',
                         (trace_id,)):
                         _tl.append({'time': _r[0], 'input': _r[1], 'output': _r[2],
-                                    'cache_read': _r[3], 'cache_create': _r[4]})
+                                    'cache_read': _r[3], 'cache_create': _r[4],
+                                    'model': _r[5],
+                                    'cost': _turn_cost(_r[5], _r[1], _r[2], _r[3], _r[4])})
                     _tc.close()
                 except Exception as _e:
                     _log_exc('agent_walk.token_timeline', _e)
@@ -8052,7 +8075,7 @@ a{{color:#0a6aba}}
                 _tcc = sum(e['cache_create'] for e in _tl)
                 _ttotal = {'input': _ti, 'output': _to, 'cache_read': _tcr,
                            'cache_create': _tcc,
-                           'cost': _api_equivalent_cost(_ti, _to, _tcr, _tcc)}
+                           'cost': round(sum(e['cost'] for e in _tl), 4)}
                 self._send_json({
                     'trace_id': trace_id,
                     'events': events,
