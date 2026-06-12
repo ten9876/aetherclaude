@@ -5628,7 +5628,7 @@ let _playTimers=[],_progressInterval=null,_isPlaying=false,_speed=4,_replayStart
 // Step state — index of the latest event shown via Prev/Next stepping.
 // -1 means "no stepping in progress" (live mode, all dots visible).
 let _stepIdx=-1;
-let _tokenTimeline=[],_tokenTotal=null;
+let _tokenTimeline=[],_tokenTotal=null,_tokenByTime={};
 
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function fmtTime(s){if(!s)return '';const dt=new Date(s);if(isNaN(dt))return s;const hms=dt.toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});const ms=String(dt.getMilliseconds()).padStart(3,'0');return `${hms}.${ms}`}
@@ -5661,6 +5661,7 @@ function loadTrace(traceId){
     _events=d.events||[];_selectedIdx=-1;
     _tokenTimeline=(d.token_timeline||[]).map(e=>({t:new Date(e.time).getTime(),i:e.input,o:e.output,cr:e.cache_read,cc:e.cache_create}));
     _tokenTotal=d.token_total||null;showTokTotal();
+    _tokenByTime={};(d.token_timeline||[]).forEach(x=>{_tokenByTime[x.time]=x;});
     const meta=document.getElementById('meta');
     if(_events.length===0){meta.textContent='Trace has no events.';document.getElementById('swim').innerHTML='<div class="empty">No events for this trace.</div>';document.getElementById('player').style.display='none';return}
     document.getElementById('player').style.display='flex';
@@ -5784,6 +5785,18 @@ function renderDetail(){
   const e=_events[_selectedIdx];
   const stage=e.stage||0;
   const stageName=stage>0?STAGES[stage-1].name:'(uncategorized)';
+  // Per-event token usage: a claude-code event shares the exact timestamp of
+  // its assistant turn, so join to that turn's recorded usage.
+  let tokHtml='';
+  const _tk=_tokenByTime[e.time];
+  if(_tk && (e.source==='claude-code'||e.source==='claude-transcript')){
+    const _c=_tokCost(_tk.input,_tk.output,_tk.cache_read,_tk.cache_create);
+    tokHtml='<div class="row"><div class="k">turn tokens</div>'+
+      '<div class="v" title="Tokens for the assistant turn that emitted this event (shared if the turn made several tool calls)">'+
+      'in '+_tk.input.toLocaleString('en-US')+' \u00b7 out '+_tk.output.toLocaleString('en-US')+
+      ' \u00b7 cache '+(_tk.cache_read+_tk.cache_create).toLocaleString('en-US')+
+      ' \u00b7 <span style="color:#00ff88">$'+_c.toFixed(4)+'</span></div></div>';
+  }
   let blastHtml='';
   if(e.blast_radius){
     const b=e.blast_radius;
@@ -5829,6 +5842,7 @@ function renderDetail(){
     '<div class="row"><div class="k">policy</div><div class="v">'+esc(e.policy||'(none)')+'</div></div>'+
     '<div class="row"><div class="k">args</div><div class="v">'+esc(e.args)+'</div></div>'+
     '<div class="row"><div class="k">trace_id</div><div class="v">'+esc(e.trace_id)+'</div></div>'+
+    tokHtml+
     blastHtml;
 }
 
@@ -6251,6 +6265,7 @@ document.getElementById('ntb-switch').addEventListener('click',()=>{
     _events=d.events||[];renderSwimlane();
     _tokenTimeline=(d.token_timeline||[]).map(e=>({t:new Date(e.time).getTime(),i:e.input,o:e.output,cr:e.cache_read,cc:e.cache_create}));
     _tokenTotal=d.token_total||null;showTokTotal();
+    _tokenByTime={};(d.token_timeline||[]).forEach(x=>{_tokenByTime[x.time]=x;});
     startLive(tid);
   });
 });
