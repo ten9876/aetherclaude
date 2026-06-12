@@ -350,11 +350,6 @@ _agent_walk_subscribers = []  # list of {trace_id, q}
 _agent_walk_sub_lock = threading.Lock()
 _agent_walk_known_traces = set()  # trace_ids we've seen at least once
 _agent_walk_known_lock = threading.Lock()
-# trace_id -> set of session JSONL paths, populated by tail_claude_transcripts
-# at file discovery. Lets /api/agent-walk find a trace's transcripts to build
-# the per-trace token timeline without scanning the whole corpus.
-_trace_session_files = {}
-_trace_files_lock = threading.Lock()
 
 def _agent_walk_publish(entry):
     """Push a freshly-appended event to any matching SSE subscribers.
@@ -507,6 +502,14 @@ def init_db():
     conn.execute('CREATE INDEX IF NOT EXISTS idx_agent ON events(is_agent)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_created ON events(created_at)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_trace_id ON events(trace_id)')
+    conn.execute('''CREATE TABLE IF NOT EXISTS trace_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trace_id TEXT,
+        timestamp TEXT,
+        input INTEGER, output INTEGER,
+        cache_read INTEGER, cache_create INTEGER
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_tt_trace ON trace_tokens(trace_id)')
     conn.execute('''CREATE TABLE IF NOT EXISTS codeguard_findings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         scan_time TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -1962,6 +1965,32 @@ def _session_trace_lookup(filepath):
         _session_trace[filepath] = (tid, lk)
     return tid, lk
 
+def _record_trace_tokens(trace_id, ts, usage):
+    """Persist one assistant turn's token usage for a trace, at INGESTION
+    time and keyed by the same trace_id the events use (resolved live via
+    _session_trace_lookup), so it never drifts and survives restarts. Powers
+    the agent-walk playback token counter. Best-effort."""
+    if not trace_id or not ts:
+        return
+    try:
+        conn = sqlite3.connect(EVENTS_DB)
+        try:
+            conn.execute('PRAGMA synchronous=NORMAL')
+        except sqlite3.Error:
+            pass
+        conn.execute(
+            'INSERT INTO trace_tokens (trace_id, timestamp, input, output, '
+            'cache_read, cache_create) VALUES (?,?,?,?,?,?)',
+            (trace_id, ts,
+             usage.get('input_tokens', 0), usage.get('output_tokens', 0),
+             usage.get('cache_read_input_tokens', 0),
+             usage.get('cache_creation_input_tokens', 0)))
+        conn.commit()
+        conn.close()
+    except Exception as _e:
+        _log_exc('record_trace_tokens', _e)
+
+
 def tail_sessions():
     """Watch Claude Code session files for tool_use events."""
     import glob, re
@@ -2001,6 +2030,18 @@ def tail_sessions():
                         last_positions[filepath] = f.tell()
 
                     for line in new_content.strip().split('\n'):
+                        # Record assistant-turn token usage (for the
+                        # agent-walk token counter), keyed by the same
+                        # trace_id the tool events below use.
+                        if '"usage"' in line:
+                            try:
+                                _ud = json.loads(line)
+                                _uu = (_ud.get('message') or {}).get('usage') or {}
+                                if _uu:
+                                    _utid, _ = _session_trace_lookup(filepath)
+                                    _record_trace_tokens(_utid, _ud.get('timestamp', ''), _uu)
+                            except (ValueError, TypeError):
+                                pass
                         if 'tool_use' not in line:
                             continue
                         try:
@@ -2478,10 +2519,6 @@ def tail_claude_transcripts():
                     # orchestrator that created the file is running",
                     # which is the right correlation moment.
                     file_trace_id[path] = _trace_for_session_path(path)
-                    _tid = file_trace_id[path]
-                    if _tid:
-                        with _trace_files_lock:
-                            _trace_session_files.setdefault(_tid, set()).add(path)
                     if file_offsets[path] == size:
                         continue
                 # File shrank? Could be a rotation or rewrite. Reset.
@@ -7918,36 +7955,21 @@ a{{color:#0a6aba}}
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
-                # Per-trace token timeline from the trace's session JSONL
-                # usage records — powers the playback token counter (count +
-                # cost). Cheap: a trace maps to one or a few transcripts.
+                # Per-trace token timeline from trace_tokens (recorded at
+                # ingestion, keyed by the same trace_id as the events).
+                # Powers the playback token counter (count + cost).
                 _tl = []
-                with _trace_files_lock:
-                    _tpaths = list(_trace_session_files.get(trace_id, ()))
-                for _tp in _tpaths:
-                    try:
-                        with open(_tp) as _tfh:
-                            for _tline in _tfh:
-                                if '"usage"' not in _tline:
-                                    continue
-                                try:
-                                    _trec = json.loads(_tline)
-                                except ValueError:
-                                    continue
-                                _u = (_trec.get('message') or {}).get('usage') or {}
-                                _tts = _trec.get('timestamp')
-                                if not _u or not _tts:
-                                    continue
-                                _tl.append({
-                                    'time': _tts,
-                                    'input': _u.get('input_tokens', 0),
-                                    'output': _u.get('output_tokens', 0),
-                                    'cache_read': _u.get('cache_read_input_tokens', 0),
-                                    'cache_create': _u.get('cache_creation_input_tokens', 0),
-                                })
-                    except OSError:
-                        continue
-                _tl.sort(key=lambda e: e['time'])
+                try:
+                    _tc = sqlite3.connect(EVENTS_DB)
+                    for _r in _tc.execute(
+                        'SELECT timestamp, input, output, cache_read, cache_create '
+                        'FROM trace_tokens WHERE trace_id=? ORDER BY timestamp ASC',
+                        (trace_id,)):
+                        _tl.append({'time': _r[0], 'input': _r[1], 'output': _r[2],
+                                    'cache_read': _r[3], 'cache_create': _r[4]})
+                    _tc.close()
+                except Exception as _e:
+                    _log_exc('agent_walk.token_timeline', _e)
                 _ti = sum(e['input'] for e in _tl)
                 _to = sum(e['output'] for e in _tl)
                 _tcr = sum(e['cache_read'] for e in _tl)
