@@ -1965,30 +1965,103 @@ def _session_trace_lookup(filepath):
         _session_trace[filepath] = (tid, lk)
     return tid, lk
 
-def _record_trace_tokens(trace_id, ts, usage):
-    """Persist one assistant turn's token usage for a trace, at INGESTION
-    time and keyed by the same trace_id the events use (resolved live via
-    _session_trace_lookup), so it never drifts and survives restarts. Powers
-    the agent-walk playback token counter. Best-effort."""
-    if not trace_id or not ts:
-        return
-    try:
-        conn = sqlite3.connect(EVENTS_DB)
+SESSION_TOKEN_RECONCILE_SECS = 120
+
+def session_token_reconciler():
+    """Populate trace_tokens (powers the agent-walk playback token counter)
+    by mapping session transcripts to their trace_id via the authoritative
+    claude-code event timestamps in events.db, then inserting per-turn usage.
+
+    Why not record inline at ingestion: a session's trace_id is NOT encoded in
+    its file path for workspace runs (the common case) -- _session_trace_lookup
+    returns None and the events get their trace_id from append_event's
+    _active_trace_id fallback. So the file path can't be mapped directly, but
+    the claude-code events events.db carries ARE keyed by the real trace_id and
+    their timestamps equal the file's assistant-message timestamps. That join
+    is exact and drift-proof (it's what the one-time backfill used).
+
+    Incremental (only re-reads changed files via an mtime/size signature) and
+    idempotent (per-trace timestamp watermark: only inserts usage newer than
+    what's already recorded, so growing/re-read files don't duplicate)."""
+    time.sleep(60)
+    seen_sig = {}
+    while True:
         try:
-            conn.execute('PRAGMA synchronous=NORMAL')
-        except sqlite3.Error:
-            pass
-        conn.execute(
-            'INSERT INTO trace_tokens (trace_id, timestamp, input, output, '
-            'cache_read, cache_create) VALUES (?,?,?,?,?,?)',
-            (trace_id, ts,
-             usage.get('input_tokens', 0), usage.get('output_tokens', 0),
-             usage.get('cache_read_input_tokens', 0),
-             usage.get('cache_creation_input_tokens', 0)))
-        conn.commit()
-        conn.close()
-    except Exception as _e:
-        _log_exc('record_trace_tokens', _e)
+            conn = sqlite3.connect(EVENTS_DB)
+            ts_map = {}
+            for _ts, _tid in conn.execute(
+                    "SELECT timestamp, trace_id FROM events "
+                    "WHERE source='claude-code' AND trace_id IS NOT NULL "
+                    "AND timestamp IS NOT NULL"):
+                ts_map[_ts] = _tid
+            watermark = {}
+            for _tid, _mx in conn.execute(
+                    'SELECT trace_id, MAX(timestamp) FROM trace_tokens GROUP BY trace_id'):
+                watermark[_tid] = _mx
+            by_trace = {}
+            for f in glob.glob(os.path.join(SESSION_DIR, '**', '*.jsonl'), recursive=True):
+                if '/subagents/' in f:
+                    continue
+                try:
+                    st = os.stat(f)
+                except OSError:
+                    continue
+                sig = (st.st_mtime, st.st_size)
+                if seen_sig.get(f) == sig:
+                    continue
+                seen_sig[f] = sig
+                usage = []
+                map_ts = []
+                try:
+                    with open(f) as fh:
+                        for line in fh:
+                            if '"usage"' not in line and '"tool_use"' not in line:
+                                continue
+                            try:
+                                d = json.loads(line)
+                            except ValueError:
+                                continue
+                            ts = d.get('timestamp')
+                            if not ts:
+                                continue
+                            msg = d.get('message') or {}
+                            u = msg.get('usage') or {}
+                            if u:
+                                usage.append((ts, u.get('input_tokens', 0),
+                                              u.get('output_tokens', 0),
+                                              u.get('cache_read_input_tokens', 0),
+                                              u.get('cache_creation_input_tokens', 0)))
+                            c = msg.get('content')
+                            if isinstance(c, list) and any(
+                                    isinstance(b, dict) and b.get('type') == 'tool_use' for b in c):
+                                map_ts.append(ts)
+                except OSError:
+                    continue
+                if not usage:
+                    continue
+                tid = None
+                for ts in (map_ts or [u[0] for u in usage]):
+                    tid = ts_map.get(ts)
+                    if tid:
+                        break
+                if not tid:
+                    continue
+                by_trace.setdefault(tid, []).extend(usage)
+            inserts = []
+            for tid, rows in by_trace.items():
+                mx = watermark.get(tid)
+                for u in rows:
+                    if mx is None or u[0] > mx:
+                        inserts.append((tid, u[0], u[1], u[2], u[3], u[4]))
+            if inserts:
+                conn.executemany(
+                    'INSERT INTO trace_tokens (trace_id,timestamp,input,output,'
+                    'cache_read,cache_create) VALUES (?,?,?,?,?,?)', inserts)
+                conn.commit()
+            conn.close()
+        except Exception as _e:
+            _log_exc('session_token_reconciler', _e)
+        time.sleep(SESSION_TOKEN_RECONCILE_SECS)
 
 
 def tail_sessions():
@@ -2030,18 +2103,6 @@ def tail_sessions():
                         last_positions[filepath] = f.tell()
 
                     for line in new_content.strip().split('\n'):
-                        # Record assistant-turn token usage (for the
-                        # agent-walk token counter), keyed by the same
-                        # trace_id the tool events below use.
-                        if '"usage"' in line:
-                            try:
-                                _ud = json.loads(line)
-                                _uu = (_ud.get('message') or {}).get('usage') or {}
-                                if _uu:
-                                    _utid, _ = _session_trace_lookup(filepath)
-                                    _record_trace_tokens(_utid, _ud.get('timestamp', ''), _uu)
-                            except (ValueError, TypeError):
-                                pass
                         if 'tool_use' not in line:
                             continue
                         try:
@@ -8412,6 +8473,7 @@ def main():
     threading.Thread(target=db_batch_writer,daemon=True).start()
     threading.Thread(target=db_pruner,daemon=True).start()
     threading.Thread(target=session_archiver,daemon=True).start()
+    threading.Thread(target=session_token_reconciler,daemon=True).start()
     threading.Thread(target=db_trace_backfill_correlator,daemon=True).start()
     threading.Thread(target=track_active_trace,daemon=True).start()
     threading.Thread(target=warmup_claude_active_traces,daemon=True).start()
