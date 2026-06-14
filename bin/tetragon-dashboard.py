@@ -7658,7 +7658,20 @@ a{{color:#0a6aba}}
                 # Over-fetch when filtering so we still return ~limit
                 # rows after removing skip-only traces. 4x cap covers
                 # typical bot ratio (most CI-passed runs do work).
-                fetch_n = limit * 4 if not include_skipped else limit
+                # Claude-activity filter lives in SQL so LIMIT applies to
+                # real agent runs directly. Skip-only traces (a dispatcher
+                # scanned and exited without invoking Claude) outnumber real
+                # runs ~20:1, so the old "over-fetch limit*4, then filter in
+                # Python against the in-memory set" returned only a couple of
+                # rows once that backlog grew: it looked back just limit*4
+                # traces, almost all skip-only. The subquery rides idx_source
+                # (<15ms) and, unlike the 7-day in-memory warm-up set,
+                # surfaces claude-active traces of any age. ?include_skipped=1
+                # drops the filter to show every trace (diagnostic escape).
+                claude_filter = ("" if include_skipped else
+                    "AND trace_id IN (SELECT DISTINCT trace_id FROM events "
+                    "WHERE source='claude-code' AND trace_id IS NOT NULL "
+                    "AND LENGTH(trace_id) > 8) ")
                 rows = conn.execute(
                     "SELECT trace_id, "
                     "       MIN(timestamp) AS first_ts, "
@@ -7672,27 +7685,18 @@ a{{color:#0a6aba}}
                     "        LIMIT 1) AS webhook_binary "
                     "FROM events "
                     "WHERE trace_id IS NOT NULL AND LENGTH(trace_id) > 8 "
+                    + claude_filter +
                     "GROUP BY trace_id "
-                    # No event-count threshold. Gating is on actual Claude
-                    # tool use via the _claude_active_traces filter below: a
-                    # trace is shown only if it has >=1 claude-code event.
-                    # Traces with only orchestrator/webhook/scan events (a
-                    # dispatcher run that scanned and exited) are excluded,
-                    # while real runs of any size are kept. The old
-                    # `event_count > 5000` gate hid every normal-sized run
-                    # (real runs are tens-to-hundreds of events) and only
-                    # surfaced traces inflated by transcript re-ingestion.
+                    # Gating is on actual Claude tool use (>=1 claude-code
+                    # event), pushed into the subquery above. Traces with only
+                    # orchestrator/webhook/scan events (a dispatcher run that
+                    # scanned and exited) are excluded; real runs of any size
+                    # are kept. No event-count threshold — the old
+                    # `event_count > 5000` gate hid every normal-sized run.
                     "ORDER BY first_ts DESC LIMIT ?",
-                    (fetch_n,)
+                    (limit,)
                 ).fetchall()
                 conn.close()
-                # Apply the claude-activity filter against the in-memory
-                # cache — no extra DB hit. Cache is populated by
-                # append_event in real time + a 7-day warm-up at startup.
-                if not include_skipped:
-                    with _claude_active_lock:
-                        active = frozenset(_claude_active_traces)
-                    rows = [r for r in rows if r[0] in active][:limit]
                 traces = [{
                     'trace_id': r[0], 'first_ts': r[1], 'last_ts': r[2],
                     'event_count': r[3],
