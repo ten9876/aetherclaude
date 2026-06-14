@@ -309,6 +309,7 @@ token_stats = {
     'cycle_cache_create': 0, 'cycle_messages': 0,
     'cycle_start_iso': '', 'subscription_amount_usd': SUBSCRIPTION_AMOUNT_USD,
     'subscription_cycles_paid': 1, 'subscription_start_iso': '',
+    'cost': 0.0, 'cycle_cost': 0.0,
 }
 tool_stats = {'total': 0, 'breakdown': {}}
 ring_stats = {
@@ -1726,8 +1727,8 @@ def scan_tokens():
                     continue  # unchanged — reuse cached aggregate
                 # Cache miss / changed file: read ONCE, computing lifetime,
                 # cycle, and tool aggregates in a single pass.
-                life = [0, 0, 0, 0, 0]
-                cyc  = [0, 0, 0, 0, 0]
+                life = defaultdict(lambda: [0, 0, 0, 0, 0])
+                cyc  = defaultdict(lambda: [0, 0, 0, 0, 0])
                 t_total = 0
                 t_bd = defaultdict(int)
                 file_in_cycle = stt.st_mtime >= cyc_ts
@@ -1750,6 +1751,7 @@ def scan_tokens():
                                     out = u.get('output_tokens', 0)
                                     cr  = u.get('cache_read_input_tokens', 0)
                                     cc  = u.get('cache_creation_input_tokens', 0)
+                                    mdl = msg.get('model') or ''
                                     rec_dt = (_parse_record_ts(d.get('timestamp'))
                                               if (epoch is not None or file_in_cycle)
                                               else None)
@@ -1757,11 +1759,13 @@ def scan_tokens():
                                     if epoch is not None and rec_dt is not None and rec_dt < epoch:
                                         pass
                                     else:
-                                        life[0] += inp; life[1] += out
-                                        life[2] += cr;  life[3] += cc; life[4] += 1
+                                        L = life[mdl]
+                                        L[0] += inp; L[1] += out
+                                        L[2] += cr;  L[3] += cc; L[4] += 1
                                         if file_in_cycle and (rec_dt is None or rec_dt >= cycle_start):
-                                            cyc[0] += inp; cyc[1] += out
-                                            cyc[2] += cr;  cyc[3] += cc; cyc[4] += 1
+                                            C = cyc[mdl]
+                                            C[0] += inp; C[1] += out
+                                            C[2] += cr;  C[3] += cc; C[4] += 1
                             if has_tool:
                                 for c in msg.get('content', []):
                                     if c.get('type') == 'tool_use':
@@ -1769,7 +1773,7 @@ def scan_tokens():
                                         t_bd[c.get('name', '?')] += 1
                 except OSError:
                     continue
-                _tok_cache[f] = {'sig': sig, 'life': life, 'cyc': cyc,
+                _tok_cache[f] = {'sig': sig, 'life': dict(life), 'cyc': dict(cyc),
                                  'tools': (t_total, dict(t_bd))}
 
             # Evict entries for files that disappeared (deleted/pruned).
@@ -1777,21 +1781,37 @@ def scan_tokens():
                 for gone in [k for k in _tok_cache if k not in seen]:
                     del _tok_cache[gone]
 
-            # Aggregate across all cached per-file totals.
-            total_in = total_out = total_cr = total_cc = total_msgs = 0
-            cyc_in   = cyc_out   = cyc_cr   = cyc_cc   = cyc_msgs   = 0
+            # Aggregate across all cached per-file totals, bucketed by model so
+            # cost can be priced per model (the corpus spans fable-5 + opus).
+            life_by_model = defaultdict(lambda: [0, 0, 0, 0, 0])
+            cyc_by_model  = defaultdict(lambda: [0, 0, 0, 0, 0])
             tool_total = 0
             tool_bd = defaultdict(int)
             for ent in _tok_cache.values():
-                lf = ent['life']; cy = ent['cyc']
-                total_in += lf[0]; total_out += lf[1]
-                total_cr += lf[2]; total_cc += lf[3]; total_msgs += lf[4]
-                cyc_in += cy[0]; cyc_out += cy[1]
-                cyc_cr += cy[2]; cyc_cc += cy[3]; cyc_msgs += cy[4]
+                for _m, lf in ent['life'].items():
+                    L = life_by_model[_m]
+                    L[0] += lf[0]; L[1] += lf[1]; L[2] += lf[2]; L[3] += lf[3]; L[4] += lf[4]
+                for _m, cy in ent['cyc'].items():
+                    C = cyc_by_model[_m]
+                    C[0] += cy[0]; C[1] += cy[1]; C[2] += cy[2]; C[3] += cy[3]; C[4] += cy[4]
                 tt, bd = ent['tools']
                 tool_total += tt
                 for nm, ct in bd.items():
                     tool_bd[nm] += ct
+            total_in  = sum(L[0] for L in life_by_model.values())
+            total_out = sum(L[1] for L in life_by_model.values())
+            total_cr  = sum(L[2] for L in life_by_model.values())
+            total_cc  = sum(L[3] for L in life_by_model.values())
+            total_msgs = sum(L[4] for L in life_by_model.values())
+            cyc_in  = sum(C[0] for C in cyc_by_model.values())
+            cyc_out = sum(C[1] for C in cyc_by_model.values())
+            cyc_cr  = sum(C[2] for C in cyc_by_model.values())
+            cyc_cc  = sum(C[3] for C in cyc_by_model.values())
+            cyc_msgs = sum(C[4] for C in cyc_by_model.values())
+            life_cost = round(sum(_turn_cost(_m, L[0], L[1], L[2], L[3])
+                                  for _m, L in life_by_model.items()), 4)
+            cyc_cost  = round(sum(_turn_cost(_m, C[0], C[1], C[2], C[3])
+                                  for _m, C in cyc_by_model.items()), 4)
 
             with lock:
                 token_stats['input'] = total_in
@@ -1799,6 +1819,7 @@ def scan_tokens():
                 token_stats['cache_read'] = total_cr
                 token_stats['cache_create'] = total_cc
                 token_stats['messages'] = total_msgs
+                token_stats['cost'] = life_cost
                 # Cycle-scoped + billing-meta fields. Read by /api/events
                 # to render Cycle ROI alongside Lifetime ROI.
                 token_stats['cycle_input']      = cyc_in
@@ -1806,6 +1827,7 @@ def scan_tokens():
                 token_stats['cycle_cache_read'] = cyc_cr
                 token_stats['cycle_cache_create'] = cyc_cc
                 token_stats['cycle_messages']   = cyc_msgs
+                token_stats['cycle_cost'] = cyc_cost
                 token_stats['cycle_start_iso']  = cycle_start.strftime('%Y-%m-%d')
                 token_stats['subscription_amount_usd'] = SUBSCRIPTION_AMOUNT_USD
                 token_stats['subscription_cycles_paid'] = cycles_paid
@@ -6443,25 +6465,19 @@ def build_stats_payload():
                     'cache_create': token_stats['cache_create'],
                     'messages': token_stats['messages'],
                     'total': token_stats['input'] + token_stats['output'],
-                    'estimated_cost_usd': _api_equivalent_cost(
-                        token_stats['input'], token_stats['output'],
-                        token_stats['cache_read'], token_stats['cache_create']),
+                    'estimated_cost_usd': token_stats.get('cost', 0),
                     'cycle': {
                         'input': token_stats['cycle_input'],
                         'output': token_stats['cycle_output'],
                         'cache_read': token_stats['cycle_cache_read'],
                         'cache_create': token_stats['cycle_cache_create'],
                         'messages': token_stats['cycle_messages'],
-                        'estimated_cost_usd': _api_equivalent_cost(
-                            token_stats['cycle_input'], token_stats['cycle_output'],
-                            token_stats['cycle_cache_read'], token_stats['cycle_cache_create']),
+                        'estimated_cost_usd': token_stats.get('cycle_cost', 0),
                         'cycle_start_iso': token_stats['cycle_start_iso'],
                         'subscription_amount_usd': token_stats['subscription_amount_usd'],
                     },
                     'lifetime': {
-                        'estimated_cost_usd': _api_equivalent_cost(
-                            token_stats['input'], token_stats['output'],
-                            token_stats['cache_read'], token_stats['cache_create']),
+                        'estimated_cost_usd': token_stats.get('cost', 0),
                         'subscription_cycles_paid': token_stats['subscription_cycles_paid'],
                         'subscription_total_usd': round(
                             token_stats['subscription_amount_usd'] * token_stats['subscription_cycles_paid'], 2),
