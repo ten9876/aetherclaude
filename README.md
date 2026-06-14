@@ -67,6 +67,9 @@ services.
 Subsequent edits: commit to `main`, then on the Mac Mini run
 `~/src/aetherclaude/scripts/deploy.sh`.
 
+**Standing up an independent instance against your own repo** (not the
+AetherSDR Mac Mini)? See [docs/SELF-HOSTING.md](docs/SELF-HOSTING.md).
+
 ## License
 
 GNU Affero General Public License v3.0 — see [LICENSE](LICENSE).
