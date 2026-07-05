@@ -1277,17 +1277,40 @@ skill_process_issues() {
         number=$(echo "$issue" | jq -r '.number')
         title=$(echo "$issue" | jq -r '.title')
 
-        # GUARD 1: Check if ANY PR exists for this issue branch — if so, skip entirely
+        # GUARD 1: Walk this issue's branch versions (issue-N, issue-N-v2, …)
+        # and tally their PRs. Only an OPEN PR blocks processing — merged or
+        # closed PRs no longer dead-end the issue, so multi-phase issues
+        # (one PR per phase, maintainer re-adds aetherclaude-eligible after
+        # each merge; see override E) and post-rejection retries can run.
+        # The walk also yields the next free branch name for implement, and
+        # remembers the latest rejected PR for retry context.
         local branch="aetherclaude/issue-${number}"
-        local any_pr
-        any_pr=$(github_api GET "/repos/${REPO}/pulls?head=aethersdr:${branch}&state=all" "$token" | jq '. | length' 2>/dev/null || echo 0)
-        local any_pr_v2
-        any_pr_v2=$(github_api GET "/repos/${REPO}/pulls?head=aethersdr:${branch}-v2&state=all" "$token" | jq '. | length' 2>/dev/null || echo 0)
-        local total_prs=$((any_pr + any_pr_v2))
-        if [ "$total_prs" -gt 0 ]; then
-            log "Issue #${number} — ${total_prs} PR(s) already exist, skipping"
+        local total_prs=0 open_prs=0 merged_prs=0 rejected_pr=""
+        local next_branch="$branch" _vidx=1
+        while :; do
+            local _prs_json _cnt _open_cnt _merged_cnt _rej
+            _prs_json=$(github_api GET "/repos/${REPO}/pulls?head=aethersdr:${next_branch}&state=all" "$token")
+            _cnt=$(echo "$_prs_json" | jq '. | length' 2>/dev/null || echo 0)
+            [ "$_cnt" -eq 0 ] && break
+            _open_cnt=$(echo "$_prs_json" | jq '[.[] | select(.state == "open")] | length' 2>/dev/null || echo 0)
+            _merged_cnt=$(echo "$_prs_json" | jq '[.[] | select(.merged_at != null)] | length' 2>/dev/null || echo 0)
+            _rej=$(echo "$_prs_json" | jq -r '[.[] | select(.state == "closed" and .merged_at == null)] | sort_by(.closed_at) | last | .number // empty' 2>/dev/null || echo "")
+            total_prs=$((total_prs + _cnt))
+            open_prs=$((open_prs + _open_cnt))
+            merged_prs=$((merged_prs + _merged_cnt))
+            [ -n "$_rej" ] && rejected_pr="$_rej"
+            _vidx=$((_vidx + 1))
+            next_branch="${branch}-v${_vidx}"
+            if [ "$_vidx" -gt 10 ]; then
+                log "Issue #${number} — branch version walk hit sanity cap at v${_vidx}"
+                break
+            fi
+        done
+        if [ "$open_prs" -gt 0 ]; then
+            log "Issue #${number} — ${open_prs} open PR(s) in flight, skipping"
             continue
         fi
+        branch="$next_branch"
 
         # GUARD 2: Read state from DB (authoritative — no comment parsing)
         local issue_state
@@ -1295,7 +1318,14 @@ skill_process_issues() {
 
         log "Issue #${number} — detected state: ${issue_state}"
 
-        if [ "$issue_state" = "done" ]; then
+        # Skip if already handled. EXCEPTION: a label-add webhook for
+        # 'aetherclaude-eligible' falls through so override E below can
+        # start the next phase of a multi-phase issue (the maintainer
+        # re-adds the label after each phase PR merges).
+        if [ "$issue_state" = "done" ] \
+           && ! { [ "$TRIGGER_EVENT" = "issues" ] \
+                  && [ "$TRIGGER_ACTION" = "labeled" ] \
+                  && [ "$TRIGGER_LABEL" = "aetherclaude-eligible" ]; }; then
             log "Issue #${number} — already handled, skipping"
             continue
         fi
@@ -1383,6 +1413,23 @@ skill_process_issues() {
            && echo "$issue_data" | jq -e '[.labels[].name] | any(. == "aetherclaude-eligible")' >/dev/null; then
             log "Issue #${number} — maintainer added aetherclaude-eligible on declined issue; overriding decline"
             record_action "$number" "decline_overridden" "implement" "success" "Maintainer applied aetherclaude-eligible to declined issue"
+            issue_state="implement"
+            set_state "issue_${number}_state" "implement"
+        fi
+
+        # State override E: done issue gets 'aetherclaude-eligible' again —
+        # start the next phase of a multi-phase issue (or a maintainer-
+        # sanctioned fresh attempt after a rejected PR). GUARD 1 already
+        # guaranteed no PR is open and computed the next free branch name.
+        # Same webhook gating as overrides C/D: only the label-add event
+        # for THIS label fires it.
+        if [ "$issue_state" = "done" ] \
+           && [ "$TRIGGER_EVENT" = "issues" ] \
+           && [ "$TRIGGER_ACTION" = "labeled" ] \
+           && [ "$TRIGGER_LABEL" = "aetherclaude-eligible" ] \
+           && echo "$issue_data" | jq -e '[.labels[].name] | any(. == "aetherclaude-eligible")' >/dev/null; then
+            log "Issue #${number} — maintainer re-added aetherclaude-eligible on done issue; starting next phase on ${branch}"
+            record_action "$number" "next_phase_requested" "implement" "success" "Label re-applied after ${merged_prs} merged PR(s); next branch ${branch}"
             issue_state="implement"
             set_state "issue_${number}_state" "implement"
         fi
@@ -1740,26 +1787,29 @@ except Exception:
 
             local issue_log="$LOGDIR/issue-${number}-$(date +%Y%m%d-%H%M%S).log"
 
-            # Check for rejected PR (retry logic)
+            # Retry / multi-phase context. Branch versioning is handled by
+            # GUARD 1's walk — $branch is already the next free
+            # aetherclaude/issue-N[-vK] name, and rejected_pr/merged_prs
+            # were tallied there.
             local retry_context=""
-            local closed_prs
-            closed_prs=$(github_api GET "/repos/${REPO}/pulls?head=aethersdr:${branch}&state=closed" "$token")
-            local rejected_count
-            rejected_count=$(echo "$closed_prs" | jq '[.[] | select(.merged_at == null)] | length')
-            if [ "$rejected_count" -gt 0 ]; then
-                local rejected_pr_number
-                rejected_pr_number=$(echo "$closed_prs" | jq -r '[.[] | select(.merged_at == null)] | sort_by(.closed_at) | last | .number')
+            if [ -n "${rejected_pr:-}" ]; then
                 local rejected_pr_review
-                rejected_pr_review=$(github_api GET "/repos/${REPO}/pulls/${rejected_pr_number}/reviews" "$token" | \
+                rejected_pr_review=$(github_api GET "/repos/${REPO}/pulls/${rejected_pr}/reviews" "$token" | \
                     jq -r '.[] | "[\(.user.login)] \(.body // "")"' 2>/dev/null || echo "")
                 local rejected_pr_comments
-                rejected_pr_comments=$(github_api GET "/repos/${REPO}/issues/${rejected_pr_number}/comments" "$token" | \
+                rejected_pr_comments=$(github_api GET "/repos/${REPO}/issues/${rejected_pr}/comments" "$token" | \
                     jq -r '.[] | "[\(.user.login)] \(.body)"' 2>/dev/null || echo "")
                 retry_context="
 IMPORTANT: A previous PR was REJECTED. Address the feedback:
 ${rejected_pr_review:-No review comments}
 ${rejected_pr_comments:-No comments}"
-                branch="aetherclaude/issue-${number}-v2"
+            fi
+            if [ "${merged_prs:-0}" -gt 0 ]; then
+                retry_context="${retry_context}
+NOTE: ${merged_prs} PR(s) for this issue are already MERGED (completed
+earlier phases). Read the issue comments and the merged PRs to determine
+what remains, and implement ONLY the next outstanding phase. Do not redo
+work that is already merged."
             fi
 
             # Create ephemeral worktree for isolation
