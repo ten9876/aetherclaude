@@ -1300,8 +1300,14 @@ skill_process_issues() {
             continue
         fi
 
-        # Skip if already declined (read from DB — no comment parsing)
-        if [ "$issue_state" = "declined" ]; then
+        # Skip if already declined (read from DB — no comment parsing).
+        # EXCEPTION: a label-add webhook for 'aetherclaude-eligible' falls
+        # through so override D below can resurrect the issue — the label
+        # is the maintainer explicitly overruling the auto-decline.
+        if [ "$issue_state" = "declined" ] \
+           && ! { [ "$TRIGGER_EVENT" = "issues" ] \
+                  && [ "$TRIGGER_ACTION" = "labeled" ] \
+                  && [ "$TRIGGER_LABEL" = "aetherclaude-eligible" ]; }; then
             log "Issue #${number} — already declined, skipping"
             continue
         fi
@@ -1364,6 +1370,23 @@ skill_process_issues() {
             set_state "issue_${number}_state" "implement"
         fi
 
+        # State override D: declined issue gets 'aetherclaude-eligible' —
+        # transition to implement. The auto-decline (scope heuristics below)
+        # is a keyword guess; the maintainer applying the eligibility label
+        # is an explicit human decision and outranks it. Same webhook gating
+        # as override C: only the label-add event for THIS label fires the
+        # resurrection, so stray comments on a declined issue stay parked.
+        if [ "$issue_state" = "declined" ] \
+           && [ "$TRIGGER_EVENT" = "issues" ] \
+           && [ "$TRIGGER_ACTION" = "labeled" ] \
+           && [ "$TRIGGER_LABEL" = "aetherclaude-eligible" ] \
+           && echo "$issue_data" | jq -e '[.labels[].name] | any(. == "aetherclaude-eligible")' >/dev/null; then
+            log "Issue #${number} — maintainer added aetherclaude-eligible on declined issue; overriding decline"
+            record_action "$number" "decline_overridden" "implement" "success" "Maintainer applied aetherclaude-eligible to declined issue"
+            issue_state="implement"
+            set_state "issue_${number}_state" "implement"
+        fi
+
         local out_of_scope=false
         for label in github_actions ci cd release build docker workflow; do
             echo "$issue_labels_str" | grep -qi "$label" && out_of_scope=true
@@ -1371,6 +1394,16 @@ skill_process_issues() {
         local issue_body_raw
         issue_body_raw=$(echo "$issue_data" | jq -r '.body // ""')
         echo "$issue_body_raw" | grep -qiE '\.github/workflows|Dockerfile|\.yml.*action|CI.*build|github.actions' && out_of_scope=true
+
+        # The scope heuristics are keyword guesses over labels/body. The
+        # maintainer's aetherclaude-eligible label is an explicit in-scope
+        # ruling and outranks them — without this, a resurrected issue
+        # (override D) would just re-decline on the next pass.
+        if [ "$out_of_scope" = true ] \
+           && echo "$issue_data" | jq -e '[.labels[].name] | any(. == "aetherclaude-eligible")' >/dev/null; then
+            log "Issue #${number} matches CI/workflow keywords but has aetherclaude-eligible — maintainer override, staying in scope"
+            out_of_scope=false
+        fi
 
         if [ "$out_of_scope" = true ]; then
             log "Issue #${number} is CI/workflow scope — declining"
