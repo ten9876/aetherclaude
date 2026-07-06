@@ -145,7 +145,7 @@ const tools = {
     search_issues:{description:'Search issues',inputSchema:{type:'object',properties:{query:{type:'string'},max_results:{type:'number'}},required:['query']}},
     list_open_prs:{description:'List open PRs',inputSchema:{type:'object',properties:{max_results:{type:'number'}},required:[]}},
     create_pull_request:{description:'Create a PR from fork',inputSchema:{type:'object',properties:{title:{type:'string'},body:{type:'string'},head:{type:'string'},base:{type:'string'}},required:['title','body','head','base']}},
-    create_pr_review:{description:'Post a PR review (COMMENT only)',inputSchema:{type:'object',properties:{pr_number:{type:'number'},body:{type:'string'}},required:['pr_number','body']}},
+    create_pr_review:{description:'Post a PR review (COMMENT only). Prefer inline comments: pass `comments`, each anchored to a diff line ({path, line} on the new-file/RIGHT side; add start_line for a multi-line range). An inline comment body may carry a ```suggestion fence with the exact replacement for the anchored line range — the contributor can apply it in one click. Anchors must be lines present in the PR diff or GitHub rejects them (the tool then falls back to folding the findings into the review body).',inputSchema:{type:'object',properties:{pr_number:{type:'number'},body:{type:'string'},comments:{type:'array',items:{type:'object',properties:{path:{type:'string'},line:{type:'number'},start_line:{type:'number'},side:{type:'string',enum:['LEFT','RIGHT']},body:{type:'string'}},required:['path','line','body']}}},required:['pr_number','body']}},
     list_pr_files:{description:'List files changed in a PR',inputSchema:{type:'object',properties:{pr_number:{type:'number'}},required:['pr_number']}},
     get_pr_diff:{description:'Get raw diff of a PR',inputSchema:{type:'object',properties:{pr_number:{type:'number'}},required:['pr_number']}},
     get_check_runs:{description:'Get CI check runs for a commit',inputSchema:{type:'object',properties:{sha:{type:'string'}},required:['sha']}},
@@ -169,7 +169,33 @@ async function handleToolCall(name, args) {
         case 'search_issues': { const q=encodeURIComponent(`repo:${UPSTREAM_REPO} ${args.query}`); const d=await ghAPI('GET',`/search/issues?q=${q}&per_page=${Math.min(args.max_results||10,30)}`,null,t); result=JSON.stringify({total_count:d.total_count,items:(d.items||[]).map(i=>({number:i.number,title:i.title,state:i.state,user:i.user.login,labels:(i.labels||[]).map(l=>l.name),created_at:i.created_at,updated_at:i.updated_at,is_pull_request:!!i.pull_request}))}); break; }
         case 'list_open_prs': { const ps=await ghAPI('GET',`/repos/${UPSTREAM_REPO}/pulls?state=open&sort=created&direction=desc&per_page=${Math.min(args.max_results||10,30)}`,null,t); result=JSON.stringify(ps.map(p=>({number:p.number,title:p.title,user:p.user.login,author_association:p.author_association,head_sha:p.head.sha,head_ref:p.head.ref,labels:(p.labels||[]).map(l=>l.name),draft:p.draft,created_at:p.created_at,updated_at:p.updated_at}))); break; }
         case 'create_pull_request': { checkRateLimit('pr',10); validateContent(args.title,200); const bodyPR=attachCostFooter(args.body,'pr_description',`pr:branch-${args.head}`); validateContent(bodyPR,MAX_PR_BODY_LENGTH); const p=await ghAPI('POST',`/repos/${UPSTREAM_REPO}/pulls`,{title:args.title,body:bodyPR,head:`${FORK_OWNER}:${args.head}`,base:args.base,draft:true},t); backfillCostUrl(`pr:branch-${args.head}`,p.html_url); result=JSON.stringify({number:p.number,url:p.html_url}); break; }
-        case 'create_pr_review': { checkRateLimit(`rv_${args.pr_number}`,1); checkRateLimit('rvg',10); const bodyRV=attachCostFooter(args.body,'pr_review',`pr:${args.pr_number}`); validateContent(bodyRV); const r=await ghAPI('POST',`/repos/${UPSTREAM_REPO}/pulls/${args.pr_number}/reviews`,{body:bodyRV,event:'COMMENT'},t); backfillCostUrl(`pr:${args.pr_number}`,r.html_url||''); result=JSON.stringify({id:r.id,state:r.state}); break; }
+        case 'create_pr_review': {
+            checkRateLimit(`rv_${args.pr_number}`,1); checkRateLimit('rvg',10);
+            const bodyRV=attachCostFooter(args.body,'pr_review',`pr:${args.pr_number}`); validateContent(bodyRV);
+            // Normalize inline comments: cap count, coerce types, validate each
+            // body, and only keep start_line when it forms a valid range.
+            const commentsRV=(Array.isArray(args.comments)?args.comments:[]).slice(0,30).map(c=>{
+                validateContent(String(c.body));
+                const o={path:String(c.path),line:Number(c.line),side:c.side==='LEFT'?'LEFT':'RIGHT',body:String(c.body)};
+                if(c.start_line!=null&&Number(c.start_line)<o.line){o.start_line=Number(c.start_line);o.start_side=o.side;}
+                return o;
+            });
+            let r,fallback=null;
+            try {
+                r=await ghAPI('POST',`/repos/${UPSTREAM_REPO}/pulls/${args.pr_number}/reviews`,commentsRV.length?{body:bodyRV,event:'COMMENT',comments:commentsRV}:{body:bodyRV,event:'COMMENT'},t);
+            } catch(e) {
+                if(!commentsRV.length) throw e;
+                // Anchors rejected (typically 422: line not in diff). Don't lose
+                // the findings — fold them into a body-only review instead.
+                fallback='inline_comments_rejected';
+                let folded=bodyRV+'\n\n---\n_GitHub rejected the inline anchors ('+String(e.message).substring(0,120).replace(/\n/g,' ')+'); findings below:_\n'+commentsRV.map(c=>`\n**\`${c.path}\`:${c.start_line?c.start_line+'-':''}${c.line}**\n${c.body}`).join('\n');
+                if(folded.length>MAX_COMMENT_LENGTH) folded=folded.substring(0,MAX_COMMENT_LENGTH-25)+'\n\n_(truncated)_';
+                r=await ghAPI('POST',`/repos/${UPSTREAM_REPO}/pulls/${args.pr_number}/reviews`,{body:folded,event:'COMMENT'},t);
+            }
+            backfillCostUrl(`pr:${args.pr_number}`,r.html_url||'');
+            result=JSON.stringify({id:r.id,state:r.state,inline_comments:fallback?0:commentsRV.length,fallback});
+            break;
+        }
         case 'list_pr_files': { const f=await ghAPI('GET',`/repos/${UPSTREAM_REPO}/pulls/${args.pr_number}/files?per_page=100`,null,t); result=JSON.stringify(f.map(x=>({filename:x.filename,status:x.status,additions:x.additions,deletions:x.deletions,changes:x.changes,patch:x.patch?x.patch.substring(0,2000):null}))); break; }
         case 'get_pr_diff': { const r=await ghDiff(`/repos/${UPSTREAM_REPO}/pulls/${args.pr_number}`,t); const l=r.split('\n'); result=l.length>500?l.slice(0,500).join('\n')+`\n...(${l.length} lines)`:r; break; }
         case 'get_check_runs': { const d=await ghAPI('GET',`/repos/${UPSTREAM_REPO}/commits/${args.sha}/check-runs`,null,t); result=JSON.stringify({total_count:d.total_count,check_runs:(d.check_runs||[]).map(c=>({id:c.id,name:c.name,status:c.status,conclusion:c.conclusion,html_url:c.html_url,run_id:c.details_url?c.details_url.match(/runs\/(\d+)/)?.[1]:null}))}); break; }
