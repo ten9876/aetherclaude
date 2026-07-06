@@ -17,6 +17,9 @@ ${PR_DIFF}
 GitHub Copilot and other reviewer comments (if any):
 ${COPILOT_COMMENTS}
 
+Commit signature status (one line per commit in this PR):
+${PR_COMMITS}
+
 If Copilot flagged issues, verify them against the diff — confirm valid concerns
 and note any false positives. Reference Copilot findings in your review where relevant.
 
@@ -71,3 +74,38 @@ If the code looks good, skip the inline machinery: say so briefly in
 the body and thank the contributor.
 Be specific and constructive — suggest fixes, not just problems.
 Keep the review concise. Do not nitpick formatting or style.
+
+## Commit signing check
+
+Look at the commit signature status above. `main` requires verified
+signatures, so unsigned commits will block the merge even if the code
+is perfect.
+
+- If every commit is SIGNED: don't mention signing at all.
+- If any commit is UNSIGNED: append a final section to the review
+  BODY (not an inline comment) titled "One more thing: commit
+  signing". Keep it friendly — this is routine setup, not a code
+  problem — and include:
+
+  1. A one-line explanation: this repo requires verified commit
+     signatures on `main`, and N of their commits are unsigned.
+  2. Quickest setup (SSH key signing — no GPG needed):
+     ```bash
+     git config --global gpg.format ssh
+     git config --global user.signingkey ~/.ssh/id_ed25519.pub
+     git config --global commit.gpgsign true
+     ```
+     (If they have no SSH key: `ssh-keygen -t ed25519` first.)
+     Then on GitHub: Settings → SSH and GPG keys → New SSH key →
+     set the key type dropdown to **Signing Key** → paste the .pub.
+  3. Re-sign the commits already on this branch:
+     ```bash
+     git rebase main --exec "git commit --amend --no-edit -n -S"
+     git push --force-with-lease
+     ```
+  4. Offer the docs link https://docs.github.com/authentication/managing-commit-signature-verification
+     for GPG or troubleshooting.
+
+  If signing is the ONLY issue (code is clean), still post the review:
+  brief praise in the body, no inline comments, plus the signing
+  section.

@@ -886,6 +886,15 @@ review_single_pr() {
     copilot_comments=$(github_api GET "/repos/${REPO}/pulls/${pr_number}/comments?per_page=50" "$token" | \
         jq -r '.[] | "[\(.user.login)] \(.path // ""):\(.line // "") — \(.body)"' 2>/dev/null | head -30 || echo "")
 
+    # Commit signature status — main requires verified signatures, so
+    # the review walks unsigned authors through setup. Checked
+    # deterministically here rather than left to the model.
+    local commit_signatures
+    commit_signatures=$(github_api GET "/repos/${REPO}/pulls/${pr_number}/commits?per_page=50" "$token" | \
+        jq -r '.[] | .sha[0:7] + " " + (if .commit.verification.verified then "SIGNED" else "UNSIGNED (" + (.commit.verification.reason // "unknown") + ")" end) + " — " + (.commit.message | split("\n")[0])' 2>/dev/null | head -50 || echo "")
+    [ -z "$commit_signatures" ] && commit_signatures="(signature status unavailable)"
+    commit_signatures=$(sanitize_input "$commit_signatures")
+
     local review_log="$LOGDIR/pr-review-${pr_number}-$(date +%Y%m%d-%H%M%S).log"
 
     # render_skill_full prepends `/goal <condition>` from the skill
@@ -894,7 +903,7 @@ review_single_pr() {
     # rollout — other skills still use render_skill until each one
     # is verified with /goal.
     local prompt
-    prompt=$(render_skill_full "review-pr" "PR_NUMBER" "$pr_number" "PR_TITLE" "$pr_title" "PR_AUTHOR" "$pr_author" "PR_FILES" "$pr_files" "PR_DIFF" "$sanitized_diff" "COPILOT_COMMENTS" "$copilot_comments")
+    prompt=$(render_skill_full "review-pr" "PR_NUMBER" "$pr_number" "PR_TITLE" "$pr_title" "PR_AUTHOR" "$pr_author" "PR_FILES" "$pr_files" "PR_DIFF" "$sanitized_diff" "COPILOT_COMMENTS" "$copilot_comments" "PR_COMMITS" "$commit_signatures")
 
     cd "$WORKSPACE"
     run_claude "$prompt" "$review_log" || {
