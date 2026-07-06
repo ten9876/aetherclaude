@@ -1107,6 +1107,26 @@ print('yes' if row else '')
 
         cd "$WORKSPACE"
         run_claude "$prompt" "$dup_log" || log "ERROR: Duplicate check failed for #${number}"
+
+        # If Claude just posted a possible-duplicate question, park the
+        # issue in 'waiting' so triage/implement (which run AFTER this
+        # skill in the dispatch order) don't pile a full analysis on top
+        # before the reporter answers. continue-triage resumes the issue
+        # on their reply. Only fresh issues are parked — never clobber an
+        # existing state. The 10-minute window ties the check to the
+        # comment THIS run posted, not a stale one.
+        local dup_comment_id
+        dup_comment_id=$(github_api GET "/repos/${REPO}/issues/${number}/comments?per_page=100" "$token" | \
+            jq -r '[.[] | select(.user.login == "aethersdr-agent[bot]") | select(.body | contains("looks similar to #")) | select((.created_at | fromdateiso8601) > (now - 600))] | last | .id // empty' 2>/dev/null || echo "")
+        if [ -n "$dup_comment_id" ]; then
+            local dup_cur_state
+            dup_cur_state=$(db_get_state "$number")
+            if [ -z "$dup_cur_state" ] || [ "$dup_cur_state" = "new" ]; then
+                log "Issue #${number} — possible duplicate flagged; parking in 'waiting' until the reporter responds"
+                record_action "$number" "dup_flagged" "waiting" "success" "Duplicate question posted (comment ${dup_comment_id})"
+                set_state "issue_${number}_state" "waiting"
+            fi
+        fi
     done
 }
 
@@ -2527,11 +2547,14 @@ esac
 [ "$run_first_timers" = "1" ] && skill_welcome_first_timers "$APP_TOKEN"
 [ "$run_bug_reports" = "1" ] && skill_check_bug_reports "$APP_TOKEN"
 
-# Claude Code skills
+# Claude Code skills — duplicate detection runs FIRST: a fresh issue
+# flagged as a possible duplicate is parked in 'waiting' (see
+# skill_detect_duplicates) before triage or PR review spend tokens on
+# it. continue-triage resumes the issue when the reporter answers.
+[ "$run_detect_duplicates" = "1" ] && skill_detect_duplicates "$APP_TOKEN"
 [ "$run_process_issues" = "1" ]    && skill_process_issues    "$APP_TOKEN"
 [ "$run_explain_ci" = "1" ]        && skill_explain_ci_failures "$APP_TOKEN"
 [ "$run_review_prs" = "1" ]        && skill_review_prs        "$APP_TOKEN"
-[ "$run_detect_duplicates" = "1" ] && skill_detect_duplicates "$APP_TOKEN"
 # skill_respond_discussions is permanently disabled — the function definition
 # remains for future use but is no longer dispatched.
 
