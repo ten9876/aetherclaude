@@ -208,6 +208,9 @@ _SECRET_PATTERNS = [
     (_re.compile(r'/tmp/gh_app_token\.txt'), '***'),
     # Webhook secret
     (_re.compile(WEBHOOK_SECRET), '***'),
+    # Galileo API key printed alongside its var name (no stable prefix, so scope
+    # to the assignment form — matches the run-agent.sh JSONL scrubber).
+    (_re.compile(r'(GALILEO_API_KEY["\'= :]*)([A-Za-z0-9_\-]{20,})', _re.IGNORECASE), r'\1***'),
     # JWTs (eyJ...)
     (_re.compile(r'(eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,})'), '***'),
     # Generic long hex/base64 that look like secrets (40+ chars of hex)
@@ -615,8 +618,100 @@ def init_db():
         blocked_reasons TEXT
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_val_run_time ON validation_runs(run_time)')
+    # Galileo eval results — one row per live agent run (kind='run', forwarded to
+    # Galileo as a trace) or per experiment aggregate (kind='experiment', scored
+    # against a curated dataset by bin/run-eval.sh). trace_id joins to events for
+    # deep-linking a score to the Agent Walk swimlane.
+    conn.execute('''CREATE TABLE IF NOT EXISTS eval_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT,
+        trace_id TEXT,
+        flow TEXT,
+        ref TEXT,
+        status TEXT,
+        kind TEXT,
+        galileo_trace_url TEXT,
+        scores_json TEXT
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_eval_trace_id ON eval_results(trace_id)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_eval_ts ON eval_results(ts)')
     conn.commit()
     conn.close()
+
+# --- Galileo forwarding (dashboard-only; the sandboxed agent never does this) ---
+# The dashboard is the ONLY component that holds GALILEO_API_KEY and reaches
+# galileo.ai (it bypasses tinyproxy). The agent POSTs a run record to
+# /api/eval-ingest over localhost and we forward it here as a Galileo trace.
+GALILEO_PROJECT = os.environ.get('GALILEO_PROJECT', 'aetherclaude')
+GALILEO_LOG_STREAM = os.environ.get('GALILEO_LOG_STREAM', 'agent-runs')
+
+def _summarize_claude_jsonl(path, max_chars=4000):
+    """Compact a Claude Code session transcript into (input, output, tool_count).
+    Best-effort and defensive — the transcript is newline-delimited JSON with
+    {type: user|assistant, message: {content: [...]}}. Returns ('','',0) on any
+    problem so a malformed/absent transcript never breaks trace logging."""
+    first_user, assistant_text, tool_count = '', [], 0
+    try:
+        with open(path, 'r', errors='replace') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                msg = rec.get('message') or {}
+                role = rec.get('type') or msg.get('role')
+                content = msg.get('content')
+                parts = content if isinstance(content, list) else ([{'type': 'text', 'text': content}] if isinstance(content, str) else [])
+                for p in parts:
+                    if not isinstance(p, dict):
+                        continue
+                    if p.get('type') == 'text' and p.get('text'):
+                        if role == 'user' and not first_user:
+                            first_user = p['text'][:max_chars]
+                        elif role == 'assistant':
+                            assistant_text.append(p['text'])
+                    elif p.get('type') == 'tool_use':
+                        tool_count += 1
+    except Exception:
+        return '', '', 0
+    return first_user, ('\n'.join(assistant_text))[:max_chars], tool_count
+
+def galileo_forward(entry):
+    """Log one agent run to Galileo as a trace. Returns a console URL or None.
+    Swallows all errors (missing key, SDK not installed, network) so eval
+    logging never blocks the ingest path — mirrors eslogger-bridge's fail-open."""
+    if not os.environ.get('GALILEO_API_KEY') or os.environ.get('GALILEO_LOGGING_DISABLED'):
+        return None
+    try:
+        from galileo import GalileoLogger
+    except Exception as e:
+        print(f'galileo_forward: SDK unavailable ({e})', file=sys.stderr)
+        return None
+    try:
+        flow = entry.get('flow', 'other')
+        ref = entry.get('ref', '')
+        status = entry.get('status', 'ok')
+        trace_id = entry.get('trace_id', '')
+        inp, out, tools = _summarize_claude_jsonl(entry.get('jsonl_path', ''))
+        name = f'{flow}#{ref}' if ref else flow
+        logger = GalileoLogger(project=GALILEO_PROJECT, log_stream=GALILEO_LOG_STREAM)
+        logger.start_trace(input=(inp or name), name=name,
+                           tags=[f'flow:{flow}', f'status:{status}',
+                                 f'trace:{trace_id[:12]}' if trace_id else 'trace:none'])
+        logger.add_llm_span(input=(inp or name), output=(out or f'[{status}] {tools} tool calls'),
+                            model='claude-opus', num_input_tokens=0, num_output_tokens=0)
+        logger.conclude(output=(out or f'[{status}] {tools} tool calls'))
+        logger.flush()
+        # Best-effort console deep-link to the project/log-stream. The exact
+        # per-trace URL isn't reliably returned by flush(); the log stream is
+        # a stable, useful landing spot for the demo.
+        return f'https://app.galileo.ai/project/{GALILEO_PROJECT}?logStream={GALILEO_LOG_STREAM}'
+    except Exception as e:
+        print(f'galileo_forward: log failed ({e})', file=sys.stderr)
+        return None
 
 def load_memory_buffer():
     """Load newest 10,000 events from SQLite into memory buffer on startup."""
@@ -2990,6 +3085,10 @@ body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospac
 <div class="phdr">Cisco AI Defense Scanners</div>
 <div class="pbody" id="cisco-scanners"></div>
 </div>
+<div class="panel" style="flex:.9">
+<div class="phdr">Eval &middot; Galileo</div>
+<div class="pbody" id="eval-panel"></div>
+</div>
 <div class="panel" style="flex:.7">
 <div class="phdr">Recent Agent Activity</div>
 <div class="pbody" id="pols"></div>
@@ -3196,7 +3295,36 @@ let ah='';for(const a of(s.alerts||[]).reverse())ah+=`<div class="ai ${a.severit
 document.getElementById('als').innerHTML=ah||'<div class="si"><span class="n muted">No alerts</span></div>';
 storeData(d);
 renderEvents(d.events,d.total,d.filtered||d.total);
-}).catch(()=>{})}
+}).catch(()=>{})
+renderEval();
+}
+// Eval panel — per-flow Galileo scores + recent runs deep-linking to the
+// Agent Walk swimlane (trace) and to the Galileo trace. Own fetch so it stays
+// decoupled from the /api/events payload.
+function renderEval(){
+fetch('/api/eval').then(r=>r.json()).then(d=>{
+const flows=d.flows||[],recent=d.recent||[];
+const flabel={triage:'Triage',implement:'Implement',review:'Review',ci:'CI',duplicate:'Dup',mention:'Mention',other:'Other'};
+let h='';
+if(!flows.length){h='<div class="si"><span class="n muted">No eval runs yet</span></div>';}
+else{for(const f of flows){
+const pr=(f.pass_rate==null)?'&mdash;':f.pass_rate+'%';
+const col=(f.pass_rate==null)?'#607080':(f.pass_rate>=80?'#00ff88':(f.pass_rate>=50?'#ffaa00':'#ff4444'));
+let sc='';if(f.scores){const ks=Object.keys(f.scores).slice(0,3);sc=ks.map(k=>`${k} ${Math.round(f.scores[k]*100)}%`).join(' · ');}
+h+=`<div class="si"><span class="n"><span style="color:#c8d8e8">${flabel[f.flow]||esc(f.flow)}</span> <span style="color:${col};font-weight:bold">${pr}</span> <span style="color:#505060;font-size:10px">${f.ok||0}/${f.runs||0} ok${sc?' · '+esc(sc):''}</span></span></div>`;
+}}
+if(recent.length){
+h+='<div style="margin-top:6px;border-top:1px solid #1a2230;padding-top:4px">';
+for(const e of recent.slice(0,6)){
+const scol=e.status==='ok'?'#00ff88':'#ff4444';
+const ref=e.ref?('#'+esc(String(e.ref))):'';
+const walk=e.trace_id?`onclick="window.open('/agent-walk?trace='+encodeURIComponent('${e.trace_id}'),'_blank')" style="cursor:pointer"`:'';
+const gal=e.galileo_trace_url?` <a href="${e.galileo_trace_url}" target="_blank" style="color:#80c0ff;text-decoration:none;font-size:10px">&#8599;G</a>`:'';
+h+=`<div class="si" ${walk}><span class="n"><span style="color:#505060;font-size:10px">${fmtTime(e.ts)}</span> <span style="color:${scol}">&#9679;</span> <span style="color:#c8d8e8">${esc(e.flow)}${ref}</span>${gal}</span></div>`;
+}
+h+='</div>';}
+document.getElementById('eval-panel').innerHTML=h;
+}).catch(()=>{document.getElementById('eval-panel').innerHTML='<div class="si"><span class="n muted">Eval unavailable</span></div>';})}
 // Scanner detail modals
 let lastData={};
 function storeData(d){lastData=d}
@@ -3719,7 +3847,7 @@ setInterval(refresh,REFRESH_MS);refresh();
 
 <h3>Security Features</h3>
 <ul>
-<li><strong>Secret redaction:</strong> All events are scrubbed at ingestion (before entering memory or DB) and again at API response. 13 regex patterns cover GitHub PATs, JWTs, Authorization headers, credential file paths, and environment variable assignments. Secrets never reach the browser.</li>
+<li><strong>Secret redaction:</strong> All events are scrubbed at ingestion (before entering memory or DB) and again at API response. 14 regex patterns cover GitHub PATs, JWTs, Authorization headers, credential file paths, the Galileo API key, and environment variable assignments. Secrets never reach the browser.</li>
 <li><strong>SQLite event store:</strong> 10,000+ events persisted across 5 tables (events, codeguard_findings, mcp_scan_results, skill_scan_results, aibom_components) with per-source indexes. Historical queries via <code>/api/history</code>. Auto-purge at 250GB.</li>
 <li><strong>Per-source buffering:</strong> 1,000 events per source in memory for fast filtered queries without DB round-trips.</li>
 </ul>
@@ -7251,6 +7379,48 @@ a{{color:#0a6aba}}
             except Exception as ex:
                 self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
                 self._send_json({'runs': [], 'total': 0, 'failed': 0, 'error': str(ex)})
+        elif self.path.startswith('/api/eval'):
+            # Galileo eval panel: per-flow aggregate (live-run pass rate +
+            # latest experiment scores) plus recent run rows for deep-linking.
+            try:
+                conn = sqlite3.connect(EVENTS_DB)
+                rows = conn.execute(
+                    'SELECT ts, trace_id, flow, ref, status, kind, galileo_trace_url, scores_json '
+                    'FROM eval_results ORDER BY id DESC LIMIT 200'
+                ).fetchall()
+                conn.close()
+                flows = {}
+                recent = []
+                for ts, trace_id, flow, ref, status, kind, url, scores_json in rows:
+                    f = flows.setdefault(flow, {'flow': flow, 'runs': 0, 'ok': 0, 'fail': 0, 'scores': None, 'last_ts': None})
+                    if kind == 'run':
+                        f['runs'] += 1
+                        f['ok' if status == 'ok' else 'fail'] += 1
+                        if not f['last_ts']:
+                            f['last_ts'] = ts
+                    elif kind == 'experiment' and f['scores'] is None and scores_json:
+                        # newest experiment for this flow wins (rows are DESC)
+                        try:
+                            f['scores'] = json.loads(scores_json)
+                        except Exception:
+                            pass
+                    if len(recent) < 50:
+                        recent.append({'ts': ts, 'trace_id': trace_id, 'flow': flow, 'ref': ref,
+                                       'status': status, 'kind': kind, 'galileo_trace_url': url,
+                                       'scores': json.loads(scores_json) if (kind == 'experiment' and scores_json) else None})
+                for f in flows.values():
+                    f['pass_rate'] = round(100.0 * f['ok'] / f['runs']) if f['runs'] else None
+                # Stable flow order for the panel
+                order = ['triage', 'implement', 'review', 'ci', 'duplicate', 'mention', 'other']
+                flow_list = [flows[k] for k in order if k in flows] + [v for k, v in flows.items() if k not in order]
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self._send_json({'flows': flow_list, 'recent': recent})
+            except Exception as ex:
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+                self._send_json({'flows': [], 'recent': [], 'error': str(ex)})
         elif self.path.startswith('/api/codeguard'):
             try:
                 from urllib.parse import urlparse, parse_qs
@@ -8185,6 +8355,47 @@ a{{color:#0a6aba}}
             except Exception as e:
                 self.send_response(400); self.end_headers()
                 self.wfile.write(f'Bad request: {e}'.encode())
+            return
+        elif self.path == '/api/eval-ingest':
+            # Eval records from the agent (kind='run', we forward to Galileo) or
+            # from bin/run-eval.sh (kind='experiment', already logged to Galileo,
+            # we just persist the aggregate for the dashboard panel). HMAC like
+            # /api/ingest. Fail-open: never let eval logging 500 a caller.
+            import hmac, hashlib
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            sig_header = self.headers.get('X-Ingest-Signature', '')
+            # Strict: when a secret is configured, a valid signature is REQUIRED
+            # (an absent signature is rejected, unlike /api/ingest's looser check).
+            # The endpoint is reachable on 0.0.0.0:8080; the legit caller
+            # (galileo-log-run.py / run-eval.sh) always signs.
+            if WEBHOOK_SECRET:
+                expected = hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+                if not sig_header or not hmac.compare_digest(sig_header, expected):
+                    self.send_response(401); self.end_headers(); self.wfile.write(b'Invalid signature'); return
+            try:
+                entry = json.loads(body)
+                kind = entry.get('kind', 'run')
+                ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                galileo_url = entry.get('galileo_trace_url')
+                if kind == 'run':
+                    galileo_url = galileo_forward(entry)
+                scores_json = json.dumps(entry.get('scores')) if entry.get('scores') is not None else None
+                conn = sqlite3.connect(EVENTS_DB, timeout=30)
+                conn.execute(
+                    'INSERT INTO eval_results (ts, trace_id, flow, ref, status, kind, galileo_trace_url, scores_json) '
+                    'VALUES (?,?,?,?,?,?,?,?)',
+                    (ts, entry.get('trace_id', ''), entry.get('flow', 'other'), str(entry.get('ref', '')),
+                     entry.get('status', 'ok'), kind, galileo_url, scores_json))
+                conn.commit(); conn.close()
+                self.send_response(200); self.end_headers()
+                self.wfile.write(json.dumps({'accepted': 1, 'galileo_trace_url': galileo_url}).encode())
+            except Exception as e:
+                # Persisting/forwarding failed — log and ack so the agent is
+                # never blocked by eval plumbing.
+                print(f'eval-ingest error: {e}', file=sys.stderr)
+                self.send_response(200); self.end_headers()
+                self.wfile.write(json.dumps({'accepted': 0, 'error': str(e)}).encode())
             return
         elif self.path == '/defenseclaw-webhook':
             # DefenseClaw audit-sink webhook receiver. The gateway POSTs
