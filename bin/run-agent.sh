@@ -365,6 +365,31 @@ CLAUDE_ALLOWED_TOOLS_DEFAULT="Read,Glob,Grep,Edit,Write,Bash(git add *),Bash(git
 # to push a branch and 422 itself trying to open a PR.
 CLAUDE_ALLOWED_TOOLS_MENTION="Read,Glob,Grep,Bash(git log *),Bash(git status),Bash(git diff *),Bash(git branch *),Bash(ls *),Bash(head *),Bash(tail *),mcp__aetherclaude-github__read_issue,mcp__aetherclaude-github__list_issue_comments,mcp__aetherclaude-github__comment_on_issue,mcp__aetherclaude-github__search_issues"
 
+# --- Galileo eval-trace emitter (Foundry: measure, don't just enforce) ---
+# Best-effort: POSTs a compact run record to the dashboard over localhost, which
+# forwards the trace to Galileo. Never blocks or fails a run. Flow + ref are
+# derived from the per-skill logfile basename; the JSONL transcript (if any) is
+# the newest file in the session dir. See bin/galileo-log-run.py.
+log_galileo_run() {
+    local status="$1" logfile="$2" session_dir="$3"
+    local base flow ref active_jsonl
+    base=$(basename "$logfile")
+    case "$base" in
+        pr-review-*)  flow=review;    ref=$(echo "$base" | sed 's/pr-review-\([0-9]*\).*/\1/') ;;
+        ci-explain-*) flow=ci;        ref=$(echo "$base" | sed 's/ci-explain-\([0-9]*\).*/\1/') ;;
+        dup-check-*)  flow=duplicate; ref=$(echo "$base" | sed 's/dup-check-\([0-9]*\).*/\1/') ;;
+        triage-*)     flow=triage;    ref=$(echo "$base" | sed 's/triage-\([0-9]*\).*/\1/') ;;
+        issue-*)      flow=implement; ref=$(echo "$base" | sed 's/issue-\([0-9]*\).*/\1/') ;;
+        mention-*)    flow=mention;   ref=$(echo "$base" | sed 's/mention-\([0-9]*\).*/\1/') ;;
+        *)            flow=other;     ref='' ;;
+    esac
+    active_jsonl=$(ls -t "$session_dir"/*.jsonl 2>/dev/null | head -1)
+    # Fire-and-forget; galileo-log-run.py swallows all errors internally.
+    python3 /Users/aetherclaude/bin/galileo-log-run.py \
+        --flow "$flow" --ref "$ref" --status "$status" \
+        --jsonl "${active_jsonl:-}" --log "$logfile" >/dev/null 2>&1 &
+}
+
 run_claude() {
     local prompt="$1" logfile="$2"
     # Optional 3rd arg overrides the allowedTools list. Defaults to the
@@ -479,6 +504,7 @@ run_claude() {
 
         # Success → done.
         if [ "$exit_code" -eq 0 ]; then
+            log_galileo_run "ok" "$logfile" "$session_dir"
             return 0
         fi
 
@@ -489,6 +515,7 @@ run_claude() {
         # CEILING: log line for the diagnosis.
         if [ "$exit_code" -eq 143 ] || [ "$exit_code" -eq 137 ]; then
             log "ERROR: Claude Code was killed by watchdog (exit $exit_code)"
+            log_galileo_run "fail" "$logfile" "$session_dir"
             return 1
         fi
 
@@ -504,10 +531,12 @@ run_claude() {
         fi
 
         # Non-retryable error (auth, MCP validation, real exception, etc.)
+        log_galileo_run "fail" "$logfile" "$session_dir"
         return "$exit_code"
     done
 
     log "ERROR: Claude Code failed after $max_attempts attempts (last exit: $exit_code, transient network errors throughout)"
+    log_galileo_run "fail" "$logfile" "$session_dir"
     return "$exit_code"
 }
 
@@ -2117,6 +2146,7 @@ find "$HOME/.claude/projects" -name "*.jsonl" 2>/dev/null | while read f; do
         -e "s/ghp_[A-Za-z0-9]\{30,\}/ghp_***/g" \
         -e "s/github_pat_[A-Za-z0-9_]\{20,\}/github_pat_***/g" \
         -e "s/sk-ant-[A-Za-z0-9-]\{20,\}/sk-ant-***/g" \
+        -e "s/\(GALILEO_API_KEY[\"'= :]*\)[A-Za-z0-9_-]\{20,\}/\1***/g" \
         "$f" 2>/dev/null
 done
 

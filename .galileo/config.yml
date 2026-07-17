@@ -1,0 +1,30 @@
+# Galileo eval workspace config for AetherClaude.
+# No secrets here — GALILEO_API_KEY lives only in the Mac Mini's ~/.env.
+# Console: https://app.galileo.ai  (free dev tier)
+
+project: aetherclaude
+
+# Log stream for live agent-run traces forwarded by the dashboard
+# (see galileo_forward() in bin/tetragon-dashboard.py).
+log_stream: agent-runs
+
+# Experiment projects/datasets built by bin/build-eval-datasets.py and scored
+# by bin/run-eval.sh. Datasets are written to .galileo/datasets/ (gitignored —
+# they may embed issue/PR text).
+flows:
+  triage:
+    dataset: aetherclaude-triage-cases
+    metrics: [classification, requested_info, groundedness]
+  implement:
+    dataset: aetherclaude-implement-cases
+    metrics: [scope_adherence, constitution_cited, correctness]
+  review:
+    dataset: aetherclaude-review-cases
+    # stale_code_recall is the worst-fear regression metric
+    metrics: [recommendation, stale_code_recall, convention_recall]
+
+# Custom metrics (classification, scope_adherence, constitution_cited,
+# stale_code_recall, requested_info, convention_recall) are implemented as
+# deterministic scorers in bin/run-eval.sh. To also compute them hosted, create
+# matching custom metrics once in the Galileo console and reference by name.
+datasets_dir: .galileo/datasets

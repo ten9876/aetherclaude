@@ -15,6 +15,8 @@ hourly fallback timer). Each cycle:
 4. Implements fixes in a clean git worktree, runs validation, creates a PR
 5. Reviews incoming community PRs for convention compliance
 6. Auto-closes zero-effort submissions
+7. Logs every run to Galileo and scores its own triage/implement/review
+   quality against curated datasets (the "is the agent any good?" layer)
 
 ## Security architecture
 
@@ -33,7 +35,25 @@ Every agent run is wrapped in multiple enforcement layers:
   issues in `waiting` state stay there until user replies or 7 days elapse
 - **Tetragon** (eBPF observability) — records every tool invocation
 - **Token scrubbing** — session JSONL files are scanned on every run for
-  `ghs_`, `ghp_`, `github_pat_`, and `sk-ant-` leaks
+  `ghs_`, `ghp_`, `github_pat_`, `sk-ant-`, and Galileo key leaks
+
+## Evaluation (Galileo)
+
+Enforcement proves a run stayed *contained*; evaluation measures whether it was
+*good*. Every Claude invocation is logged to [Galileo](https://galileo.ai) as a
+trace, and the three flows are scored against datasets built from our own action
+history:
+
+- **Trace path** — the sandboxed agent never touches Galileo. `run_claude` POSTs
+  a compact record to the dashboard over localhost (`/api/eval-ingest`); only the
+  trusted dashboard holds `GALILEO_API_KEY` and forwards the trace. The agent is
+  additionally denied `galileo.ai` at the tinyproxy layer (defense in depth).
+- **Scorecard** — `bin/build-eval-datasets.py` curates triage / implement / review
+  cases (incl. a known stale-code regression); `bin/run-eval.sh` scores the flows
+  and publishes per-flow results to Galileo and the dashboard's **Eval panel**,
+  each run deep-linking to the Agent Walk swimlane and its Galileo trace.
+- **Operator skills** — the pinned, scanner-vetted `eval-*` skill pack
+  (`.claude/skills/PROVENANCE.md`) drives interactive fetch / measure / diagnose.
 
 ## Repository layout
 

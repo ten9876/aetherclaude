@@ -23,6 +23,12 @@ audit.db-shm
 last-poll.json
 .last-scrub
 
+# Galileo eval workspace — generated datasets may embed issue/PR text; keep the
+# committed config but never commit generated cases or local packets.
+.galileo/datasets/
+.galileo/packets/
+.claude/skills/eval-*/
+
 # OS / editor junk
 .DS_Store
 Thumbs.db

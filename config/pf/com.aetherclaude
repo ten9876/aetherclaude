@@ -36,6 +36,16 @@ pass out quick proto tcp from any to { 216.239.32.0/19 34.54.88.0/24 } port 443 
 # model we already grant to VirusTotal and Anthropic telemetry (all Google Cloud).
 pass out quick proto tcp from any to 142.250.0.0/15 port 443 user 965
 
+# Galileo eval/observability (api.galileo.ai / app.galileo.ai — Google Cloud
+# global LB, 34.54.24.45). Pinned /24 like the VirusTotal (34.54.88.0/24) and
+# OSV precedents in the same 34.54.x Google Cloud block. NOTE: the agent and the
+# dashboard share this uid, so this rule permits the IP to both at the pf layer.
+# Only the dashboard actually forwards traces (it holds GALILEO_API_KEY and does
+# not use the proxy). The sandboxed `claude` child is forced through tinyproxy,
+# whose allowlist deliberately OMITS galileo.ai — so the agent is denied Galileo
+# at the proxy layer despite the shared-uid firewall allowance (defense in depth).
+pass out quick proto tcp from any to 34.54.24.0/24 port 443 user 965
+
 # Claude OAuth login (AWS Cognito — dynamic IPs)
 pass out quick proto tcp from any to <anthropic_auth> port 443 user 965
 
