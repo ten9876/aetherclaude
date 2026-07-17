@@ -49,19 +49,31 @@ def load_cases(flow):
     with open(path) as f:
         return [json.loads(l) for l in f if l.strip()]
 
+# Tools the scorer's claude call must NOT have. This is a READ-ONLY assessment
+# (the case is entirely in the prompt), NOT a live agent run — so no bypass
+# permissions and no action/network/sub-agent tools. Read/Grep/Glob remain but
+# are harmless. Keeps the scheduled runner from ever spawning an unconstrained
+# agent loop on the host.
+_SCORER_DISALLOWED = ('Bash,Write,Edit,MultiEdit,NotebookEdit,'
+                      'WebFetch,WebSearch,Agent,Task')
+
 def run_agent(flow, case):
-    """Run the flow's skill via headless claude; return its text output.
-    Best-effort: returns '' if claude is unavailable so scoring degrades to 0."""
+    """Ask claude for its decision on one case, read-only. Returns the text
+    assessment (scored downstream). Best-effort: returns '' if claude is
+    unavailable so scoring degrades to 0."""
     tmpl_path = os.path.join(SKILLS_DIR, f'{SKILL_FILE[flow]}.md')
     intent = ''
     if os.path.exists(tmpl_path):
         with open(tmpl_path) as f:
             intent = f.read()
-    prompt = (f"{intent}\n\n--- EVAL CASE (respond as you would for this item) ---\n"
+    prompt = (f"{intent}\n\n--- EVAL CASE ---\nAssess this item and state your "
+              f"decision as you would (classification / recommendation / plan). "
+              f"Do NOT take any action — this is an offline evaluation.\n"
               f"{json.dumps(case['input'], indent=2)}")
     try:
+        # No bypassPermissions; action tools disallowed. Pure text assessment.
         out = subprocess.run(['claude', '-p', prompt, '--model', 'opus',
-                              '--permission-mode', 'bypassPermissions'],
+                              '--disallowedTools', _SCORER_DISALLOWED],
                              capture_output=True, text=True, timeout=600)
         return out.stdout
     except Exception as e:

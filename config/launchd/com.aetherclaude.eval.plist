@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aetherclaude.eval</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/Shared/aetherclaude/bin/run-eval.sh</string>
+    </array>
+    <key>UserName</key>
+    <string>aetherclaude</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/aetherclaude</string>
+        <key>AETHER_EVAL_DATASETS</key>
+        <string>/Users/aetherclaude/.galileo/datasets</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <!-- Daily 05:00 (before vt-scan at 06:00). Scores the 3-flow scorecard and
+         publishes to Galileo + the dashboard Eval panel. Each run invokes
+         read-only claude per dataset case (token cost) — bump to weekly by
+         replacing this dict with StartCalendarInterval Weekday 0 if cost matters. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>5</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/aetherclaude/logs/eval-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/aetherclaude/logs/eval-stderr.log</string>
+</dict>
+</plist>
