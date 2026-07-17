@@ -30,7 +30,18 @@ done
 
 export DATASETS SKILLS_DIR DASHBOARD ONLY_FLOW
 
-python3 - <<'PY'
+# Prefer a venv python that has the galileo SDK (for run_experiment logging);
+# fall back to system python3 (scoring + dashboard POST work without galileo).
+EVAL_PYTHON="${AETHER_EVAL_PYTHON:-}"
+if [ -z "$EVAL_PYTHON" ]; then
+    if [ -x /Users/Shared/aetherclaude/.venv/bin/python3 ]; then
+        EVAL_PYTHON=/Users/Shared/aetherclaude/.venv/bin/python3
+    else
+        EVAL_PYTHON=python3
+    fi
+fi
+
+"$EVAL_PYTHON" - <<'PY'
 import hashlib, hmac, json, os, subprocess, sys
 
 DATASETS = os.environ['DATASETS']
@@ -54,7 +65,7 @@ def load_cases(flow):
 # permissions and no action/network/sub-agent tools. Read/Grep/Glob remain but
 # are harmless. Keeps the scheduled runner from ever spawning an unconstrained
 # agent loop on the host.
-_SCORER_DISALLOWED = ('Bash,Write,Edit,MultiEdit,NotebookEdit,'
+_SCORER_DISALLOWED = ('Bash,Write,Edit,NotebookEdit,'
                       'WebFetch,WebSearch,Agent,Task')
 
 def run_agent(flow, case):
