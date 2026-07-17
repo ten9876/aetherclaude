@@ -29,6 +29,9 @@ last-poll.json
 .galileo/packets/
 .claude/skills/eval-*/
 
+# Dashboard's dedicated venv for the Galileo SDK (created on the deploy host)
+.venv/
+
 # OS / editor junk
 .DS_Store
 Thumbs.db

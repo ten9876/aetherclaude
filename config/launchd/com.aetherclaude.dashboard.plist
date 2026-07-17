@@ -6,7 +6,12 @@
     <string>com.aetherclaude.dashboard</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/homebrew/bin/python3</string>
+        <!-- Dedicated venv so the dashboard can import the Galileo SDK without
+             writing into the shared Homebrew site-packages. Create it once with:
+             python3 -m venv /Users/Shared/aetherclaude/.venv &&
+             /Users/Shared/aetherclaude/.venv/bin/pip install galileo
+             Falls back gracefully (galileo_forward fail-opens) if absent. -->
+        <string>/Users/Shared/aetherclaude/.venv/bin/python3</string>
         <string>/Users/aetherclaude/bin/tetragon-dashboard.py</string>
         <string>--port</string>
         <string>8080</string>
