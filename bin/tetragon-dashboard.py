@@ -645,44 +645,88 @@ def init_db():
 GALILEO_PROJECT = os.environ.get('GALILEO_PROJECT', 'aetherclaude')
 GALILEO_LOG_STREAM = os.environ.get('GALILEO_LOG_STREAM', 'agent-runs')
 
-def _summarize_claude_jsonl(path, max_chars=4000):
-    """Compact a Claude Code session transcript into (input, output, tool_count).
-    Best-effort and defensive — the transcript is newline-delimited JSON with
-    {type: user|assistant, message: {content: [...]}}. Returns ('','',0) on any
-    problem so a malformed/absent transcript never breaks trace logging."""
-    first_user, assistant_text, tool_count = '', [], 0
+def _parse_claude_trace(path, max_chars=4000, max_spans=60):
+    """Parse a Claude Code session transcript into an ordered agent trace.
+    Returns {input, output, spans, in_tokens, out_tokens} where spans is an
+    ordered list of per-turn LLM spans and tool spans:
+      {'kind':'llm', input, output, model, in_tok, out_tok}
+      {'kind':'tool', name, input, output, id}
+    The transcript is newline-delimited JSON: {type: user|assistant,
+    message: {role, model, content:[...], usage:{input_tokens,output_tokens}}}.
+    tool_result blocks (in user messages) are matched back to their tool_use by
+    id. Best-effort — returns a minimal structure on any problem so trace
+    logging never breaks the ingest path."""
+    first_user, last_assistant = '', ''
+    spans, tool_results = [], {}
+    in_tokens = out_tokens = 0
     try:
         with open(path, 'r', errors='replace') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except Exception:
-                    continue
-                msg = rec.get('message') or {}
-                role = rec.get('type') or msg.get('role')
-                content = msg.get('content')
-                parts = content if isinstance(content, list) else ([{'type': 'text', 'text': content}] if isinstance(content, str) else [])
+            lines = f.readlines()
+        # Pass 1: collect tool_result outputs keyed by tool_use_id
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            content = (rec.get('message') or {}).get('content')
+            if isinstance(content, list):
+                for p in content:
+                    if isinstance(p, dict) and p.get('type') == 'tool_result' and p.get('tool_use_id'):
+                        c = p.get('content')
+                        txt = c if isinstance(c, str) else (json.dumps(c) if c is not None else '')
+                        tool_results[p['tool_use_id']] = (txt or '')[:max_chars]
+        # Pass 2: build ordered spans
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            msg = rec.get('message') or {}
+            role = rec.get('type') or msg.get('role')
+            content = msg.get('content')
+            parts = content if isinstance(content, list) else ([{'type': 'text', 'text': content}] if isinstance(content, str) else [])
+            if role == 'user':
                 for p in parts:
-                    if not isinstance(p, dict):
-                        continue
-                    if p.get('type') == 'text' and p.get('text'):
-                        if role == 'user' and not first_user:
-                            first_user = p['text'][:max_chars]
-                        elif role == 'assistant':
-                            assistant_text.append(p['text'])
-                    elif p.get('type') == 'tool_use':
-                        tool_count += 1
+                    if isinstance(p, dict) and p.get('type') == 'text' and p.get('text') and not first_user:
+                        first_user = p['text'][:max_chars]
+            elif role == 'assistant':
+                usage = msg.get('usage') or {}
+                it = int(usage.get('input_tokens', 0) or 0)
+                ot = int(usage.get('output_tokens', 0) or 0)
+                in_tokens += it
+                out_tokens += ot
+                model = msg.get('model') or 'claude-opus'
+                texts = [p['text'] for p in parts if isinstance(p, dict) and p.get('type') == 'text' and p.get('text')]
+                atext = ('\n'.join(texts))[:max_chars]
+                if atext:
+                    last_assistant = atext
+                    if len(spans) < max_spans:
+                        spans.append({'kind': 'llm', 'input': first_user or '(context)', 'output': atext,
+                                      'model': model, 'in_tok': it, 'out_tok': ot})
+                for p in parts:
+                    if isinstance(p, dict) and p.get('type') == 'tool_use' and len(spans) < max_spans:
+                        tid = p.get('id')
+                        spans.append({'kind': 'tool', 'name': p.get('name', 'tool'),
+                                      'input': json.dumps(p.get('input', {}))[:max_chars],
+                                      'output': tool_results.get(tid, ''), 'id': tid})
     except Exception:
-        return '', '', 0
-    return first_user, ('\n'.join(assistant_text))[:max_chars], tool_count
+        pass
+    return {'input': first_user, 'output': last_assistant, 'spans': spans,
+            'in_tokens': in_tokens, 'out_tokens': out_tokens}
 
 def galileo_forward(entry):
-    """Log one agent run to Galileo as a trace. Returns a console URL or None.
-    Swallows all errors (missing key, SDK not installed, network) so eval
-    logging never blocks the ingest path — mirrors eslogger-bridge's fail-open."""
+    """Log one agent run to Galileo as a multi-span trace. Returns a console URL
+    or None. Swallows all errors (missing key, SDK not installed, network) so
+    eval logging never blocks the ingest path — mirrors eslogger-bridge's
+    fail-open. Follows the manual GalileoLogger pattern the Galileo quickstart
+    prescribes for Anthropic: start_trace -> add_llm_span/add_tool_span per
+    turn -> conclude -> flush."""
     if not os.environ.get('GALILEO_API_KEY') or os.environ.get('GALILEO_LOGGING_DISABLED'):
         return None
     try:
@@ -695,15 +739,29 @@ def galileo_forward(entry):
         ref = entry.get('ref', '')
         status = entry.get('status', 'ok')
         trace_id = entry.get('trace_id', '')
-        inp, out, tools = _summarize_claude_jsonl(entry.get('jsonl_path', ''))
+        t = _parse_claude_trace(entry.get('jsonl_path', ''))
         name = f'{flow}#{ref}' if ref else flow
+        tags = [f'flow:{flow}', f'status:{status}'] + ([f'trace:{trace_id[:16]}'] if trace_id else [])
+        meta = {'flow': flow, 'ref': str(ref), 'status': status, 'aether_trace_id': trace_id or '',
+                'total_input_tokens': t['in_tokens'], 'total_output_tokens': t['out_tokens']}
         logger = GalileoLogger(project=GALILEO_PROJECT, log_stream=GALILEO_LOG_STREAM)
-        logger.start_trace(input=(inp or name), name=name,
-                           tags=[f'flow:{flow}', f'status:{status}',
-                                 f'trace:{trace_id[:12]}' if trace_id else 'trace:none'])
-        logger.add_llm_span(input=(inp or name), output=(out or f'[{status}] {tools} tool calls'),
-                            model='claude-opus', num_input_tokens=0, num_output_tokens=0)
-        logger.conclude(output=(out or f'[{status}] {tools} tool calls'))
+        logger.start_trace(input=(t['input'] or name), name=name, tags=tags, metadata=meta)
+        step = 0
+        for s in t['spans']:
+            step += 1
+            if s['kind'] == 'llm':
+                logger.add_llm_span(input=(s['input'] or name), output=(s['output'] or '(no text)'),
+                                    model=s['model'], num_input_tokens=s['in_tok'], num_output_tokens=s['out_tok'],
+                                    total_tokens=(s['in_tok'] + s['out_tok']), name=f'turn-{step}', step_number=step)
+            else:
+                logger.add_tool_span(input=(s['input'] or '{}'), output=(s['output'] or ''),
+                                     name=s['name'], tool_call_id=s.get('id'), step_number=step)
+        if not t['spans']:
+            # No transcript captured (e.g. run failed before writing JSONL) —
+            # still log a one-span trace so the run is visible in Galileo.
+            logger.add_llm_span(input=(t['input'] or name), output=f'[{status}] no transcript captured',
+                                model='claude-opus', num_input_tokens=0, num_output_tokens=0)
+        logger.conclude(output=(t['output'] or f'[{status}]'))
         logger.flush()
         # Best-effort console deep-link to the project/log-stream. The exact
         # per-trace URL isn't reliably returned by flush(); the log stream is
