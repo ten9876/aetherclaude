@@ -12,8 +12,23 @@ pass out quick inet6 proto tcp from any to ::1 user 965
 # Allow DNS (Cloudflare, Google, Quad9, router)
 pass out quick proto udp from any to { 1.1.1.1 8.8.8.8 9.9.9.9 192.168.50.1 } port 53 user 965
 
+# NTP time sync (UDP 123) — Ubuntu/Canonical NTP (ntp.ubuntu.com →
+# 185.125.190.x / 91.189.9x). A uid-965 client was retrying time sync and
+# getting dropped by the udp catch-all below. Pinned to Canonical's ranges
+# (185.125.188.0/22, 91.189.88.0/21), matching the specific-CIDR style used
+# elsewhere here rather than opening port 123 to the world.
+pass out quick proto udp from any to { 185.125.188.0/22 91.189.88.0/21 } port 123 user 965
+
 # GitHub (140.82.112.0/20, 143.55.64.0/20, 185.199.108.0/22, 192.30.252.0/22)
 pass out quick proto tcp from any to { 140.82.112.0/20 143.55.64.0/20 185.199.108.0/22 192.30.252.0/22 } port 443 user 965
+
+# GitHub on Azure (20.29.134.17) — GitHub has migrated services into Azure's
+# 20.x space that the classic GitHub ranges above don't cover. 20.29.134.17
+# returns GitHub's HTTP-400 fingerprint (CSP default-src 'none', x-frame deny,
+# HSTS preload); the agent's heavy GitHub usage kept hitting it and getting
+# dropped. Pinned /32 to the observed host — the enriched pf feed now surfaces
+# any sibling IP if GitHub rotates, at which point broaden to 20.29.134.0/24.
+pass out quick proto tcp from any to 20.29.134.17/32 port 443 user 965
 
 # Anthropic (160.79.104.0/24) — api.anthropic.com, claude.ai
 pass out quick proto tcp from any to 160.79.104.0/24 port 443 user 965
