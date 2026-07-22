@@ -3302,6 +3302,9 @@ body.view-ops #view-exec{display:none}
 .x-tile .spark{margin-top:8px;height:30px}
 .x-delta{font-weight:600}
 .x-panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 20px;margin-bottom:14px}
+.x-duo{display:flex;gap:14px;align-items:flex-start;margin-bottom:14px}
+.x-duo .x-panel{flex:1;min-width:0;margin-bottom:0}
+.x-duo .x-rows span{overflow-wrap:anywhere}
 .x-panel .x-ph{font-size:12px;font-weight:600;letter-spacing:.4px;color:var(--muted);text-transform:uppercase;margin-bottom:10px;display:flex;justify-content:space-between;align-items:baseline}
 .x-rows .x-row{display:flex;align-items:center;gap:10px;padding:6px 2px;border-bottom:1px solid var(--line);font-size:12px}
 .x-rows .x-row:last-child{border-bottom:none}
@@ -3361,6 +3364,10 @@ body.view-ops #view-exec{display:none}
   <div id="x-trend"></div>
 </div>
 
+<!-- Alerts + activity share a row — each holds narrow rows, so stacking
+     them full-width doubled the page height for no benefit. When Alerts is
+     empty (hidden), Activity flexes to the full width. -->
+<div class="x-duo">
 <div class="x-panel" id="x-alerts" style="border-color:var(--crit)">
   <div class="x-ph"><span style="color:var(--crit)">&#9888; Alerts</span></div>
   <div class="x-rows" id="x-alert-rows"></div>
@@ -3369,6 +3376,7 @@ body.view-ops #view-exec{display:none}
 <div class="x-panel">
   <div class="x-ph"><span>Recent agent activity</span><a href="/agent-walk" target="_blank" style="color:var(--accent);text-transform:none;letter-spacing:0;font-weight:400;text-decoration:none">Agent Walk &#x2197;</a></div>
   <div class="x-rows" id="x-activity"></div>
+</div>
 </div>
 
 <div id="x-tt"></div>
