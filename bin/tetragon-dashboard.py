@@ -3499,14 +3499,26 @@ function deltaHtml(cur,prev,upIsGood){
   const up=d>0,good=(up===!!upIsGood);
   return `<span class="x-delta" style="color:${good?'var(--good)':'var(--crit)'}">${up?'▲':'▼'} ${up?'+':''}${d}</span>`;
 }
-function svgSparkline(pts,w,h){
+const REDUCED_MOTION=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+function svgSparkline(pts,w,h,dur){
   w=w||110;h=h||30;
   if(!pts||pts.length<2)return '';
   const mx=Math.max.apply(null,pts),mn=Math.min.apply(null,pts),pad=3,rng=(mx-mn)||1;
   const xs=pts.map((v,i)=>[pad+i*(w-2*pad)/(pts.length-1),h-pad-((v-mn)/rng)*(h-2*pad)]);
   const line=xs.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
   const last=xs[xs.length-1];
-  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline points="${line}" fill="none" stroke="#2f96ea" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.5" fill="#5de3ff"/></svg>`;
+  let dot;
+  if(dur&&!REDUCED_MOTION){
+    // SMIL motion: the end-dot traverses the line for ~45% of each cycle,
+    // then rests on the endpoint (the 'latest value' marker) for the rest.
+    // Each tile passes a slightly different dur so the row doesn't march
+    // in lockstep. Static under prefers-reduced-motion.
+    const path='M '+xs.map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' L ');
+    dot=`<circle r="2.5" fill="#5de3ff"><animateMotion dur="${dur}s" repeatCount="indefinite" calcMode="linear" keyPoints="0;1;1" keyTimes="0;0.45;1" path="${path}"/></circle>`;
+  }else{
+    dot=`<circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.5" fill="#5de3ff"/>`;
+  }
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline points="${line}" fill="none" stroke="#2f96ea" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${dot}</svg>`;
 }
 function svgRingGauge(score,size,sw){
   size=size||132;sw=sw||10;
@@ -3562,6 +3574,7 @@ const X_STATUS={green:{col:'var(--good)',glyph:'●',word:'Strong'},
                 yellow:{col:'var(--warn)',glyph:'▲',word:'Degraded'},
                 red:{col:'var(--crit)',glyph:'✖',word:'At risk'}};
 let lastTrends=null;
+let lastKpisHtml='';
 function renderExec(d){
   const s=d.stats||{},r=d.rings||{},t=(s.tokens)||{},p=r.posture;
   // Hero — score, delta, status chip, reasons from non-green controls
@@ -3611,25 +3624,32 @@ function renderExec(d){
   const tiles=[
     {lbl:'Agent runs · 24h',val:runsToday==null?'—':runsToday,
      sub:deltaHtml(runsToday,runsYest,true)+' vs prior day',
-     spark:svgSparkline(runsArr),click:"window.open('/agent-walk','_blank')"},
+     spark:svgSparkline(runsArr,110,30,6.5),click:"window.open('/agent-walk','_blank')"},
     {lbl:'Issues &amp; PRs handled · 24h',val:ac.handled_24h==null?'—':ac.handled_24h,
      sub:deltaHtml(ac.handled_24h,ac.handled_prev_24h,true)+' vs prior day',
-     spark:svgSparkline((ac.handled_7d||[]).map(x=>x.handled)),click:'showRing9()'},
+     spark:svgSparkline((ac.handled_7d||[]).map(x=>x.handled),110,30,7.3),click:'showRing9()'},
     {lbl:'Blocked events · 24h',val:blocked24==null?'—':blocked24,
      sub:deltaHtml(blocked24,tr.blocked_prev_24h,false)+' vs prior day',
-     spark:svgSparkline(blockedArr),click:"gotoOps({types:'BLOCK,PROXY'})"},
+     spark:svgSparkline(blockedArr,110,30,5.6),click:"gotoOps({types:'BLOCK,PROXY'})"},
     {lbl:'Run success · 24h',val:evalPct,
      sub:deltaHtml(ev.pass_rate_24h,ev.pass_rate_prev_24h,true)+` · ${ev.runs_24h||0} runs`,
-     spark:svgSparkline((ev.success_7d||[]).filter(x=>x.pass_rate!=null).map(x=>x.pass_rate)),
+     spark:svgSparkline((ev.success_7d||[]).filter(x=>x.pass_rate!=null).map(x=>x.pass_rate),110,30,8.1),
      click:'showRunSuccess()'},
     {lbl:'Eval quality',val:(ev.score_mean!=null)?ev.score_mean+'%':'—',
      sub:(ev.score_mean!=null)?`scored across ${ev.score_flows} flow${ev.score_flows===1?'':'s'} · daily eval`:'no scored evals yet',
-     spark:svgSparkline((ev.quality_48h||[]).map(x=>x.score)),click:'showEvalQuality()'},
+     spark:svgSparkline((ev.quality_48h||[]).map(x=>x.score),110,30,6.9),click:'showEvalQuality()'},
     {lbl:'Cycle API cost avoided',val:cost==null?'—':'$'+Number(cost).toFixed(0),
      sub:roi==null?'Claude MAX subscription':`breakeven ${roi}% · MAX $${sub}/cycle`,
-     spark:svgSparkline(tok48),click:'showApiCost()'}];
-  document.getElementById('x-kpis').innerHTML=tiles.map(x=>
+     spark:svgSparkline(tok48,110,30,5.1),click:'showApiCost()'}];
+  // Rewrite the tiles only when their content actually changed — an innerHTML
+  // replacement restarts the SMIL sparkline animations, and the 3s poll would
+  // otherwise reset them before a single traversal completes.
+  const kpisHtml=tiles.map(x=>
     `<div class="x-tile" onclick="${esc(x.click)}"><div class="lbl">${x.lbl}</div><div class="val">${x.val}</div><div class="sub">${x.sub}</div>${x.spark?`<div class="spark">${x.spark}</div>`:''}</div>`).join('');
+  if(kpisHtml!==lastKpisHtml){
+    lastKpisHtml=kpisHtml;
+    document.getElementById('x-kpis').innerHTML=kpisHtml;
+  }
   // Trend chart — re-rendered only when trends refresh (cheap guard: cache key)
   const tw=document.getElementById('x-trend');
   const key=tr.generated_at||'';
