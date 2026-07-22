@@ -3245,6 +3245,23 @@ body{background:var(--bg);color:var(--ink-soft);font-family:var(--mono);font-siz
 .wp-content .highlight{background:var(--bg-2);border-left:3px solid var(--accent);padding:8px 12px;margin:10px 0;border-radius:4px}
 .wp-content .meta{color:var(--muted-dim);font-size:11px;text-align:center;margin:8px 0 20px}
 .clickable{cursor:pointer;transition:background .2s}.clickable:hover{background:var(--bg-2)}
+
+/* ── Exec/Ops view shell ──────────────────────────────────────────────────
+   One DOM, two sibling sections; body class picks the visible one (hash
+   routing: default view vs #ops / #exec). Flex column replaces the old
+   height:calc(100vh - 310px) magic number so the header can change freely;
+   the ops section keeps its viewport-locked feel via flex:1 + min-height:0,
+   the exec view scrolls naturally. */
+html,body{height:100%}
+body{display:flex;flex-direction:column}
+#view-ops{flex:1;display:flex;flex-direction:column;min-height:0}
+#view-ops .main{flex:1;min-height:0;height:auto}
+body.view-exec #view-ops{display:none}
+body.view-ops #view-exec{display:none}
+#view-exec{flex:1;overflow-y:auto}
+.vtoggle{display:flex;border:1px solid var(--line-hi);border-radius:8px;overflow:hidden}
+.vtoggle button{background:transparent;border:none;color:var(--muted);padding:4px 12px;font-size:11px;font-family:inherit;cursor:pointer}
+.vtoggle button.active{background:var(--accent);color:var(--bg)}
 </style></head><body>
 
 <div class="header">
@@ -3260,6 +3277,7 @@ body{background:var(--bg);color:var(--ink-soft);font-family:var(--mono);font-siz
     <a href="#" onclick="showConstitution();return false" style="color:#bb88ff;font-size:11px;text-decoration:none;border:1px solid #443060;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#ccaaff';this.style.borderColor='#ccaaff'" onmouseout="this.style.color='#bb88ff';this.style.borderColor='#443060'">Constitution &harr; Rings</a>
     <a href="/agent-walk" target="_blank" style="color:#00ff88;font-size:11px;text-decoration:none;border:1px solid #205040;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#88ffaa';this.style.borderColor='#88ffaa'" onmouseout="this.style.color='#00ff88';this.style.borderColor='#205040'">Agent Walk &#x2197;</a>
     <a href="#" onclick="openOperatorTui();return false" style="color:#6688ff;font-size:11px;text-decoration:none;border:1px solid #303860;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#88aaff';this.style.borderColor='#88aaff'" onmouseout="this.style.color='#6688ff';this.style.borderColor='#303860'">Operator TUI &#x2197;</a>
+    <div class="vtoggle"><button id="vt-exec" onclick="location.hash='exec'">Exec</button><button id="vt-ops" onclick="location.hash='ops'">Ops</button></div>
     <div class="live" id="agent-status">&#9679; LIVE</div>
   </div>
   <div style="display:flex;align-items:center;gap:8px">
@@ -3269,6 +3287,13 @@ body{background:var(--bg);color:var(--ink-soft);font-family:var(--mono);font-siz
 </div>
 </div>
 
+<section id="view-exec">
+<!-- Executive view — populated in C4 (hero posture gauge, control chips,
+     KPI tiles, activity trend). Placeholder until then; reachable at #exec. -->
+<div style="padding:48px;text-align:center;color:var(--muted)">Executive view coming online&hellip;</div>
+</section>
+
+<section id="view-ops">
 <div class="rings">
 <div class="ring ok clickable" id="ring1" onclick="showRingEvents('nftables','Ring 1: Firewall','Kernel-level packet filtering by UID — blocked outbound connections')"><span class="num">1 &gt;</span><span class="status green"></span>
 <div class="name">Firewall</div><div class="value" id="r1v">0</div><div class="detail">packets blocked</div></div>
@@ -3348,8 +3373,40 @@ body{background:var(--bg);color:var(--ink-soft);font-family:var(--mono);font-siz
 </div>
 </div>
 </div>
+</section>
 
 <script>
+// ── View routing (Exec ⇄ Ops) ──────────────────────────────────────────────
+// Hash-based: '#ops' / '#exec' deep-link; no hash = DEFAULT_VIEW. The server
+// root route is an exact '/' match, so query params are not an option; the
+// hash never reaches the server and toggles without a reload.
+const DEFAULT_VIEW='ops';   // flipped to 'exec' in C5 once the view has been eyeballed live
+let curView=DEFAULT_VIEW;
+function applyView(){
+  const h=location.hash.replace('#','');
+  curView=(h==='ops'||h==='exec')?h:DEFAULT_VIEW;
+  document.body.classList.toggle('view-exec',curView==='exec');
+  document.body.classList.toggle('view-ops',curView==='ops');
+  document.getElementById('vt-exec').classList.toggle('active',curView==='exec');
+  document.getElementById('vt-ops').classList.toggle('active',curView==='ops');
+  // Re-render the newly visible view immediately from cache — no fetch wait.
+  if(curView==='ops'&&lastData&&lastData.stats){renderOps(lastData);renderEvents(lastData.events,lastData.total,lastData.filtered||lastData.total);renderEval();}
+  else if(curView==='exec'&&typeof renderExec==='function'&&lastData&&lastData.stats){renderExec(lastData);}
+}
+window.addEventListener('hashchange',applyView);
+// Switch to ops with filter buttons preselected (exec tiles drill into the
+// event stream through this).
+function gotoOps(opts){
+  if(opts&&opts.types){
+    document.querySelectorAll('.filter-bar .fbtn').forEach(b=>b.classList.remove('active'));
+    const want=new Set(opts.types.split(','));
+    document.querySelectorAll('.filter-bar .fbtn').forEach(b=>{
+      const t=(b.dataset.types||'').split(',');
+      if(t.some(x=>want.has(x)))b.classList.add('active');
+    });
+  }
+  location.hash='ops';
+}
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 let _refreshTimer=null;
 function debouncedRefresh(){clearTimeout(_refreshTimer);_refreshTimer=setTimeout(refresh,300)}
@@ -3408,9 +3465,19 @@ if(types.size)params.set('types',Array.from(types).join(','));
 if(q)params.set('q',q);
 const url='/api/events'+(params.toString()?'?'+params.toString():'');
 fetch(url).then(r=>r.json()).then(d=>{
+storeData(d);   // ALWAYS first — every modal renders from lastData
+updateHeaderStatus(d.rings);
+if(curView==='ops'){renderOps(d);renderEvents(d.events,d.total,d.filtered||d.total);}
+else if(typeof renderExec==='function'){renderExec(d);}
+}).catch(()=>{})
+if(curView==='ops')renderEval();
+}
+function updateHeaderStatus(r){
+const asi=document.getElementById('agent-status');if(r.agent_running){asi.innerHTML='&#9679; LIVE';asi.style.color='#00ff88'}else{asi.innerHTML='&#9679; IDLE';asi.style.color='#ff4444'}
+}
+function renderOps(d){
 const s=d.stats,r=d.rings,t=d.stats.tokens||{};
 // Rings
-const asi=document.getElementById('agent-status');if(r.agent_running){asi.innerHTML='&#9679; LIVE';asi.style.color='#00ff88'}else{asi.innerHTML='&#9679; IDLE';asi.style.color='#ff4444'}
 document.getElementById('r1v').textContent=r.r1_packets_blocked;
 document.getElementById('r2v').textContent=r.r2_allowed||0;
 document.getElementById('r2d').textContent=`allowed · ${r.r2_denied||0} denied`;
@@ -3542,16 +3609,14 @@ document.getElementById('pols').innerHTML=ph||'<div class="si"><span class="n mu
 // Alerts
 let ah='';for(const a of(s.alerts||[]).reverse())ah+=`<div class="ai ${a.severity}"><div class="msg">${esc(a.msg)}</div><div class="at">${fmtTime(a.time)}</div></div>`;
 document.getElementById('als').innerHTML=ah||'<div class="si"><span class="n muted">No alerts</span></div>';
-storeData(d);
-renderEvents(d.events,d.total,d.filtered||d.total);
-}).catch(()=>{})
-renderEval();
 }
 // Eval panel — per-flow Galileo scores + recent runs deep-linking to the
 // Agent Walk swimlane (trace) and to the Galileo trace. Own fetch so it stays
 // decoupled from the /api/events payload.
+let lastEval=null;   // cached for the exec view's eval KPI tile (C4)
 function renderEval(){
 fetch('/api/eval').then(r=>r.json()).then(d=>{
+lastEval=d;
 const flows=d.flows||[],recent=d.recent||[];
 const flabel={triage:'Triage',implement:'Implement',review:'Review',ci:'CI',duplicate:'Dup',mention:'Mention',other:'Other'};
 let h='';
@@ -3939,6 +4004,7 @@ function openOperatorTui(){
     : `${location.protocol}//${host}:7681/`;
   window.open(url,'_blank');
 }
+applyView();
 setInterval(refresh,REFRESH_MS);refresh();
 </script><div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
 <div class="modal">
