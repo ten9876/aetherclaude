@@ -16,7 +16,14 @@
     <key>UserName</key>
     <string>aetherclaude</string>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
