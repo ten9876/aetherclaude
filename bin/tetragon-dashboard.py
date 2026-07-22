@@ -3586,7 +3586,7 @@ function renderExec(d){
      spark:'',click:"location.hash='ops'"},
     {lbl:'Eval quality',val:(ev.score_mean!=null)?ev.score_mean+'%':'—',
      sub:(ev.score_mean!=null)?`scored across ${ev.score_flows} flow${ev.score_flows===1?'':'s'} · daily eval`:'no scored evals yet',
-     spark:'',click:"location.hash='ops'"},
+     spark:'',click:'showEvalQuality()'},
     {lbl:'Cycle API cost avoided',val:cost==null?'—':'$'+Number(cost).toFixed(0),
      sub:roi==null?'Claude MAX subscription':`breakeven ${roi}% · MAX $${sub}/cycle`,
      spark:'',click:"location.hash='ops'"}];
@@ -4182,6 +4182,45 @@ fh+=`</div>`}
 fh+=`</div>`}
 document.getElementById('val-list').innerHTML=fh;
 }).catch(()=>{document.getElementById('val-list').innerHTML='<p style="color:#604040">Failed to load validation data.</p>'})}
+// Eval Quality modal — dedicated breakdown of the agent-decision scoring
+// (daily run-eval experiments: per-flow deterministic scorers + Galileo).
+// Deliberately distinct from run-success (did claude exit 0).
+function showEvalQuality(){
+const ev=(lastTrends&&lastTrends.eval)||{};
+const flabel={triage:'Triage',implement:'Implement',review:'Review',ci:'CI',duplicate:'Duplicate',mention:'Mention',other:'Other'};
+let h='<p style="color:#8598b4;margin-bottom:12px">How good are the agent&#8217;s decisions? Each flow is scored daily against a curated dataset (known-good triage labels, expected fix scope, a seeded stale-code regression the reviewer must catch). Scores come from deterministic scorers over real Claude assessments, logged to Galileo as experiments.</p>';
+const sm=ev.score_mean;
+const sev=sm==null?'SAFE':(sm>=80?'SAFE':(sm>=50?'MEDIUM':'HIGH'));
+const glyph=sm==null?'—':(sm>=80?'&#9679;':(sm>=50?'&#9650;':'&#10008;'));
+h+=`<div class="modal-finding ${sev}"><span class="sev ${sev}">${glyph} ${sm==null?'UNSCORED':sm+'%'}</span> overall decision quality — mean of the newest experiment per flow${ev.score_flows?` (${ev.score_flows} flow${ev.score_flows===1?'':'s'})`:''}</div>`;
+h+=`<div class="modal-finding SAFE"><span class="sev SAFE">${ev.pass_rate_24h!=null?ev.pass_rate_24h+'%':'—'}</span> run success &middot; 24h (${ev.runs_24h||0} runs) — separate metric: did the agent process complete, not whether its output was good</div>`;
+h+=`<div id="evq-list" style="margin-top:12px"><p style="color:#8598b4">Loading per-flow scores...</p></div>`;
+h+=`<div class="detail" style="margin-top:12px;color:#8598b4">Scored daily at 05:00 by run-eval &middot; datasets in .galileo/datasets &middot; <a href="https://app.galileo.ai/" target="_blank" style="color:#5de3ff;text-decoration:none">Galileo console &#x2197;</a></div>`;
+document.getElementById('modal-title').textContent='Eval Quality — Agent Decision Scoring';
+document.getElementById('modal-body').innerHTML=h;
+document.getElementById('modal').classList.add('show');
+fetch('/api/eval').then(r=>r.json()).then(d=>{
+const scored=(d.flows||[]).filter(f=>f.scores);
+if(!scored.length){document.getElementById('evq-list').innerHTML='<p style="color:#8598b4">No scored experiments yet — the daily eval job hasn&#8217;t produced results. Run <code style="background:var(--bg-2);padding:1px 4px;border-radius:3px">run-eval.sh</code> or wait for the 05:00 cycle.</p>';return}
+let fh='';
+for(const f of scored){
+const vals=Object.values(f.scores).filter(v=>typeof v==='number');
+const mean=vals.length?Math.round(100*vals.reduce((a,b)=>a+b,0)/vals.length):null;
+const msev=mean==null?'SAFE':(mean>=80?'SAFE':(mean>=50?'MEDIUM':'HIGH'));
+fh+=`<div class="modal-finding ${msev}" style="margin-bottom:8px"><span class="sev ${msev}">${mean==null?'—':mean+'%'}</span> <span class="tool-name">${flabel[f.flow]||esc(f.flow)}</span>`;
+for(const [k,v] of Object.entries(f.scores)){
+if(typeof v!=='number')continue;
+const pct=Math.round(100*v);
+const col=pct>=80?'var(--good)':(pct>=50?'var(--warn)':'var(--crit)');
+fh+=`<div style="display:flex;align-items:center;gap:8px;margin-top:6px">`+
+`<span style="width:170px;font-size:11px;color:#c4d4e8">${esc(k.replace(/_/g,' '))}</span>`+
+`<span style="flex:1;max-width:220px;height:6px;background:var(--bg-3);border-radius:3px;overflow:hidden;display:inline-block"><span style="display:block;height:100%;width:${pct}%;background:${col};border-radius:3px"></span></span>`+
+`<span style="font-size:11px;color:#c4d4e8;width:36px;text-align:right">${pct}%</span></div>`;
+}
+fh+=`</div>`;
+}
+document.getElementById('evq-list').innerHTML=fh;
+}).catch(()=>{document.getElementById('evq-list').innerHTML='<p style="color:#604040">Failed to load eval data.</p>'})}
 function showWhitepaper(){document.getElementById('wp-modal').classList.add('show')}
 function showConstitution(){
 const principles=[
