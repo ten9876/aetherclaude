@@ -3583,7 +3583,7 @@ function renderExec(d){
      spark:svgSparkline(blockedArr),click:"gotoOps({types:'BLOCK,PROXY'})"},
     {lbl:'Run success · 24h',val:evalPct,
      sub:deltaHtml(ev.pass_rate_24h,ev.pass_rate_prev_24h,true)+` · ${ev.runs_24h||0} runs`,
-     spark:'',click:"location.hash='ops'"},
+     spark:'',click:'showRunSuccess()'},
     {lbl:'Eval quality',val:(ev.score_mean!=null)?ev.score_mean+'%':'—',
      sub:(ev.score_mean!=null)?`scored across ${ev.score_flows} flow${ev.score_flows===1?'':'s'} · daily eval`:'no scored evals yet',
      spark:'',click:'showEvalQuality()'},
@@ -4221,6 +4221,56 @@ fh+=`</div>`;
 }
 document.getElementById('evq-list').innerHTML=fh;
 }).catch(()=>{document.getElementById('evq-list').innerHTML='<p style="color:#604040">Failed to load eval data.</p>'})}
+// Run Success modal — execution health of agent runs (did each claude
+// invocation complete), with per-flow rates and the recent run list.
+// Companion to showEvalQuality (was the output GOOD) — kept deliberately
+// separate: this metric is what surfaced the expired-OAuth incident.
+function showRunSuccess(){
+const ev=(lastTrends&&lastTrends.eval)||{};
+const flabel={triage:'Triage',implement:'Implement',review:'Review',ci:'CI',duplicate:'Duplicate',mention:'Mention',other:'Other'};
+let h='<p style="color:#8598b4;margin-bottom:12px">Did each agent run complete? One record per Claude invocation (triage, implement, review, CI-explain, duplicate-check), marked <b style="color:#c4d4e8">ok</b> when the run exited cleanly and <b style="color:#c4d4e8">fail</b> on watchdog kills, auth errors, or exhausted retries. Execution health only — decision quality is scored separately (see the Eval Quality tile).</p>';
+const pr=ev.pass_rate_24h;
+const sev=pr==null?'SAFE':(pr>=95?'SAFE':(pr>=80?'MEDIUM':'HIGH'));
+const glyph=pr==null?'—':(pr>=95?'&#9679;':(pr>=80?'&#9650;':'&#10008;'));
+h+=`<div class="modal-finding ${sev}"><span class="sev ${sev}">${glyph} ${pr==null?'NO RUNS':pr+'%'}</span> run success &middot; last 24h (${ev.runs_24h||0} runs)${ev.pass_rate_prev_24h!=null?` &middot; prior 24h: ${ev.pass_rate_prev_24h}%`:''}</div>`;
+h+=`<div id="rs-list" style="margin-top:12px"><p style="color:#8598b4">Loading runs...</p></div>`;
+h+=`<div class="detail" style="margin-top:12px;color:#8598b4">Recorded by the run_claude hook in run-agent.sh &middot; every run is also a Galileo trace (log stream <span style="color:#c4d4e8">agent-runs</span>) &middot; <a href="https://app.galileo.ai/" target="_blank" style="color:#5de3ff;text-decoration:none">Galileo console &#x2197;</a></div>`;
+document.getElementById('modal-title').textContent='Run Success — Agent Execution Health';
+document.getElementById('modal-body').innerHTML=h;
+document.getElementById('modal').classList.add('show');
+fetch('/api/eval').then(r=>r.json()).then(d=>{
+let fh='';
+const withRuns=(d.flows||[]).filter(f=>f.runs>0);
+if(withRuns.length){
+fh+='<div style="margin-bottom:10px">';
+for(const f of withRuns){
+const prf=f.pass_rate;
+const col=prf>=95?'var(--good)':(prf>=80?'var(--warn)':'var(--crit)');
+fh+=`<div style="display:flex;align-items:center;gap:8px;margin-top:6px">`+
+`<span style="width:110px;font-size:11px;color:#c4d4e8">${flabel[f.flow]||esc(f.flow)}</span>`+
+`<span style="flex:1;max-width:220px;height:6px;background:var(--bg-3);border-radius:3px;overflow:hidden;display:inline-block"><span style="display:block;height:100%;width:${prf}%;background:${col};border-radius:3px"></span></span>`+
+`<span style="font-size:11px;color:#c4d4e8;width:40px;text-align:right">${prf}%</span>`+
+`<span style="font-size:10px;color:#8598b4">${f.ok}/${f.runs} ok</span></div>`;
+}
+fh+='<div style="font-size:10px;color:#5f708a;margin-top:6px">per-flow rates over the recent run history</div></div>';
+}
+const runs=(d.recent||[]).filter(e=>e.kind==='run').slice(0,12);
+if(!runs.length&&!withRuns.length){fh='<p style="color:#8598b4">No agent runs recorded yet.</p>'}
+else{
+fh+='<div style="border-top:1px solid var(--line);padding-top:8px">';
+for(const e of runs){
+const ok=e.status==='ok';
+const walk=e.trace_id?` onclick="window.open('/agent-walk?trace='+encodeURIComponent('${e.trace_id}'),'_blank')" style="cursor:pointer"`:'';
+fh+=`<div class="modal-finding ${ok?'SAFE':'HIGH'}"${walk} title="${e.trace_id?'Open in Agent Walk':''}" >`+
+`<span class="sev ${ok?'SAFE':'HIGH'}">${ok?'&#9679; OK':'&#10008; FAIL'}</span> `+
+`<span class="tool-name">${flabel[e.flow]||esc(e.flow||'')}</span>${e.ref?' #'+esc(String(e.ref)):''} `+
+`<span style="color:#5f708a;font-size:10px">${fmtTime(e.ts)}</span>`+
+`${e.galileo_trace_url?` <a href="${e.galileo_trace_url}" target="_blank" onclick="event.stopPropagation()" style="color:#5de3ff;text-decoration:none;font-size:10px">Galileo &#x2197;</a>`:''}</div>`;
+}
+fh+='</div>';
+}
+document.getElementById('rs-list').innerHTML=fh;
+}).catch(()=>{document.getElementById('rs-list').innerHTML='<p style="color:#604040">Failed to load run data.</p>'})}
 function showWhitepaper(){document.getElementById('wp-modal').classList.add('show')}
 function showConstitution(){
 const principles=[
