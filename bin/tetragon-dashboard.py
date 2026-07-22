@@ -3278,21 +3278,23 @@ body.view-ops #view-exec{display:none}
    one area chart, condensed rows. Data marks use the validated palette;
    status always ships icon+label alongside color. */
 #view-exec{font-family:var(--sans);padding:20px 32px 40px;max-width:1440px;margin:0 auto;width:100%}
-.x-hero{display:flex;align-items:center;gap:36px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:26px 34px;margin-bottom:14px}
+.x-hero{display:flex;align-items:center;gap:30px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:20px 26px;margin-bottom:14px}
+.x-hero-left{flex:1.1;display:flex;align-items:center;gap:28px;min-width:0}
 .x-gauge-wrap{position:relative;flex:0 0 auto}
 .x-score{position:absolute;top:50%;left:50%;transform:translate(-50%,-52%);font-size:52px;font-weight:600;color:var(--ink);line-height:1}
 .x-hero-info{flex:1;min-width:0}
 .x-hero-info .x-title{font-size:13px;font-weight:600;letter-spacing:.4px;color:var(--muted);text-transform:uppercase;margin-bottom:6px}
-.x-hero-line{display:flex;align-items:center;gap:14px;margin-bottom:10px}
+.x-hero-line{display:flex;align-items:center;gap:14px;margin-bottom:8px}
 .x-chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:3px 10px;border-radius:100px;border:1px solid var(--line-hi)}
-.x-reasons{font-size:12px;color:var(--muted);line-height:1.6}
+.x-reasons{font-size:11.5px;color:var(--muted);line-height:1.5}
 .x-reasons b{color:var(--ink-soft);font-weight:600}
-.x-controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
-.x-ctl{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-sm);padding:8px 14px;cursor:pointer;transition:border-color .15s,background .15s}
+.x-reasons>div{margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.x-controls{flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;min-width:0}
+.x-ctl{display:flex;align-items:center;gap:7px;background:var(--bg-2);border:1px solid var(--line);border-radius:var(--radius-sm);padding:8px 11px;cursor:pointer;transition:border-color .15s,background .15s;min-width:0}
 .x-ctl:hover{border-color:var(--accent);background:var(--panel-hi)}
 .x-ctl .dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
 .x-ctl .nm{font-size:12px;color:var(--ink-soft);white-space:nowrap}
-.x-ctl .ct{font-size:11px;color:var(--muted-dim);white-space:nowrap}
+.x-ctl .ct{font-size:10.5px;color:var(--muted-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-left:auto}
 .x-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-bottom:14px}
 .x-tile{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-sm);padding:14px 16px;cursor:pointer;transition:border-color .15s}
 .x-tile:hover{border-color:var(--accent)}
@@ -3346,16 +3348,20 @@ body.view-ops #view-exec{display:none}
 <stop offset="0" stop-color="#3aa7ff"/><stop offset=".42" stop-color="#5de3ff"/><stop offset="1" stop-color="#8ef7e6"/>
 </linearGradient></defs></svg>
 
+<!-- Hero row, two columns: gauge + posture readout (reasons as a vertical
+     list) on the left; the nine control chips as a 3x3 grid on the right.
+     Replaces the separate full-width chips row — one screen on 1080p. -->
 <div class="x-hero">
-  <div class="x-gauge-wrap"><div id="x-gauge"></div><div class="x-score" id="x-score">&mdash;</div></div>
-  <div class="x-hero-info">
-    <div class="x-title">Defense Posture</div>
-    <div class="x-hero-line" id="x-hero-line"></div>
-    <div class="x-reasons" id="x-reasons"></div>
+  <div class="x-hero-left">
+    <div class="x-gauge-wrap"><div id="x-gauge"></div><div class="x-score" id="x-score">&mdash;</div></div>
+    <div class="x-hero-info">
+      <div class="x-title">Defense Posture</div>
+      <div class="x-hero-line" id="x-hero-line"></div>
+      <div class="x-reasons" id="x-reasons"></div>
+    </div>
   </div>
+  <div class="x-controls" id="x-controls"></div>
 </div>
-
-<div class="x-controls" id="x-controls"></div>
 
 <div class="x-kpis" id="x-kpis"></div>
 
@@ -3628,9 +3634,12 @@ function renderExec(d){
       :deltaHtml(p.score,p.score-p.delta_24h,true)+' <span style="color:var(--muted-dim)">vs 24h ago</span>';
     document.getElementById('x-hero-line').innerHTML=
       `<span class="x-chip" style="color:${st.col};border-color:${st.col}">${st.glyph} ${st.word}</span><span style="font-size:12px">${dh}</span>`;
+    // Reasons as a vertical list (was an inline ·-joined line — wrapped badly
+    // and stretched the hero); cap at 5 with a +N-more line.
     const bad=Object.entries(p.rings||{}).filter(([,v])=>v.status!=='green');
     document.getElementById('x-reasons').innerHTML = bad.length
-      ? bad.map(([,v])=>`${X_STATUS[v.status].glyph} <b>${esc(v.reason)}</b>`).join(' &nbsp;·&nbsp; ')
+      ? bad.slice(0,5).map(([,v])=>`<div><span style="color:${X_STATUS[v.status].col}">${X_STATUS[v.status].glyph}</span> <b>${esc(v.reason)}</b></div>`).join('')
+        +(bad.length>5?`<div style="color:var(--muted-dim)">+${bad.length-5} more</div>`:'')
       : 'All nine defense controls reporting healthy.';
   }
   // Control chips — server-derived posture statuses, existing drill-down modals
