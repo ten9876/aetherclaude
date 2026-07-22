@@ -3581,8 +3581,11 @@ function renderExec(d){
     {lbl:'Blocked events · 24h',val:blocked24==null?'—':blocked24,
      sub:deltaHtml(blocked24,tr.blocked_prev_24h,false)+' vs prior day',
      spark:svgSparkline(blockedArr),click:"gotoOps({types:'BLOCK,PROXY'})"},
-    {lbl:'Eval quality · 24h',val:evalPct,
+    {lbl:'Run success · 24h',val:evalPct,
      sub:deltaHtml(ev.pass_rate_24h,ev.pass_rate_prev_24h,true)+` · ${ev.runs_24h||0} runs`,
+     spark:'',click:"location.hash='ops'"},
+    {lbl:'Eval quality',val:(ev.score_mean!=null)?ev.score_mean+'%':'—',
+     sub:(ev.score_mean!=null)?`scored across ${ev.score_flows} flow${ev.score_flows===1?'':'s'} · daily eval`:'no scored evals yet',
      spark:'',click:"location.hash='ops'"},
     {lbl:'Cycle API cost avoided',val:cost==null?'—':'$'+Number(cost).toFixed(0),
      sub:roi==null?'Claude MAX subscription':`breakeven ${roi}% · MAX $${sub}/cycle`,
@@ -8169,8 +8172,31 @@ a{{color:#0a6aba}}
                     cur, cur_n = _pr("replace(ts,'T',' ')>=datetime('now','-1 day')")
                     prev, _ = _pr("replace(ts,'T',' ')>=datetime('now','-2 days') "
                                   "AND replace(ts,'T',' ')<datetime('now','-1 day')")
+                    # True eval QUALITY: mean of the newest experiment's scorer
+                    # means per flow (stale-code recall, scope adherence, …
+                    # from run-eval.sh / Galileo). Distinct from pass_rate,
+                    # which is run-success (did claude exit 0). None until the
+                    # scheduled eval job has produced scored experiments.
+                    score_mean = None; score_flows = 0
+                    try:
+                        exp = conn.execute(
+                            "SELECT flow, scores_json FROM eval_results WHERE id IN "
+                            "(SELECT MAX(id) FROM eval_results WHERE kind='experiment' "
+                            "AND scores_json IS NOT NULL GROUP BY flow)").fetchall()
+                        fmeans = []
+                        for _fl, sj in exp:
+                            sc = json.loads(sj)
+                            vals = [v for v in sc.values() if isinstance(v, (int, float))]
+                            if vals:
+                                fmeans.append(sum(vals) / len(vals))
+                        if fmeans:
+                            score_mean = round(100.0 * sum(fmeans) / len(fmeans))
+                            score_flows = len(fmeans)
+                    except Exception:
+                        pass
                     payload['eval'] = {'pass_rate_24h': cur, 'runs_24h': cur_n or 0,
-                                       'pass_rate_prev_24h': prev}
+                                       'pass_rate_prev_24h': prev,
+                                       'score_mean': score_mean, 'score_flows': score_flows}
                     conn.close()
                 except Exception as ex:
                     payload['error'] = str(ex)
