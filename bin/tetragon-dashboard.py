@@ -206,8 +206,11 @@ _SECRET_PATTERNS = [
     (_re.compile(r'(?:/Users/aetherclaude/)?\.gh-token'), '***'),
     (_re.compile(r'(?:/Users/aetherclaude/)?\.git-credentials'), '***'),
     (_re.compile(r'/tmp/gh_app_token\.txt'), '***'),
-    # Webhook secret
-    (_re.compile(WEBHOOK_SECRET), '***'),
+    # Webhook secret. Guard against an unset/empty secret: re.compile('') is a
+    # zero-width pattern that matches at EVERY position, turning each event's
+    # text into ***a***b***c***… in any environment without the secret (local
+    # testing, fresh installs). Skip the pattern entirely when empty.
+    *([(_re.compile(_re.escape(WEBHOOK_SECRET)), '***')] if WEBHOOK_SECRET else []),
     # Galileo API key printed alongside its var name (no stable prefix, so scope
     # to the assignment form — matches the run-agent.sh JSONL scrubber).
     (_re.compile(r'(GALILEO_API_KEY["\'= :]*)([A-Za-z0-9_\-]{20,})', _re.IGNORECASE), r'\1***'),
