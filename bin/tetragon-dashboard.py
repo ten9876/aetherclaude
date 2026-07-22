@@ -3550,13 +3550,31 @@ function svgAreaChart(buckets,w,h,opts){
     const mpath='M '+xs.map((x,i)=>x.toFixed(1)+' '+ys[i].toFixed(1)).join(' L ');
     adot=`<circle r="3.5" fill="#5de3ff"><animateMotion dur="${opts.dur}s" repeatCount="indefinite" calcMode="linear" keyPoints="0;1;1" keyTimes="0;0.45;1" path="${mpath}"/></circle>`;
   }
+  // Event markers (opts.markers: [{t,...}]) — dots riding the line at their
+  // timestamp, 2px surface ring so they read over the stroke, plus an
+  // oversized transparent hit circle (rendered LAST so it wins hover over
+  // the bucket rects). Marker index rides data-m for the hover card.
+  let marks='',markHits='';
+  if(opts.markers&&opts.markers.length){
+    const t0=new Date(buckets[0].t).getTime(),t1=new Date(buckets[buckets.length-1].t).getTime();
+    const span=(t1-t0)||1;
+    opts.markers.forEach((m,mi)=>{
+      const tm=new Date(m.t).getTime();if(isNaN(tm))return;
+      let frac=(tm-t0)/span;frac=Math.max(0,Math.min(1,frac));
+      const mxp=padL+frac*iw;
+      const fi=frac*(buckets.length-1),i0=Math.floor(fi),i1=Math.min(i0+1,buckets.length-1);
+      const myp=ys[i0]+(ys[i1]-ys[i0])*(fi-i0);
+      marks+=`<circle cx="${mxp.toFixed(1)}" cy="${myp.toFixed(1)}" r="4.5" fill="${opts.markerColor||'#d94fd4'}" stroke="#0e1a2a" stroke-width="2"/>`;
+      markHits+=`<circle cx="${mxp.toFixed(1)}" cy="${myp.toFixed(1)}" r="11" fill="transparent" data-m="${mi}" style="cursor:pointer"/>`;
+    });
+  }
   return `<svg id="${cid}" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`+
     `<defs><linearGradient id="${cid}-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f96ea" stop-opacity=".18"/><stop offset="1" stop-color="#2f96ea" stop-opacity="0"/></linearGradient></defs>`+
     grid+`<polygon points="${area}" fill="url(#${cid}-grad)"/>`+
     `<polyline points="${line}" fill="none" stroke="#2f96ea" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`+
     adot+
     `<line id="${cid}-cross" y1="${padT}" y2="${(padT+ih).toFixed(1)}" x1="0" x2="0" stroke="rgba(120,190,230,.28)" stroke-width="1" visibility="hidden"/>`+
-    labels+hits+`</svg>`;
+    labels+hits+marks+markHits+`</svg>`;
 }
 function wireTrendHover(buckets,opts){
   opts=opts||{};
@@ -3567,6 +3585,14 @@ function wireTrendHover(buckets,opts){
   const cross=svg.querySelector('#'+cid+'-cross');
   svg.addEventListener('mousemove',ev=>{
     const r=ev.target;
+    // Marker hover wins: rich data card, no crosshair.
+    if(r.dataset&&r.dataset.m!==undefined&&opts.markers&&opts.mtip){
+      const m=opts.markers[+r.dataset.m];if(!m)return;
+      cross.setAttribute('visibility','hidden');
+      tt.innerHTML=opts.mtip(m);
+      tt.style.display='block';tt.style.left=(ev.clientX+14)+'px';tt.style.top=(ev.clientY-10)+'px';
+      return;
+    }
     if(!r.dataset||r.dataset.i===undefined){tt.style.display='none';cross.setAttribute('visibility','hidden');return}
     const b=buckets[+r.dataset.i];if(!b)return;
     cross.setAttribute('x1',r.dataset.x);cross.setAttribute('x2',r.dataset.x);cross.setAttribute('visibility','visible');
@@ -3664,10 +3690,27 @@ function renderExec(d){
   if(tw.dataset.key!==key&&tr.activity){
     tw.dataset.key=key;
     const w=Math.max(tw.clientWidth||0,320);
-    tw.innerHTML=svgAreaChart(tr.activity,w,160,{dur:10.7});
-    wireTrendHover(tr.activity);
+    // CodeGuard run markers: clustered server-side (5-min gap); hover shows
+    // the run's events as a data card.
+    const cg=tr.codeguard_24h||[];
+    const cgCard=m=>{
+      const f=s=>{const d=new Date(s);return isNaN(d)?'':d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})};
+      const t0=f(m.t),t1=f(m.t_end);
+      let s=`<div style="white-space:normal;max-width:380px">`+
+        `<div style="font-weight:600;color:#eaf2fb;margin-bottom:5px"><span style="color:#d94fd4">&#9679;</span> CodeGuard run &middot; ${t0}${(t1&&t1!==t0)?'&ndash;'+t1:''} &middot; ${m.count} event${m.count===1?'':'s'}</div>`;
+      for(const e of (m.events||[]).slice(0,8)){
+        s+=`<div style="display:flex;gap:6px;margin-top:2px;font-size:11px">`+
+           `<span style="color:#d94fd4;font-weight:600;flex:0 0 auto">${esc(e.type||'EVENT')}</span>`+
+           `<span style="color:#c4d4e8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.args||e.policy||'')}</span></div>`;
+      }
+      if(m.count>(m.events||[]).length)s+=`<div style="color:#8598b4;margin-top:4px;font-size:10px">+${m.count-(m.events||[]).length} more &middot; full detail in the CodeGuard modal</div>`;
+      return s+'</div>';
+    };
+    tw.innerHTML=svgAreaChart(tr.activity,w,160,{dur:10.7,markers:cg,mtip:cgCard});
+    wireTrendHover(tr.activity,{markers:cg,mtip:cgCard});
     const tot=tr.activity.reduce((a,b)=>a+b.events,0);
-    document.getElementById('x-trend-total').textContent=fmtCompact(tot)+' events';
+    document.getElementById('x-trend-total').innerHTML=
+      `${cg.length?`<span style="color:#d94fd4">&#9679;</span> ${cg.length} CodeGuard run${cg.length===1?'':'s'} &nbsp;&middot;&nbsp; `:''}${fmtCompact(tot)} events`;
   }
   // Alerts — section hidden entirely when quiet
   const alerts=s.alerts||[];
@@ -8398,6 +8441,36 @@ a{{color:#0a6aba}}
                         tot, inp, out, cache = got_t.get(key, (0, 0, 0, 0))
                         payload['tokens_48h'].append({'t': key, 'total': tot or 0, 'inp': inp or 0,
                                                       'out': out or 0, 'cache': cache or 0})
+                    # CodeGuard run markers for the activity chart: cluster
+                    # codeguard-source events within 5 minutes into 'runs';
+                    # each carries its events (capped at 12) for the hover
+                    # data card, plus the true total count.
+                    try:
+                        cg_rows = conn.execute(
+                            "SELECT CAST(strftime('%s',created_at) AS INTEGER), created_at, "
+                            "type, args, policy FROM events WHERE source='codeguard' "
+                            "AND created_at>=datetime('now','-24 hours') "
+                            "ORDER BY created_at ASC LIMIT 2000").fetchall()
+                        cg_clusters = []
+                        for ep, ca, ty, ar, po in cg_rows:
+                            if ep is None:
+                                continue
+                            evd = {'t': (ca or '').replace(' ', 'T') + 'Z',
+                                   'type': ty or '', 'args': (ar or '')[:90], 'policy': po or ''}
+                            if cg_clusters and ep - cg_clusters[-1]['_end'] <= 300:
+                                c = cg_clusters[-1]
+                                c['_end'] = ep
+                                c['count'] += 1
+                                if len(c['events']) < 12:
+                                    c['events'].append(evd)
+                            else:
+                                cg_clusters.append({'t': evd['t'], '_end': ep,
+                                                    'count': 1, 'events': [evd]})
+                        for c in cg_clusters:
+                            c['t_end'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(c.pop('_end')))
+                        payload['codeguard_24h'] = cg_clusters[-50:]
+                    except Exception:
+                        payload['codeguard_24h'] = []
                     # eval pass rates, two 24h windows (ts is ISO w/ 'T' — normalize)
                     def _pr(where):
                         tot, ok = conn.execute(
