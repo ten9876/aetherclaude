@@ -3599,7 +3599,7 @@ function renderExec(d){
      spark:svgSparkline(runsArr),click:"window.open('/agent-walk','_blank')"},
     {lbl:'Issues &amp; PRs handled · 24h',val:ac.handled_24h==null?'—':ac.handled_24h,
      sub:deltaHtml(ac.handled_24h,ac.handled_prev_24h,true)+' vs prior day',
-     spark:'',click:'showRing9()'},
+     spark:svgSparkline((ac.handled_7d||[]).map(x=>x.handled)),click:'showRing9()'},
     {lbl:'Blocked events · 24h',val:blocked24==null?'—':blocked24,
      sub:deltaHtml(blocked24,tr.blocked_prev_24h,false)+' vs prior day',
      spark:svgSparkline(blockedArr),click:"gotoOps({types:'BLOCK,PROXY'})"},
@@ -8367,10 +8367,23 @@ a{{color:#0a6aba}}
                         "SELECT COUNT(DISTINCT issue_number) FROM issue_actions "
                         "WHERE replace(created_at,'T',' ')>=datetime('now','-2 days') "
                         "AND replace(created_at,'T',' ')<datetime('now','-1 day')").fetchone()[0]
+                    # 7-day daily series for the tile's trendline. Zero-fill:
+                    # unlike a pass RATE, zero handled on a day is a real zero,
+                    # not undefined.
+                    got_h = {r[0]: r[1] for r in aconn.execute(
+                        "SELECT date(replace(created_at,'T',' ')), COUNT(DISTINCT issue_number) "
+                        "FROM issue_actions WHERE replace(created_at,'T',' ')>=datetime('now','-7 days') "
+                        "GROUP BY 1")}
+                    handled_7d = []
+                    for i in range(6, -1, -1):
+                        dkey = time.strftime('%Y-%m-%d', time.gmtime(nowt - i * 86400))
+                        handled_7d.append({'d': dkey, 'handled': got_h.get(dkey, 0)})
                     aconn.close()
-                    payload['actions'] = {'handled_24h': h24, 'handled_prev_24h': hprev}
+                    payload['actions'] = {'handled_24h': h24, 'handled_prev_24h': hprev,
+                                          'handled_7d': handled_7d}
                 except Exception:
-                    payload['actions'] = {'handled_24h': None, 'handled_prev_24h': None}
+                    payload['actions'] = {'handled_24h': None, 'handled_prev_24h': None,
+                                          'handled_7d': []}
                 _trends_cache = {'ts': nowt, 'data': payload}
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
