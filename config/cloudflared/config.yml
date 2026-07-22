@@ -20,3 +20,4 @@ ingress:
   - hostname: ssh.aethersdr.com
     service: ssh://127.0.0.1:22
   - service: http_status:404
+
