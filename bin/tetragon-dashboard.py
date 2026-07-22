@@ -3262,6 +3262,45 @@ body.view-ops #view-exec{display:none}
 .vtoggle{display:flex;border:1px solid var(--line-hi);border-radius:8px;overflow:hidden}
 .vtoggle button{background:transparent;border:none;color:var(--muted);padding:4px 12px;font-size:11px;font-family:inherit;cursor:pointer}
 .vtoggle button.active{background:var(--accent);color:var(--bg)}
+
+/* ── Executive view ──────────────────────────────────────────────────────
+   Calm, sans-serif, generous spacing. One hero figure, control chips,
+   KPI stat tiles (label/value/delta/sparkline per the dataviz contract),
+   one area chart, condensed rows. Data marks use the validated palette;
+   status always ships icon+label alongside color. */
+#view-exec{font-family:var(--sans);padding:20px 32px 40px;max-width:1440px;margin:0 auto;width:100%}
+.x-hero{display:flex;align-items:center;gap:36px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:26px 34px;margin-bottom:14px}
+.x-gauge-wrap{position:relative;flex:0 0 auto}
+.x-score{position:absolute;top:50%;left:50%;transform:translate(-50%,-52%);font-size:52px;font-weight:600;color:var(--ink);line-height:1}
+.x-hero-info{flex:1;min-width:0}
+.x-hero-info .x-title{font-size:13px;font-weight:600;letter-spacing:.4px;color:var(--muted);text-transform:uppercase;margin-bottom:6px}
+.x-hero-line{display:flex;align-items:center;gap:14px;margin-bottom:10px}
+.x-chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:3px 10px;border-radius:100px;border:1px solid var(--line-hi)}
+.x-reasons{font-size:12px;color:var(--muted);line-height:1.6}
+.x-reasons b{color:var(--ink-soft);font-weight:600}
+.x-controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.x-ctl{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-sm);padding:8px 14px;cursor:pointer;transition:border-color .15s,background .15s}
+.x-ctl:hover{border-color:var(--accent);background:var(--panel-hi)}
+.x-ctl .dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+.x-ctl .nm{font-size:12px;color:var(--ink-soft);white-space:nowrap}
+.x-ctl .ct{font-size:11px;color:var(--muted-dim);white-space:nowrap}
+.x-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-bottom:14px}
+.x-tile{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-sm);padding:14px 16px;cursor:pointer;transition:border-color .15s}
+.x-tile:hover{border-color:var(--accent)}
+.x-tile .lbl{font-size:11px;color:var(--muted);letter-spacing:.3px;text-transform:uppercase;margin-bottom:6px}
+.x-tile .val{font-size:27px;font-weight:600;color:var(--ink);line-height:1.1}
+.x-tile .sub{font-size:11px;color:var(--muted-dim);margin-top:4px;display:flex;align-items:center;gap:8px}
+.x-tile .spark{margin-top:8px;height:30px}
+.x-delta{font-weight:600}
+.x-panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 20px;margin-bottom:14px}
+.x-panel .x-ph{font-size:12px;font-weight:600;letter-spacing:.4px;color:var(--muted);text-transform:uppercase;margin-bottom:10px;display:flex;justify-content:space-between;align-items:baseline}
+.x-rows .x-row{display:flex;align-items:center;gap:10px;padding:6px 2px;border-bottom:1px solid var(--line);font-size:12px}
+.x-rows .x-row:last-child{border-bottom:none}
+.x-rows .tm{color:var(--muted-dim);font-size:11px;width:88px;flex:0 0 auto;font-family:var(--mono)}
+.x-rows a{color:var(--ink-soft);text-decoration:none}
+.x-rows a:hover{color:var(--accent-bright)}
+#x-tt{position:fixed;display:none;background:var(--bg-2);border:1px solid var(--line-hi);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--ink-soft);pointer-events:none;z-index:500;white-space:nowrap}
+#x-alerts.empty{display:none}
 </style></head><body>
 
 <div class="header">
@@ -3288,9 +3327,42 @@ body.view-ops #view-exec{display:none}
 </div>
 
 <section id="view-exec">
-<!-- Executive view — populated in C4 (hero posture gauge, control chips,
-     KPI tiles, activity trend). Placeholder until then; reachable at #exec. -->
-<div style="padding:48px;text-align:center;color:var(--muted)">Executive view coming online&hellip;</div>
+<!-- Shared SVG gradient defs (gauge arc). Kept 0x0 but rendered (display:none
+     would drop the defs in some engines). -->
+<svg style="position:absolute;width:0;height:0" aria-hidden="true"><defs>
+<linearGradient id="pgrad" x1="0" y1="0" x2="1" y2="0">
+<stop offset="0" stop-color="#3aa7ff"/><stop offset=".42" stop-color="#5de3ff"/><stop offset="1" stop-color="#8ef7e6"/>
+</linearGradient></defs></svg>
+
+<div class="x-hero">
+  <div class="x-gauge-wrap"><div id="x-gauge"></div><div class="x-score" id="x-score">&mdash;</div></div>
+  <div class="x-hero-info">
+    <div class="x-title">Defense Posture</div>
+    <div class="x-hero-line" id="x-hero-line"></div>
+    <div class="x-reasons" id="x-reasons"></div>
+  </div>
+</div>
+
+<div class="x-controls" id="x-controls"></div>
+
+<div class="x-kpis" id="x-kpis"></div>
+
+<div class="x-panel">
+  <div class="x-ph"><span>Activity &middot; last 24 hours</span><span id="x-trend-total" style="text-transform:none;letter-spacing:0"></span></div>
+  <div id="x-trend"></div>
+</div>
+
+<div class="x-panel" id="x-alerts" style="border-color:var(--crit)">
+  <div class="x-ph"><span style="color:var(--crit)">&#9888; Alerts</span></div>
+  <div class="x-rows" id="x-alert-rows"></div>
+</div>
+
+<div class="x-panel">
+  <div class="x-ph"><span>Recent agent activity</span><a href="/agent-walk" target="_blank" style="color:var(--accent);text-transform:none;letter-spacing:0;font-weight:400;text-decoration:none">Agent Walk &#x2197;</a></div>
+  <div class="x-rows" id="x-activity"></div>
+</div>
+
+<div id="x-tt"></div>
 </section>
 
 <section id="view-ops">
@@ -3406,6 +3478,173 @@ function gotoOps(opts){
     });
   }
   location.hash='ops';
+}
+
+// ── Exec-view chart components (vanilla SVG strings, dataviz mark specs:
+// 2px lines, hairline solid grid, ~10-18% area wash, no number-on-every-point)
+function fmtCompact(n){if(n==null)return '—';if(n>=1e6)return (n/1e6).toFixed(1)+'M';if(n>=1e4)return Math.round(n/1e3)+'K';if(n>=1e3)return (n/1e3).toFixed(1)+'K';return String(n)}
+function deltaHtml(cur,prev,upIsGood){
+  if(cur==null||prev==null)return '<span class="x-delta" style="color:var(--muted-dim)">—</span>';
+  const d=cur-prev;
+  if(d===0)return '<span class="x-delta" style="color:var(--muted-dim)">±0</span>';
+  const up=d>0,good=(up===!!upIsGood);
+  return `<span class="x-delta" style="color:${good?'var(--good)':'var(--crit)'}">${up?'▲':'▼'} ${up?'+':''}${d}</span>`;
+}
+function svgSparkline(pts,w,h){
+  w=w||110;h=h||30;
+  if(!pts||pts.length<2)return '';
+  const mx=Math.max.apply(null,pts),mn=Math.min.apply(null,pts),pad=3,rng=(mx-mn)||1;
+  const xs=pts.map((v,i)=>[pad+i*(w-2*pad)/(pts.length-1),h-pad-((v-mn)/rng)*(h-2*pad)]);
+  const line=xs.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+  const last=xs[xs.length-1];
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline points="${line}" fill="none" stroke="#2f96ea" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.5" fill="#5de3ff"/></svg>`;
+}
+function svgRingGauge(score,size,sw){
+  size=size||132;sw=sw||10;
+  const c=size/2,r=c-sw/2,circ=2*Math.PI*r,frac=Math.max(0,Math.min(100,score))/100;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">`+
+    `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="rgba(120,165,210,.12)" stroke-width="${sw}"/>`+
+    `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="url(#pgrad)" stroke-width="${sw}" stroke-linecap="round" stroke-dasharray="${(circ*frac).toFixed(1)} ${circ.toFixed(1)}" transform="rotate(-90 ${c} ${c})"/></svg>`;
+}
+function svgAreaChart(buckets,w,h){
+  h=h||160;
+  if(!buckets||buckets.length<2)return '<div style="color:var(--muted-dim);font-size:12px">No activity data yet</div>';
+  const padL=8,padR=8,padT=10,padB=20,iw=w-padL-padR,ih=h-padT-padB;
+  const vals=buckets.map(b=>b.events),mx=Math.max.apply(null,vals.concat([1]));
+  const xs=buckets.map((b,i)=>padL+i*iw/(buckets.length-1));
+  const ys=vals.map(v=>padT+ih-(v/mx)*ih);
+  const line=xs.map((x,i)=>x.toFixed(1)+','+ys[i].toFixed(1)).join(' ');
+  const area=`${padL},${(padT+ih).toFixed(1)} ${line} ${(padL+iw).toFixed(1)},${(padT+ih).toFixed(1)}`;
+  let grid='';for(let g=1;g<=3;g++){const gy=(padT+ih-g*ih/3).toFixed(1);grid+=`<line x1="${padL}" y1="${gy}" x2="${(padL+iw).toFixed(1)}" y2="${gy}" stroke="rgba(120,165,210,.12)" stroke-width="1"/>`}
+  let labels='';for(let i=0;i<buckets.length;i+=6){const dt=new Date(buckets[i].t);if(!isNaN(dt))labels+=`<text x="${xs[i].toFixed(1)}" y="${h-6}" font-size="10" fill="#8598b4" text-anchor="middle" font-family="inherit">${dt.toLocaleTimeString([],{hour:'2-digit'})}</text>`}
+  let hits='';for(let i=0;i<buckets.length;i++){
+    const x0=i===0?padL:(xs[i-1]+xs[i])/2, x1=i===buckets.length-1?padL+iw:(xs[i]+xs[i+1])/2;
+    hits+=`<rect x="${x0.toFixed(1)}" y="0" width="${(x1-x0).toFixed(1)}" height="${h}" fill="transparent" data-i="${i}" data-x="${xs[i].toFixed(1)}"/>`}
+  return `<svg id="x-trend-svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`+
+    `<defs><linearGradient id="agrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f96ea" stop-opacity=".18"/><stop offset="1" stop-color="#2f96ea" stop-opacity="0"/></linearGradient></defs>`+
+    grid+`<polygon points="${area}" fill="url(#agrad)"/>`+
+    `<polyline points="${line}" fill="none" stroke="#2f96ea" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`+
+    `<line id="x-cross" y1="${padT}" y2="${(padT+ih).toFixed(1)}" x1="0" x2="0" stroke="rgba(120,190,230,.28)" stroke-width="1" visibility="hidden"/>`+
+    labels+hits+`</svg>`;
+}
+function wireTrendHover(buckets){
+  const svg=document.getElementById('x-trend-svg'),tt=document.getElementById('x-tt');
+  if(!svg)return;
+  const cross=svg.querySelector('#x-cross');
+  svg.addEventListener('mousemove',ev=>{
+    const r=ev.target;
+    if(!r.dataset||r.dataset.i===undefined){tt.style.display='none';cross.setAttribute('visibility','hidden');return}
+    const b=buckets[+r.dataset.i];if(!b)return;
+    cross.setAttribute('x1',r.dataset.x);cross.setAttribute('x2',r.dataset.x);cross.setAttribute('visibility','visible');
+    const dt=new Date(b.t);
+    tt.innerHTML=`${isNaN(dt)?b.t:dt.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})} — <b>${b.events}</b> events · ${b.blocked} blocked`;
+    tt.style.display='block';tt.style.left=(ev.clientX+14)+'px';tt.style.top=(ev.clientY-10)+'px';
+  });
+  svg.addEventListener('mouseleave',()=>{tt.style.display='none';cross.setAttribute('visibility','hidden')});
+}
+
+// ── Executive view render ─────────────────────────────────────────────────
+const X_STATUS={green:{col:'var(--good)',glyph:'●',word:'Strong'},
+                yellow:{col:'var(--warn)',glyph:'▲',word:'Degraded'},
+                red:{col:'var(--crit)',glyph:'✖',word:'At risk'}};
+let lastTrends=null;
+function renderExec(d){
+  const s=d.stats||{},r=d.rings||{},t=(s.tokens)||{},p=r.posture;
+  // Hero — score, delta, status chip, reasons from non-green controls
+  if(p){
+    document.getElementById('x-gauge').innerHTML=svgRingGauge(p.score);
+    document.getElementById('x-score').textContent=p.score;
+    const lvl=p.score>=85?'green':(p.score>=60?'yellow':'red'),st=X_STATUS[lvl];
+    const dh=(p.delta_24h==null)?'<span style="color:var(--muted-dim)">— vs 24h ago</span>'
+      :deltaHtml(p.score,p.score-p.delta_24h,true)+' <span style="color:var(--muted-dim)">vs 24h ago</span>';
+    document.getElementById('x-hero-line').innerHTML=
+      `<span class="x-chip" style="color:${st.col};border-color:${st.col}">${st.glyph} ${st.word}</span><span style="font-size:12px">${dh}</span>`;
+    const bad=Object.entries(p.rings||{}).filter(([,v])=>v.status!=='green');
+    document.getElementById('x-reasons').innerHTML = bad.length
+      ? bad.map(([,v])=>`${X_STATUS[v.status].glyph} <b>${esc(v.reason)}</b>`).join(' &nbsp;·&nbsp; ')
+      : 'All nine defense controls reporting healthy.';
+  }
+  // Control chips — server-derived posture statuses, existing drill-down modals
+  const tools=s.tools||{};
+  const ctls=[
+    ['r1','Firewall',(r.r1_packets_blocked||0)+' blocked',"showRingEvents('nftables','Firewall','Kernel-level packet filtering by UID — blocked outbound connections')"],
+    ['r2','Web Proxy',(r.r2_denied||0)+' denied',"showRingEvents('tinyproxy','Web Proxy — denied connections','HTTPS connections rejected by the domain allowlist',{policy:'domain-filter'})"],
+    ['r3','OS Isolation',fmtCompact(r.r3_es_events||0)+' events',"showRingEvents('eslogger','OS Isolation','Process executions under the agent UID',{type:'EXEC'})"],
+    ['r4','Agent Sandbox',(r.r4_sandboxed_runs||0)+' runs','showRing4()'],
+    ['r5','Claude Code',fmtCompact(tools.total||0)+' tool calls',"showRingEvents('claude-code','Claude Code Permissions','Tool calls tracked — per-tool breakdown')"],
+    ['r6','CodeGuard',fmtCompact((r.r6_files_scanned||0)+(r.r6_mcp_tools_scanned||0))+' scanned',"showRingEvents('codeguard','Cisco AI Defense','CodeGuard, MCP Scanner, Skill Scanner events')"],
+    ['r7','MCP Isolation',fmtCompact(r.r7_mcp_ops||0)+' ops',"showRingEvents('mcp','MCP Token Isolation','GitHub API operations, validation, rate limiting')"],
+    ['r8','Validation Gate',(r.r8_validation_failed||0)+' failed','showValidation()'],
+    ['r9','Human Review',(r.r9_prs_open||0)+' open PRs','showRing9()']];
+  document.getElementById('x-controls').innerHTML=ctls.map(([k,nm,ct,fn])=>{
+    const stt=(p&&p.rings&&p.rings[k])?p.rings[k]:{status:'green',reason:''};
+    const st=X_STATUS[stt.status]||X_STATUS.green;
+    return `<div class="x-ctl" onclick="${esc(fn)}" title="${esc(stt.reason||nm)}"><span class="dot" style="background:${st.col}"></span><span class="nm">${nm}</span><span class="ct">${ct}</span></div>`;
+  }).join('');
+  // KPI tiles
+  const tr=lastTrends||{},ev=tr.eval||{},ac=tr.actions||{};
+  const runsArr=(tr.daily_runs||[]).map(x=>x.runs);
+  const runsToday=runsArr.length?runsArr[runsArr.length-1]:null;
+  const runsYest=runsArr.length>1?runsArr[runsArr.length-2]:null;
+  const blockedArr=(tr.hourly||[]).map(x=>x.blocked);
+  const blocked24=blockedArr.length?blockedArr.reduce((a,b)=>a+b,0):null;
+  const cyc=t.cycle||{};
+  const cost=(cyc.cycle_cost!=null)?cyc.cycle_cost:(t.estimated_cost_usd!=null?t.estimated_cost_usd:null);
+  const sub=cyc.subscription_amount_usd||200;
+  const roi=(cost!=null&&sub)?Math.round(100*cost/sub):null;
+  const evalPct=(ev.pass_rate_24h!=null)?ev.pass_rate_24h+'%':'—';
+  const tiles=[
+    {lbl:'Agent runs · 24h',val:runsToday==null?'—':runsToday,
+     sub:deltaHtml(runsToday,runsYest,true)+' vs prior day',
+     spark:svgSparkline(runsArr),click:"window.open('/agent-walk','_blank')"},
+    {lbl:'Issues &amp; PRs handled · 24h',val:ac.handled_24h==null?'—':ac.handled_24h,
+     sub:deltaHtml(ac.handled_24h,ac.handled_prev_24h,true)+' vs prior day',
+     spark:'',click:'showRing9()'},
+    {lbl:'Blocked events · 24h',val:blocked24==null?'—':blocked24,
+     sub:deltaHtml(blocked24,tr.blocked_prev_24h,false)+' vs prior day',
+     spark:svgSparkline(blockedArr),click:"gotoOps({types:'BLOCK,PROXY'})"},
+    {lbl:'Eval quality · 24h',val:evalPct,
+     sub:deltaHtml(ev.pass_rate_24h,ev.pass_rate_prev_24h,true)+` · ${ev.runs_24h||0} runs`,
+     spark:'',click:"location.hash='ops'"},
+    {lbl:'Cycle API cost avoided',val:cost==null?'—':'$'+Number(cost).toFixed(0),
+     sub:roi==null?'Claude MAX subscription':`breakeven ${roi}% · MAX $${sub}/cycle`,
+     spark:'',click:"location.hash='ops'"}];
+  document.getElementById('x-kpis').innerHTML=tiles.map(x=>
+    `<div class="x-tile" onclick="${esc(x.click)}"><div class="lbl">${x.lbl}</div><div class="val">${x.val}</div><div class="sub">${x.sub}</div>${x.spark?`<div class="spark">${x.spark}</div>`:''}</div>`).join('');
+  // Trend chart — re-rendered only when trends refresh (cheap guard: cache key)
+  const tw=document.getElementById('x-trend');
+  const key=tr.generated_at||'';
+  if(tw.dataset.key!==key&&tr.hourly){
+    tw.dataset.key=key;
+    const w=Math.max(tw.clientWidth||0,320);
+    tw.innerHTML=svgAreaChart(tr.hourly,w);
+    wireTrendHover(tr.hourly);
+    const tot=tr.hourly.reduce((a,b)=>a+b.events,0);
+    document.getElementById('x-trend-total').textContent=fmtCompact(tot)+' events';
+  }
+  // Alerts — section hidden entirely when quiet
+  const alerts=s.alerts||[];
+  document.getElementById('x-alerts').classList.toggle('empty',!alerts.length);
+  if(alerts.length){
+    document.getElementById('x-alert-rows').innerHTML=alerts.slice(-5).reverse().map(a=>
+      `<div class="x-row"><span class="tm">${fmtTime(a.time)}</span><span>${esc(a.msg)}</span></div>`).join('');
+  }
+  // Latest 5 agent activities
+  const acts=(s.recent_activity||[]).slice(-5).reverse();
+  document.getElementById('x-activity').innerHTML=acts.length?acts.map(a=>{
+    const url=a.num?`https://github.com/aethersdr/AetherSDR/issues/${a.num}`:null;
+    return `<div class="x-row"><span class="tm">${fmtTime(a.time)}</span><span>${esc(a.op||a.action||'')}</span>${url?`<a href="${url}" target="_blank">#${a.num}</a>`:''}</div>`;
+  }).join(''):'<div class="x-row" style="color:var(--muted-dim)">No agent activity yet</div>';
+}
+// Trends poll — slow cadence (server caches 60s anyway). NOTE: identifier must
+// not contain the templated refresh-interval token name (string-replaced at
+// serve time).
+const TREND_POLL_MS=60000;
+function pollTrends(){
+  fetch('/api/trends').then(r=>r.json()).then(d=>{
+    lastTrends=d;
+    if(curView==='exec'&&lastData&&lastData.stats)renderExec(lastData);
+  }).catch(()=>{});
 }
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 let _refreshTimer=null;
@@ -4005,6 +4244,7 @@ function openOperatorTui(){
   window.open(url,'_blank');
 }
 applyView();
+pollTrends();setInterval(pollTrends,TREND_POLL_MS);
 setInterval(refresh,REFRESH_MS);refresh();
 </script><div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
 <div class="modal">
