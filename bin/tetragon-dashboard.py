@@ -3719,11 +3719,17 @@ function renderExec(d){
     document.getElementById('x-alert-rows').innerHTML=alerts.slice(-5).reverse().map(a=>
       `<div class="x-row"><span class="tm">${fmtTime(a.time)}</span><span>${esc(a.msg)}</span></div>`).join('');
   }
-  // Latest 5 agent activities
-  const acts=(s.recent_activity||[]).slice(-5).reverse();
+  // Latest 5 agent activities. NOTE: recent_activity lives on d.rings
+  // (ring_stats), NOT d.stats — reading s.recent_activity left this section
+  // permanently empty. Items carry {op, time, url}; the issue/PR number is
+  // extracted from the url (same convention as the ops panel).
+  const titlesX=r.issue_titles||{};
+  const acts=(r.recent_activity||[]).slice(-5).reverse();
   document.getElementById('x-activity').innerHTML=acts.length?acts.map(a=>{
-    const url=a.num?`https://github.com/aethersdr/AetherSDR/issues/${a.num}`:null;
-    return `<div class="x-row"><span class="tm">${fmtTime(a.time)}</span><span>${esc(a.op||a.action||'')}</span>${url?`<a href="${url}" target="_blank">#${a.num}</a>`:''}</div>`;
+    let num='';
+    if(a.url){const m2=a.url.match(/\/(\d+)/g);if(m2)num=m2[m2.length-1].substring(1)}
+    const ttl=titlesX[num]||titlesX['d'+num]||titlesX['pr'+num]||'';
+    return `<div class="x-row"><span class="tm">${fmtTime(a.time)}</span><span>${esc(a.op||'')}</span>${a.url?`<a href="${a.url}" target="_blank">#${esc(num)}${ttl?' — '+esc(ttl.substring(0,40)):''}</a>`:''}</div>`;
   }).join(''):'<div class="x-row" style="color:var(--muted-dim)">No agent activity yet</div>';
 }
 // Trends poll — slow cadence (server caches 60s anyway). NOTE: identifier must
