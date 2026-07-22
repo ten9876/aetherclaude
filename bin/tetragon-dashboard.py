@@ -526,6 +526,7 @@ def init_db():
         model TEXT
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_tt_trace ON trace_tokens(trace_id)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_tt_ts ON trace_tokens(timestamp)')
     try:
         conn.execute('ALTER TABLE trace_tokens ADD COLUMN model TEXT')
     except sqlite3.OperationalError as e:
@@ -3506,11 +3507,13 @@ function svgRingGauge(score,size,sw){
     `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="rgba(120,165,210,.12)" stroke-width="${sw}"/>`+
     `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="url(#pgrad)" stroke-width="${sw}" stroke-linecap="round" stroke-dasharray="${(circ*frac).toFixed(1)} ${circ.toFixed(1)}" transform="rotate(-90 ${c} ${c})"/></svg>`;
 }
-function svgAreaChart(buckets,w,h){
-  h=h||160;
+function svgAreaChart(buckets,w,h,opts){
+  h=h||160;opts=opts||{};
+  const cid=opts.id||'x-trend-svg';
+  const get=opts.val||(b=>b.events);
   if(!buckets||buckets.length<2)return '<div style="color:var(--muted-dim);font-size:12px">No activity data yet</div>';
   const padL=8,padR=8,padT=10,padB=20,iw=w-padL-padR,ih=h-padT-padB;
-  const vals=buckets.map(b=>b.events),mx=Math.max.apply(null,vals.concat([1]));
+  const vals=buckets.map(get),mx=Math.max.apply(null,vals.concat([1]));
   const xs=buckets.map((b,i)=>padL+i*iw/(buckets.length-1));
   const ys=vals.map(v=>padT+ih-(v/mx)*ih);
   const line=xs.map((x,i)=>x.toFixed(1)+','+ys[i].toFixed(1)).join(' ');
@@ -3520,24 +3523,27 @@ function svgAreaChart(buckets,w,h){
   let hits='';for(let i=0;i<buckets.length;i++){
     const x0=i===0?padL:(xs[i-1]+xs[i])/2, x1=i===buckets.length-1?padL+iw:(xs[i]+xs[i+1])/2;
     hits+=`<rect x="${x0.toFixed(1)}" y="0" width="${(x1-x0).toFixed(1)}" height="${h}" fill="transparent" data-i="${i}" data-x="${xs[i].toFixed(1)}"/>`}
-  return `<svg id="x-trend-svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`+
-    `<defs><linearGradient id="agrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f96ea" stop-opacity=".18"/><stop offset="1" stop-color="#2f96ea" stop-opacity="0"/></linearGradient></defs>`+
-    grid+`<polygon points="${area}" fill="url(#agrad)"/>`+
+  return `<svg id="${cid}" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`+
+    `<defs><linearGradient id="${cid}-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f96ea" stop-opacity=".18"/><stop offset="1" stop-color="#2f96ea" stop-opacity="0"/></linearGradient></defs>`+
+    grid+`<polygon points="${area}" fill="url(#${cid}-grad)"/>`+
     `<polyline points="${line}" fill="none" stroke="#2f96ea" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`+
-    `<line id="x-cross" y1="${padT}" y2="${(padT+ih).toFixed(1)}" x1="0" x2="0" stroke="rgba(120,190,230,.28)" stroke-width="1" visibility="hidden"/>`+
+    `<line id="${cid}-cross" y1="${padT}" y2="${(padT+ih).toFixed(1)}" x1="0" x2="0" stroke="rgba(120,190,230,.28)" stroke-width="1" visibility="hidden"/>`+
     labels+hits+`</svg>`;
 }
-function wireTrendHover(buckets){
-  const svg=document.getElementById('x-trend-svg'),tt=document.getElementById('x-tt');
+function wireTrendHover(buckets,opts){
+  opts=opts||{};
+  const cid=opts.id||'x-trend-svg';
+  const tip=opts.tip||(b=>`<b>${b.events}</b> events · ${b.blocked} blocked`);
+  const svg=document.getElementById(cid),tt=document.getElementById('x-tt');
   if(!svg)return;
-  const cross=svg.querySelector('#x-cross');
+  const cross=svg.querySelector('#'+cid+'-cross');
   svg.addEventListener('mousemove',ev=>{
     const r=ev.target;
     if(!r.dataset||r.dataset.i===undefined){tt.style.display='none';cross.setAttribute('visibility','hidden');return}
     const b=buckets[+r.dataset.i];if(!b)return;
     cross.setAttribute('x1',r.dataset.x);cross.setAttribute('x2',r.dataset.x);cross.setAttribute('visibility','visible');
     const dt=new Date(b.t);
-    tt.innerHTML=`${isNaN(dt)?b.t:dt.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})} — <b>${b.events}</b> events · ${b.blocked} blocked`;
+    tt.innerHTML=`${isNaN(dt)?b.t:dt.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})} — ${tip(b)}`;
     tt.style.display='block';tt.style.left=(ev.clientX+14)+'px';tt.style.top=(ev.clientY-10)+'px';
   });
   svg.addEventListener('mouseleave',()=>{tt.style.display='none';cross.setAttribute('visibility','hidden')});
@@ -3589,9 +3595,10 @@ function renderExec(d){
   const blockedArr=(tr.hourly||[]).map(x=>x.blocked);
   const blocked24=blockedArr.length?blockedArr.reduce((a,b)=>a+b,0):null;
   const cyc=t.cycle||{};
-  const cost=(cyc.cycle_cost!=null)?cyc.cycle_cost:(t.estimated_cost_usd!=null?t.estimated_cost_usd:null);
+  const cost=(cyc.estimated_cost_usd!=null)?cyc.estimated_cost_usd:(t.estimated_cost_usd!=null?t.estimated_cost_usd:null);
   const sub=cyc.subscription_amount_usd||200;
   const roi=(cost!=null&&sub)?Math.round(100*cost/sub):null;
+  const tok48=(tr.tokens_48h||[]).map(x=>x.total);
   const evalPct=(ev.pass_rate_24h!=null)?ev.pass_rate_24h+'%':'—';
   const tiles=[
     {lbl:'Agent runs · 24h',val:runsToday==null?'—':runsToday,
@@ -3612,7 +3619,7 @@ function renderExec(d){
      spark:'',click:'showEvalQuality()'},
     {lbl:'Cycle API cost avoided',val:cost==null?'—':'$'+Number(cost).toFixed(0),
      sub:roi==null?'Claude MAX subscription':`breakeven ${roi}% · MAX $${sub}/cycle`,
-     spark:'',click:"location.hash='ops'"}];
+     spark:svgSparkline(tok48),click:'showApiCost()'}];
   document.getElementById('x-kpis').innerHTML=tiles.map(x=>
     `<div class="x-tile" onclick="${esc(x.click)}"><div class="lbl">${x.lbl}</div><div class="val">${x.val}</div><div class="sub">${x.sub}</div>${x.spark?`<div class="spark">${x.spark}</div>`:''}</div>`).join('');
   // Trend chart — re-rendered only when trends refresh (cheap guard: cache key)
@@ -4322,6 +4329,38 @@ fh+='</div>';
 }
 document.getElementById('rs-list').innerHTML=fh;
 }).catch(()=>{document.getElementById('rs-list').innerHTML='<p style="color:#604040">Failed to load run data.</p>'})}
+// API Cost modal — the tokenomics story: the agent runs on a flat Claude MAX
+// subscription; 'avoided' = what the same tokens would have cost at
+// per-model API rates. Includes the 48h hourly token-usage chart.
+function showApiCost(){
+const t=(lastData.stats&&lastData.stats.tokens)||{};
+const cyc=t.cycle||{},life=t.lifetime||{};
+const tok=(lastTrends&&lastTrends.tokens_48h)||[];
+let h='<p style="color:#8598b4;margin-bottom:12px">The agent runs on a flat Claude MAX subscription. <b style="color:#c4d4e8">API cost avoided</b> is what the same token volume would have cost at per-model API rates (input, output, cache read/create priced separately, mirroring bot-cost.py). Breakeven &gt;100% means the subscription has already paid for itself this cycle.</p>';
+const cycCost=cyc.estimated_cost_usd||0,cycSub=cyc.subscription_amount_usd||200;
+const cycPct=cycSub?Math.round(100*cycCost/cycSub):0;
+const csev=cycPct>=100?'SAFE':'MEDIUM';
+h+=`<div class="modal-finding ${csev}"><span class="sev ${csev}">${cycPct>=100?'&#9679;':'&#9650;'} $${cycCost.toFixed(2)}</span> avoided this cycle (since ${esc(cyc.cycle_start_iso||'?')}) &middot; breakeven ${cycPct}% of the $${cycSub} subscription${cycPct>=100?` — ROI +$${(cycCost-cycSub).toFixed(2)}`:' — building'}</div>`;
+const lifeCost=life.estimated_cost_usd||0,lifeSub=life.subscription_total_usd||cycSub;
+const cycles=life.subscription_cycles_paid||1;
+const lifePct=lifeSub?Math.round(100*lifeCost/lifeSub):0;
+const lsev=lifePct>=100?'SAFE':'MEDIUM';
+h+=`<div class="modal-finding ${lsev}"><span class="sev ${lsev}">${lifePct>=100?'&#9679;':'&#9650;'} $${lifeCost.toFixed(2)}</span> avoided lifetime (since ${esc(life.subscription_start_iso||'?')}, ${cycles} cycle${cycles===1?'':'s'} &middot; $${lifeSub.toFixed(0)} paid) &middot; breakeven ${lifePct}%${lifePct>=100?` — ROI +$${(lifeCost-lifeSub).toFixed(2)}`:''}</div>`;
+// Token totals (lifetime counters from the session JSONL tailer)
+h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin:12px 0">';
+const cells=[['Input',fmtCompact(t.input||0)],['Output',fmtCompact(t.output||0)],['Cache read',fmtCompact(t.cache_read||0)],['Cache create',fmtCompact(t.cache_create||0)],['API messages',fmtCompact(t.messages||0)]];
+for(const [k,v] of cells)h+=`<div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:8px 12px"><div style="font-size:10px;color:#8598b4;text-transform:uppercase;letter-spacing:.3px">${k}</div><div style="font-size:18px;font-weight:600;color:#eaf2fb">${v}</div></div>`;
+h+='</div>';
+// 48h hourly token usage
+const tot48=tok.reduce((a,b)=>a+b.total,0);
+h+=`<div style="font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:6px">TOKEN USAGE &middot; last 48 hours &middot; ${fmtCompact(tot48)} total</div>`;
+h+=`<div id="cost-chart">${svgAreaChart(tok,620,150,{id:'x-cost-svg',val:b=>b.total})}</div>`;
+h+=`<div class="detail" style="margin-top:12px;color:#8598b4">Counters from Claude session transcripts (usage per turn) &middot; per-model rates &middot; full economics in the ops Token Usage panel</div>`;
+document.getElementById('modal-title').textContent='API Cost — Subscription Economics';
+document.getElementById('modal-body').innerHTML=h;
+document.getElementById('modal').classList.add('show');
+wireTrendHover(tok,{id:'x-cost-svg',tip:b=>`<b>${fmtCompact(b.total)}</b> tokens (in ${fmtCompact(b.inp)} · out ${fmtCompact(b.out)} · cache ${fmtCompact(b.cache)})`});
+}
 function showWhitepaper(){document.getElementById('wp-modal').classList.add('show')}
 function showConstitution(){
 const principles=[
@@ -8272,7 +8311,7 @@ a{{color:#0a6aba}}
                 payload = _trends_cache['data']
             else:
                 payload = {'hourly': [], 'blocked_prev_24h': 0, 'daily_runs': [],
-                           'posture': [], 'eval': {}, 'actions': {},
+                           'posture': [], 'eval': {}, 'actions': {}, 'tokens_48h': [],
                            'generated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
                 try:
                     conn = sqlite3.connect(EVENTS_DB, timeout=10)
@@ -8303,6 +8342,22 @@ a{{color:#0a6aba}}
                     payload['posture'] = [{'t': r[0], 'score': r[1]} for r in conn.execute(
                         "SELECT ts, score FROM posture_snapshots "
                         "WHERE ts>=datetime('now','-1 day') ORDER BY ts ASC LIMIT 96")]
+                    # hourly token usage, 48h (trace_tokens rows are ISO-T
+                    # timestamps — cutoff passed in the same format so the
+                    # lexical comparison is sound; idx_tt_ts range scan)
+                    cutoff48 = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(nowt - 48 * 3600))
+                    got_t = {r[0]: r[1:] for r in conn.execute(
+                        "SELECT strftime('%Y-%m-%dT%H:00:00Z',timestamp), "
+                        "SUM(input+output+cache_read+cache_create), SUM(input), "
+                        "SUM(output), SUM(cache_read+cache_create) "
+                        "FROM trace_tokens WHERE timestamp>=? GROUP BY 1", (cutoff48,))}
+                    payload['tokens_48h'] = []
+                    base48 = int(nowt // 3600) * 3600
+                    for i in range(47, -1, -1):
+                        key = time.strftime('%Y-%m-%dT%H:00:00Z', time.gmtime(base48 - i * 3600))
+                        tot, inp, out, cache = got_t.get(key, (0, 0, 0, 0))
+                        payload['tokens_48h'].append({'t': key, 'total': tot or 0, 'inp': inp or 0,
+                                                      'out': out or 0, 'cache': cache or 0})
                     # eval pass rates, two 24h windows (ts is ISO w/ 'T' — normalize)
                     def _pr(where):
                         tot, ok = conn.execute(
