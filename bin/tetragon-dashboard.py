@@ -3263,6 +3263,14 @@ body.view-ops #view-exec{display:none}
 .vtoggle{display:flex;border:1px solid var(--line-hi);border-radius:8px;overflow:hidden}
 .vtoggle button{background:transparent;border:none;color:var(--muted);padding:4px 12px;font-size:11px;font-family:inherit;cursor:pointer}
 .vtoggle button.active{background:var(--accent);color:var(--bg)}
+.hmenu{position:relative}
+.hmenu summary{list-style:none;cursor:pointer;border:1px solid var(--line-hi);border-radius:8px;padding:4px 12px;font-size:11px;color:var(--muted);white-space:nowrap;user-select:none}
+.hmenu summary::-webkit-details-marker{display:none}
+.hmenu summary:hover{color:var(--ink-soft);border-color:var(--accent)}
+.hmenu[open] summary{color:var(--ink-soft);border-color:var(--accent)}
+.hmenu-list{position:absolute;right:0;top:calc(100% + 6px);background:var(--bg-2);border:1px solid var(--line-hi);border-radius:10px;padding:6px;display:flex;flex-direction:column;gap:2px;z-index:600;min-width:230px;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.hmenu-list a{color:var(--ink-soft);font-size:12px;text-decoration:none;padding:6px 10px;border-radius:6px;white-space:nowrap}
+.hmenu-list a:hover{background:var(--bg-3);color:var(--accent-bright)}
 
 /* ── Executive view ──────────────────────────────────────────────────────
    Calm, sans-serif, generous spacing. One hero figure, control chips,
@@ -3308,22 +3316,22 @@ body.view-ops #view-exec{display:none}
 <img src="/logo.png" style="height:48px;margin-right:16px;border-radius:50%">
 <div style="flex:1"><h1>AI-Agent Defense-In-Depth Dashboard</h1>
 <div class="sub">Cisco Isovalent (Tetragon) &middot; Cisco DefenseClaw CodeGuard &middot; Cisco AI Defense &middot; MCP Token Isolation</div></div>
-<!-- Button stack: two rows of children inside the same header.
-     Top row = primary nav + LIVE indicator. Bottom row = the wider
-     Whitepaper link, right-aligned under the others so the title row
-     keeps its full flex budget. -->
-<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
-  <div style="display:flex;align-items:center;gap:8px">
-    <a href="#" onclick="showConstitution();return false" style="color:#a878e0;font-size:11px;text-decoration:none;border:1px solid #443060;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#c9b3f2';this.style.borderColor='#c9b3f2'" onmouseout="this.style.color='#a878e0';this.style.borderColor='#443060'">Constitution &harr; Rings</a>
-    <a href="/agent-walk" target="_blank" style="color:#27a86f;font-size:11px;text-decoration:none;border:1px solid #205040;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#7bd8b0';this.style.borderColor='#7bd8b0'" onmouseout="this.style.color='#27a86f';this.style.borderColor='#205040'">Agent Walk &#x2197;</a>
-    <a href="#" onclick="openOperatorTui();return false" style="color:#7a8cf0;font-size:11px;text-decoration:none;border:1px solid #303860;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#9db4f5';this.style.borderColor='#9db4f5'" onmouseout="this.style.color='#7a8cf0';this.style.borderColor='#303860'">Operator TUI &#x2197;</a>
-    <div class="vtoggle"><button id="vt-exec" onclick="location.hash='exec'">Exec</button><button id="vt-ops" onclick="location.hash='ops'">Ops</button></div>
-    <div class="live" id="agent-status">&#9679; LIVE</div>
-  </div>
-  <div style="display:flex;align-items:center;gap:8px">
-    <a href="/codegraph" target="_blank" style="color:#b3831c;font-size:11px;text-decoration:none;border:1px solid #604020;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#d9a02b';this.style.borderColor='#d9a02b'" onmouseout="this.style.color='#b3831c';this.style.borderColor='#604020'">Codegraph &#x2197;</a>
-    <a href="#" onclick="showWhitepaper();return false" style="color:#607080;font-size:11px;text-decoration:none;border:1px solid #304050;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#5de3ff';this.style.borderColor='#5de3ff'" onmouseout="this.style.color='#607080';this.style.borderColor='#304050'">Agent Defense-in-Depth Whitepaper</a>
-  </div>
+<!-- Compact header controls (C5): secondary links collapse into a native
+     <details> menu so the exec landing view leads with the data, not nav.
+     Toggle + LIVE stay visible; everything else is one click away. -->
+<div style="display:flex;align-items:center;gap:10px">
+  <details class="hmenu" id="hmenu">
+    <summary>Links &#9662;</summary>
+    <div class="hmenu-list">
+      <a href="/agent-walk" target="_blank">Agent Walk &#x2197;</a>
+      <a href="/codegraph" target="_blank">Codegraph &#x2197;</a>
+      <a href="#" onclick="openOperatorTui();document.getElementById('hmenu').removeAttribute('open');return false">Operator TUI &#x2197;</a>
+      <a href="#" onclick="showConstitution();document.getElementById('hmenu').removeAttribute('open');return false">Constitution &harr; Rings</a>
+      <a href="#" onclick="showWhitepaper();document.getElementById('hmenu').removeAttribute('open');return false">Defense-in-Depth Whitepaper</a>
+    </div>
+  </details>
+  <div class="vtoggle"><button id="vt-exec" onclick="location.hash='exec'">Exec</button><button id="vt-ops" onclick="location.hash='ops'">Ops</button></div>
+  <div class="live" id="agent-status">&#9679; LIVE</div>
 </div>
 </div>
 
@@ -3453,7 +3461,7 @@ body.view-ops #view-exec{display:none}
 // Hash-based: '#ops' / '#exec' deep-link; no hash = DEFAULT_VIEW. The server
 // root route is an exact '/' match, so query params are not an option; the
 // hash never reaches the server and toggles without a reload.
-const DEFAULT_VIEW='ops';   // flipped to 'exec' in C5 once the view has been eyeballed live
+const DEFAULT_VIEW='exec';  // C5 (2026-07-22, Jeremy-approved): exec is the landing view; #ops deep-links the dense layout
 let curView=DEFAULT_VIEW;
 function applyView(){
   const h=location.hash.replace('#','');
