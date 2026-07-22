@@ -3605,7 +3605,8 @@ function renderExec(d){
      spark:svgSparkline(blockedArr),click:"gotoOps({types:'BLOCK,PROXY'})"},
     {lbl:'Run success · 24h',val:evalPct,
      sub:deltaHtml(ev.pass_rate_24h,ev.pass_rate_prev_24h,true)+` · ${ev.runs_24h||0} runs`,
-     spark:'',click:'showRunSuccess()'},
+     spark:svgSparkline((ev.success_7d||[]).filter(x=>x.pass_rate!=null).map(x=>x.pass_rate)),
+     click:'showRunSuccess()'},
     {lbl:'Eval quality',val:(ev.score_mean!=null)?ev.score_mean+'%':'—',
      sub:(ev.score_mean!=null)?`scored across ${ev.score_flows} flow${ev.score_flows===1?'':'s'} · daily eval`:'no scored evals yet',
      spark:'',click:'showEvalQuality()'},
@@ -4254,7 +4255,7 @@ let h='<p style="color:#8598b4;margin-bottom:12px">Did each agent run complete? 
 const pr=ev.pass_rate_24h;
 const sev=pr==null?'SAFE':(pr>=95?'SAFE':(pr>=80?'MEDIUM':'HIGH'));
 const glyph=pr==null?'—':(pr>=95?'&#9679;':(pr>=80?'&#9650;':'&#10008;'));
-h+=`<div class="modal-finding ${sev}"><span class="sev ${sev}">${glyph} ${pr==null?'NO RUNS':pr+'%'}</span> run success &middot; last 24h (${ev.runs_24h||0} runs)${ev.pass_rate_prev_24h!=null?` &middot; prior 24h: ${ev.pass_rate_prev_24h}%`:''}</div>`;
+h+=`<div class="modal-finding ${sev}"><span class="sev ${sev}">${glyph} ${pr==null?'NO RUNS':pr+'%'}</span> run success &middot; <b>last 24h only</b> (${ev.runs_24h||0} runs)${ev.pass_rate_prev_24h!=null?` &middot; prior 24h: ${ev.pass_rate_prev_24h}%`:''}</div>`;
 h+=`<div id="rs-list" style="margin-top:12px"><p style="color:#8598b4">Loading runs...</p></div>`;
 // GitHub Actions CI — the other half of execution health: the agent ran
 // clean AND its work built green. Rendered from the cached ring_stats
@@ -4302,7 +4303,7 @@ fh+=`<div style="display:flex;align-items:center;gap:8px;margin-top:6px">`+
 `<span style="font-size:11px;color:#c4d4e8;width:40px;text-align:right">${prf}%</span>`+
 `<span style="font-size:10px;color:#8598b4">${f.ok}/${f.runs} ok</span></div>`;
 }
-fh+='<div style="font-size:10px;color:#5f708a;margin-top:6px">per-flow rates over the recent run history</div></div>';
+fh+='<div style="font-size:10px;color:#5f708a;margin-top:6px">per-flow rates &middot; recent run history (last ~200 runs, spans multiple days) — intentionally wider than the 24h headline above</div></div>';
 }
 const runs=(d.recent||[]).filter(e=>e.kind==='run').slice(0,12);
 if(!runs.length&&!withRuns.length){fh='<p style="color:#8598b4">No agent runs recorded yet.</p>'}
@@ -8333,8 +8334,25 @@ a{{color:#0a6aba}}
                             score_flows = len(fmeans)
                     except Exception:
                         pass
+                    # 7-day daily success-rate series for the Run success
+                    # tile's trendline. Days with no runs carry pass_rate null
+                    # (rendered as a gap, never faked). The modal's per-flow
+                    # bars intentionally use the wider recent-200 history from
+                    # /api/eval; this series supplies the time dimension.
+                    got_s = {r[0]: (r[1], r[2] or 0) for r in conn.execute(
+                        "SELECT date(replace(ts,'T',' ')), COUNT(*), "
+                        "SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) "
+                        "FROM eval_results WHERE kind='run' "
+                        "AND replace(ts,'T',' ')>=datetime('now','-7 days') GROUP BY 1")}
+                    success_7d = []
+                    for i in range(6, -1, -1):
+                        dkey = time.strftime('%Y-%m-%d', time.gmtime(nowt - i * 86400))
+                        n, ok = got_s.get(dkey, (0, 0))
+                        success_7d.append({'d': dkey, 'runs': n,
+                                           'pass_rate': round(100.0 * ok / n) if n else None})
                     payload['eval'] = {'pass_rate_24h': cur, 'runs_24h': cur_n or 0,
                                        'pass_rate_prev_24h': prev,
+                                       'success_7d': success_7d,
                                        'score_mean': score_mean, 'score_flows': score_flows}
                     conn.close()
                 except Exception as ex:
