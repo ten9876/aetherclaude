@@ -1106,6 +1106,7 @@ def sh(cmd):
 _posture_cache = {'ts': 0.0, 'data': {}}
 _posture_last_snapshot = [0.0]
 _trends_cache = {'ts': 0.0, 'data': None}  # /api/trends 60s server cache
+_ci_last_fetch = [0.0]  # GitHub Actions runs fetch throttle (60s)
 
 _POSTURE_WEIGHTS = {'r1': 1, 'r2': 1, 'r3': 1, 'r4': 1, 'r5': 1,
                     'r6': 3, 'r7': 2, 'r8': 3, 'r9': 2}
@@ -1648,6 +1649,27 @@ def scan_rings():
                             'merged': [{'number': p['number'], 'title': p['title']} for p in ac_merged][:20],
                             'rejected': [{'number': p['number'], 'title': p['title']} for p in ac_rejected][:20],
                         }
+                        # GitHub Actions CI runs (Run Success modal). Throttled
+                        # to every ~60s — the r9 PR fetch above already rides
+                        # each 15s cycle; CI results don't change faster than
+                        # this. Compact fields only; rides /api/events via
+                        # ring_stats like r9_pr_details.
+                        if time.time() - _ci_last_fetch[0] >= 60:
+                            try:
+                                req_ci = urllib.request.Request(
+                                    'https://api.github.com/repos/aethersdr/AetherSDR/actions/runs?per_page=40', headers=hdrs)
+                                wf = json.loads(opener.open(req_ci, timeout=10).read().decode()).get('workflow_runs', [])
+                                ring_stats['ci_runs'] = [{
+                                    'name': w.get('name', ''),
+                                    'title': (w.get('display_title') or '')[:80],
+                                    'branch': w.get('head_branch', ''),
+                                    'status': w.get('status', ''),
+                                    'conclusion': w.get('conclusion'),
+                                    'created_at': w.get('created_at', ''),
+                                    'url': w.get('html_url', ''),
+                                } for w in wf[:30]]
+                                _ci_last_fetch[0] = time.time()
+                            except: pass
                 except: pass
 
                 # Read issue pipeline state from DB (no GitHub API needed)
@@ -4234,6 +4256,34 @@ const sev=pr==null?'SAFE':(pr>=95?'SAFE':(pr>=80?'MEDIUM':'HIGH'));
 const glyph=pr==null?'—':(pr>=95?'&#9679;':(pr>=80?'&#9650;':'&#10008;'));
 h+=`<div class="modal-finding ${sev}"><span class="sev ${sev}">${glyph} ${pr==null?'NO RUNS':pr+'%'}</span> run success &middot; last 24h (${ev.runs_24h||0} runs)${ev.pass_rate_prev_24h!=null?` &middot; prior 24h: ${ev.pass_rate_prev_24h}%`:''}</div>`;
 h+=`<div id="rs-list" style="margin-top:12px"><p style="color:#8598b4">Loading runs...</p></div>`;
+// GitHub Actions CI — the other half of execution health: the agent ran
+// clean AND its work built green. Rendered from the cached ring_stats
+// (ci_runs, refreshed ~60s server-side); no extra fetch.
+const ci=(lastData.rings&&lastData.rings.ci_runs)||[];
+h+='<div style="border-top:1px solid var(--line);margin-top:12px;padding-top:10px">';
+h+='<div style="font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:6px">GITHUB CI &middot; AetherSDR workflow runs</div>';
+if(!ci.length){h+='<p style="color:#8598b4;font-size:12px">No CI data yet (fetch pending or API unavailable).</p>'}
+else{
+const day=Date.now()-86400000;
+const recent24=ci.filter(w=>new Date(w.created_at).getTime()>=day);
+const done24=recent24.filter(w=>w.conclusion);
+const ok24=done24.filter(w=>w.conclusion==='success').length;
+const rate=done24.length?Math.round(100*ok24/done24.length):null;
+const csev=rate==null?'SAFE':(rate>=90?'SAFE':(rate>=70?'MEDIUM':'HIGH'));
+const cglyph=rate==null?'—':(rate>=90?'&#9679;':(rate>=70?'&#9650;':'&#10008;'));
+h+=`<div class="modal-finding ${csev}"><span class="sev ${csev}">${cglyph} ${rate==null?'NO COMPLETED RUNS':rate+'%'}</span> CI success &middot; last 24h (${ok24}/${done24.length} passed${recent24.length>done24.length?`, ${recent24.length-done24.length} in progress`:''})</div>`;
+const CICON={success:['&#9679;','var(--good)','PASS'],failure:['&#10008;','var(--crit)','FAIL'],cancelled:['&#8856;','var(--muted-dim)','CANCELLED'],skipped:['&#8856;','var(--muted-dim)','SKIPPED'],timed_out:['&#10008;','var(--crit)','TIMEOUT'],action_required:['&#9650;','var(--warn)','ACTION REQ']};
+for(const w of ci.slice(0,10)){
+const ic=w.conclusion?(CICON[w.conclusion]||['&#9650;','var(--warn)',esc(w.conclusion.toUpperCase())]):['&#9711;','var(--accent)','RUNNING'];
+h+=`<div style="display:flex;align-items:center;gap:8px;padding:4px 2px;border-bottom:1px solid var(--line);font-size:11px">`+
+`<span style="color:${ic[1]};width:86px;flex:0 0 auto;font-weight:600">${ic[0]} ${ic[2]}</span>`+
+`<span style="color:#c4d4e8;width:150px;flex:0 0 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(w.name)}</span>`+
+`<span style="flex:1;color:#8598b4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(w.title||w.branch)}</span>`+
+`<span style="color:#5f708a;font-size:10px;flex:0 0 auto">${fmtTime(w.created_at)}</span>`+
+`<a href="${w.url}" target="_blank" style="color:#5de3ff;text-decoration:none;font-size:10px;flex:0 0 auto">view &#x2197;</a></div>`;
+}
+}
+h+='</div>';
 h+=`<div class="detail" style="margin-top:12px;color:#8598b4">Recorded by the run_claude hook in run-agent.sh &middot; every run is also a Galileo trace (log stream <span style="color:#c4d4e8">agent-runs</span>) &middot; <a href="https://app.galileo.ai/" target="_blank" style="color:#5de3ff;text-decoration:none">Galileo console &#x2197;</a></div>`;
 document.getElementById('modal-title').textContent='Run Success — Agent Execution Health';
 document.getElementById('modal-body').innerHTML=h;
