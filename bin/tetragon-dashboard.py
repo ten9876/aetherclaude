@@ -424,6 +424,14 @@ def db_pruner():
     import os
     while True:
         time.sleep(DB_PRUNE_INTERVAL_SECS)
+        # Posture snapshots: keep 30 days regardless of DB size (tiny table,
+        # cheap indexed DELETE each interval).
+        try:
+            conn = sqlite3.connect(EVENTS_DB)
+            conn.execute("DELETE FROM posture_snapshots WHERE ts < datetime('now','-30 days')")
+            conn.commit(); conn.close()
+        except Exception:
+            pass
         try:
             sz = os.path.getsize(EVENTS_DB)
             if sz < DB_MAX_BYTES:
@@ -638,6 +646,18 @@ def init_db():
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_eval_trace_id ON eval_results(trace_id)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_eval_ts ON eval_results(ts)')
+    # Defense Posture history — one snapshot every ~300s from scan_rings
+    # (288 rows/day, pruned >30d by db_pruner). Powers the exec view's
+    # delta-vs-24h and the /api/trends posture series. ts uses the same
+    # UTC 'YYYY-MM-DD HH:MM:SS' format as events.created_at so datetime()
+    # comparisons work without normalization.
+    conn.execute('''CREATE TABLE IF NOT EXISTS posture_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT,
+        score INTEGER,
+        components_json TEXT
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_posture_ts ON posture_snapshots(ts)')
     conn.commit()
     conn.close()
 
@@ -1076,6 +1096,147 @@ def db_count():
 def sh(cmd):
     try: return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL, timeout=5).decode().strip()
     except: return ''
+
+# ── Defense Posture (exec view hero metric) ──────────────────────────────
+# Composite 0–100 score over the nine defense controls. Unlike the ops-view
+# tile colors (client-side rules on cumulative counters — sticky forever),
+# these statuses are re-derived every cycle from 24h windows, so the score
+# heals when the underlying condition clears. Weights favor the gates that
+# actually block bad output (scanners, validation) over passive telemetry.
+_posture_cache = {'ts': 0.0, 'data': {}}
+_posture_last_snapshot = [0.0]
+_trends_cache = {'ts': 0.0, 'data': None}  # /api/trends 60s server cache
+
+_POSTURE_WEIGHTS = {'r1': 1, 'r2': 1, 'r3': 1, 'r4': 1, 'r5': 1,
+                    'r6': 3, 'r7': 2, 'r8': 3, 'r9': 2}
+_STATUS_SCORE = {'green': 100, 'yellow': 60, 'red': 0}
+
+def _posture_window_counts():
+    """24h-window SQL counts feeding compute_posture. 60s TTL cache so the
+    15s scan_rings cadence doesn't hammer the DB; all queries are indexed
+    range scans except tiny-table scans (validation_runs)."""
+    now = time.time()
+    if _posture_cache['ts'] > now - 60 and _posture_cache['data']:
+        return _posture_cache['data']
+    data = {'r2_denied_24h': 0, 'r7_blocked_24h': 0,
+            'guard_blocks_24h': 0, 'val_failed_24h': 0}
+    try:
+        conn = sqlite3.connect(EVENTS_DB, timeout=10)
+        data['r2_denied_24h'] = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE source='tinyproxy' "
+            "AND policy='domain-filter' AND created_at>=datetime('now','-1 day')"
+        ).fetchone()[0]
+        data['r7_blocked_24h'] = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE source='mcp' AND type='BLOCK' "
+            "AND created_at>=datetime('now','-1 day')").fetchone()[0]
+        data['guard_blocks_24h'] = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE type='GUARD' "
+            "AND created_at>=datetime('now','-1 day')").fetchone()[0]
+        # run_time may be ISO ('T' separator) — normalize before comparing
+        # against datetime()'s space-separated format. Tiny table, no index
+        # concern.
+        data['val_failed_24h'] = conn.execute(
+            "SELECT COUNT(*) FROM validation_runs WHERE result='FAILED' "
+            "AND replace(run_time,'T',' ')>=datetime('now','-1 day')").fetchone()[0]
+        conn.close()
+    except Exception:
+        pass
+    _posture_cache['ts'] = now
+    _posture_cache['data'] = data
+    return data
+
+def compute_posture():
+    """Score the nine controls (green=100 / yellow=60 / red=0, each with a
+    human-readable reason), weighted-mean them into one 0–100 posture score,
+    snapshot every ~300s, and return the payload the exec view renders.
+    Call under `lock` (reads ring_stats)."""
+    w = _posture_window_counts()
+    rs = ring_stats
+    rings = {}
+    def st(key, status, reason):
+        rings[key] = {'status': status, 'reason': reason}
+
+    # r1 firewall: the control being ALIVE is the signal — blocked packets
+    # are it working, never a penalty.
+    try:
+        with open('/Users/aetherclaude/logs/pf-blocked-count') as f:
+            f.read()
+        st('r1', 'green', 'pf active, counter readable')
+    except Exception:
+        st('r1', 'yellow', 'pf blocked-count unreadable')
+
+    d = w['r2_denied_24h']
+    if d == 0: st('r2', 'green', 'no proxy denials in 24h')
+    elif d <= 10: st('r2', 'yellow', f'{d} proxy denial(s) in 24h')
+    else: st('r2', 'red', f'{d} proxy denials in 24h (agent probing?)')
+
+    if rs.get('agent_running') and not rs.get('r3_es_events'):
+        st('r3', 'yellow', 'agent running but no OS telemetry')
+    else:
+        st('r3', 'green', 'OS telemetry flowing' if rs.get('r3_es_events') else 'agent idle')
+
+    if rs.get('r4_protect_system') and rs.get('r4_no_new_privs') and rs.get('r4_private_tmp'):
+        st('r4', 'green', 'sandbox flags enforced')
+    else:
+        st('r4', 'red', 'sandbox flag(s) missing')
+
+    if rs.get('r5_denied_tools', 0) > 0:
+        st('r5', 'green', f"{rs.get('r5_denied_tools')} tools deny-listed")
+    else:
+        st('r5', 'yellow', 'tool deny list not loaded')
+
+    threats = rs.get('r6_mcp_threats', 0)
+    skill_bad = 'threat' in str(rs.get('r6_skill_status', '')).lower() or \
+                'unsafe' in str(rs.get('r6_skill_status', '')).lower()
+    if threats > 0 or skill_bad:
+        st('r6', 'red', f'{threats} MCP threat(s)' if threats else 'skill scanner findings')
+    elif w['guard_blocks_24h'] > 0 or rs.get('r6_findings', 0) > 0:
+        st('r6', 'yellow', f"{w['guard_blocks_24h']} guard block(s) 24h, "
+                           f"{rs.get('r6_findings', 0)} finding(s)")
+    else:
+        st('r6', 'green', 'scanners clean')
+
+    b = w['r7_blocked_24h']
+    st('r7', 'green' if b == 0 else 'yellow',
+       'no MCP blocks in 24h' if b == 0 else f'{b} MCP op(s) blocked in 24h')
+
+    vf = w['val_failed_24h']
+    if vf == 0: st('r8', 'green', 'no validation failures in 24h')
+    elif vf <= 2: st('r8', 'yellow', f'{vf} validation failure(s) in 24h')
+    else: st('r8', 'red', f'{vf} validation failures in 24h')
+
+    # r9 human review: informational in v1 (cumulative GH counters can't
+    # give a clean 24h signal); components_json preserves data to refine.
+    st('r9', 'green', 'human review active')
+
+    total_w = sum(_POSTURE_WEIGHTS.values())
+    score = round(sum(_STATUS_SCORE[rings[k]['status']] * _POSTURE_WEIGHTS[k]
+                      for k in _POSTURE_WEIGHTS) / total_w)
+
+    # Snapshot every ~300s; delta vs the newest snapshot ≥24h old ("—" when
+    # no history yet — never fake it).
+    now = time.time()
+    delta = None
+    try:
+        conn = sqlite3.connect(EVENTS_DB, timeout=10)
+        if now - _posture_last_snapshot[0] >= 300:
+            conn.execute('INSERT INTO posture_snapshots (ts, score, components_json) VALUES (?,?,?)',
+                         (time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime()), score,
+                          json.dumps(rings)))
+            conn.commit()
+            _posture_last_snapshot[0] = now
+        row = conn.execute(
+            "SELECT score FROM posture_snapshots WHERE ts<=datetime('now','-1 day') "
+            "ORDER BY ts DESC LIMIT 1").fetchone()
+        if row is not None:
+            delta = score - row[0]
+        conn.close()
+    except Exception:
+        pass
+
+    return {'score': score, 'delta_24h': delta,
+            'computed_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            'rings': rings}
 
 def scan_rings():
     """Periodically refresh ring status from system state."""
@@ -1588,6 +1749,14 @@ def scan_rings():
                     ring_stats['issue_titles'] = issue_titles
                 except:
                     pass
+
+                # Defense Posture — computed last so it sees this cycle's
+                # fresh ring_stats; rides the /api/events payload via
+                # 'rings': dict(ring_stats).
+                try:
+                    ring_stats['posture'] = compute_posture()
+                except Exception as _pe:
+                    _log_exc('compute_posture', _pe)
 
         except Exception as _e: _log_exc('scan_rings', _e)
         db_purge_if_needed(250)
@@ -7664,6 +7833,83 @@ a{{color:#0a6aba}}
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self._send_json({'events': rows, 'total': db_count()})
+        elif self.path.startswith('/api/trends'):
+            # Exec-view aggregates: hourly activity (24h), daily agent runs
+            # (7d), posture history, eval + issue-action two-window rates.
+            # All buckets zero-filled server-side; 60s module cache keeps the
+            # GROUP BYs off the hot path. Poll cadence client-side is
+            # REFRESH-interval * 20 (~60s).
+            global _trends_cache
+            nowt = time.time()
+            if _trends_cache['ts'] > nowt - 60 and _trends_cache['data']:
+                payload = _trends_cache['data']
+            else:
+                payload = {'hourly': [], 'blocked_prev_24h': 0, 'daily_runs': [],
+                           'posture': [], 'eval': {}, 'actions': {},
+                           'generated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+                try:
+                    conn = sqlite3.connect(EVENTS_DB, timeout=10)
+                    # hourly events + blocked, zero-filled over the last 24 h
+                    got = {r[0]: (r[1], r[2]) for r in conn.execute(
+                        "SELECT strftime('%Y-%m-%dT%H:00:00Z',created_at), COUNT(*), "
+                        "SUM(CASE WHEN type='BLOCK' OR policy='domain-filter' THEN 1 ELSE 0 END) "
+                        "FROM events WHERE created_at>=datetime('now','-24 hours') GROUP BY 1")}
+                    base = int(nowt // 3600) * 3600
+                    for i in range(23, -1, -1):
+                        key = time.strftime('%Y-%m-%dT%H:00:00Z', time.gmtime(base - i * 3600))
+                        ev, bl = got.get(key, (0, 0))
+                        payload['hourly'].append({'t': key, 'events': ev, 'blocked': bl or 0})
+                    payload['blocked_prev_24h'] = conn.execute(
+                        "SELECT COUNT(*) FROM events WHERE (type='BLOCK' OR policy='domain-filter') "
+                        "AND created_at>=datetime('now','-48 hours') "
+                        "AND created_at<datetime('now','-24 hours')").fetchone()[0]
+                    # daily real agent runs (same definition as the trace picker:
+                    # distinct trace_ids with claude-code events)
+                    got_d = {r[0]: r[1] for r in conn.execute(
+                        "SELECT date(created_at), COUNT(DISTINCT trace_id) FROM events "
+                        "WHERE source='claude-code' AND trace_id IS NOT NULL "
+                        "AND created_at>=datetime('now','-7 days') GROUP BY 1")}
+                    for i in range(6, -1, -1):
+                        d = time.strftime('%Y-%m-%d', time.gmtime(nowt - i * 86400))
+                        payload['daily_runs'].append({'d': d, 'runs': got_d.get(d, 0)})
+                    # posture history (≤96 points ≈ 24h at 300s cadence)
+                    payload['posture'] = [{'t': r[0], 'score': r[1]} for r in conn.execute(
+                        "SELECT ts, score FROM posture_snapshots "
+                        "WHERE ts>=datetime('now','-1 day') ORDER BY ts ASC LIMIT 96")]
+                    # eval pass rates, two 24h windows (ts is ISO w/ 'T' — normalize)
+                    def _pr(where):
+                        tot, ok = conn.execute(
+                            "SELECT COUNT(*), SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) "
+                            f"FROM eval_results WHERE kind='run' AND {where}").fetchone()
+                        return (round(100.0 * (ok or 0) / tot) if tot else None), tot
+                    cur, cur_n = _pr("replace(ts,'T',' ')>=datetime('now','-1 day')")
+                    prev, _ = _pr("replace(ts,'T',' ')>=datetime('now','-2 days') "
+                                  "AND replace(ts,'T',' ')<datetime('now','-1 day')")
+                    payload['eval'] = {'pass_rate_24h': cur, 'runs_24h': cur_n or 0,
+                                       'pass_rate_prev_24h': prev}
+                    conn.close()
+                except Exception as ex:
+                    payload['error'] = str(ex)
+                # issues/PRs handled — separate DB owned by the orchestrator
+                try:
+                    aconn = sqlite3.connect(ISSUE_ACTIONS_DB, timeout=5)
+                    h24 = aconn.execute(
+                        "SELECT COUNT(DISTINCT issue_number) FROM issue_actions "
+                        "WHERE replace(created_at,'T',' ')>=datetime('now','-1 day')").fetchone()[0]
+                    hprev = aconn.execute(
+                        "SELECT COUNT(DISTINCT issue_number) FROM issue_actions "
+                        "WHERE replace(created_at,'T',' ')>=datetime('now','-2 days') "
+                        "AND replace(created_at,'T',' ')<datetime('now','-1 day')").fetchone()[0]
+                    aconn.close()
+                    payload['actions'] = {'handled_24h': h24, 'handled_prev_24h': hprev}
+                except Exception:
+                    payload['actions'] = {'handled_24h': None, 'handled_prev_24h': None}
+                _trends_cache = {'ts': nowt, 'data': payload}
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self._send_json(payload)
         elif self.path.startswith('/api/events'):
             from urllib.parse import urlparse, parse_qs
             params = parse_qs(urlparse(self.path).query)
