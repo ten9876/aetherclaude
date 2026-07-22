@@ -3539,14 +3539,22 @@ function svgAreaChart(buckets,w,h,opts){
   const line=xs.map((x,i)=>x.toFixed(1)+','+ys[i].toFixed(1)).join(' ');
   const area=`${padL},${(padT+ih).toFixed(1)} ${line} ${(padL+iw).toFixed(1)},${(padT+ih).toFixed(1)}`;
   let grid='';for(let g=1;g<=3;g++){const gy=(padT+ih-g*ih/3).toFixed(1);grid+=`<line x1="${padL}" y1="${gy}" x2="${(padL+iw).toFixed(1)}" y2="${gy}" stroke="rgba(120,165,210,.12)" stroke-width="1"/>`}
-  let labels='';for(let i=0;i<buckets.length;i+=6){const dt=new Date(buckets[i].t);if(!isNaN(dt))labels+=`<text x="${xs[i].toFixed(1)}" y="${h-6}" font-size="10" fill="#8598b4" text-anchor="middle" font-family="inherit">${dt.toLocaleTimeString([],{hour:'2-digit'})}</text>`}
+  const stride=Math.max(1,Math.round(buckets.length/8));
+  let labels='';for(let i=0;i<buckets.length;i+=stride){const dt=new Date(buckets[i].t);if(!isNaN(dt))labels+=`<text x="${xs[i].toFixed(1)}" y="${h-6}" font-size="10" fill="#8598b4" text-anchor="middle" font-family="inherit">${dt.toLocaleTimeString([],{hour:'2-digit'})}</text>`}
   let hits='';for(let i=0;i<buckets.length;i++){
     const x0=i===0?padL:(xs[i-1]+xs[i])/2, x1=i===buckets.length-1?padL+iw:(xs[i]+xs[i+1])/2;
     hits+=`<rect x="${x0.toFixed(1)}" y="0" width="${(x1-x0).toFixed(1)}" height="${h}" fill="transparent" data-i="${i}" data-x="${xs[i].toFixed(1)}"/>`}
+  // Same traveling-dot treatment as the tile sparklines (opts.dur), scaled up.
+  let adot='';
+  if(opts.dur&&!REDUCED_MOTION){
+    const mpath='M '+xs.map((x,i)=>x.toFixed(1)+' '+ys[i].toFixed(1)).join(' L ');
+    adot=`<circle r="3.5" fill="#5de3ff"><animateMotion dur="${opts.dur}s" repeatCount="indefinite" calcMode="linear" keyPoints="0;1;1" keyTimes="0;0.45;1" path="${mpath}"/></circle>`;
+  }
   return `<svg id="${cid}" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`+
     `<defs><linearGradient id="${cid}-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f96ea" stop-opacity=".18"/><stop offset="1" stop-color="#2f96ea" stop-opacity="0"/></linearGradient></defs>`+
     grid+`<polygon points="${area}" fill="url(#${cid}-grad)"/>`+
     `<polyline points="${line}" fill="none" stroke="#2f96ea" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`+
+    adot+
     `<line id="${cid}-cross" y1="${padT}" y2="${(padT+ih).toFixed(1)}" x1="0" x2="0" stroke="rgba(120,190,230,.28)" stroke-width="1" visibility="hidden"/>`+
     labels+hits+`</svg>`;
 }
@@ -3613,7 +3621,7 @@ function renderExec(d){
   const runsArr=(tr.daily_runs||[]).map(x=>x.runs);
   const runsToday=runsArr.length?runsArr[runsArr.length-1]:null;
   const runsYest=runsArr.length>1?runsArr[runsArr.length-2]:null;
-  const blockedArr=(tr.hourly||[]).map(x=>x.blocked);
+  const blockedArr=(tr.activity||[]).map(x=>x.blocked);
   const blocked24=blockedArr.length?blockedArr.reduce((a,b)=>a+b,0):null;
   const cyc=t.cycle||{};
   const cost=(cyc.estimated_cost_usd!=null)?cyc.estimated_cost_usd:(t.estimated_cost_usd!=null?t.estimated_cost_usd:null);
@@ -3653,12 +3661,12 @@ function renderExec(d){
   // Trend chart — re-rendered only when trends refresh (cheap guard: cache key)
   const tw=document.getElementById('x-trend');
   const key=tr.generated_at||'';
-  if(tw.dataset.key!==key&&tr.hourly){
+  if(tw.dataset.key!==key&&tr.activity){
     tw.dataset.key=key;
     const w=Math.max(tw.clientWidth||0,320);
-    tw.innerHTML=svgAreaChart(tr.hourly,w);
-    wireTrendHover(tr.hourly);
-    const tot=tr.hourly.reduce((a,b)=>a+b.events,0);
+    tw.innerHTML=svgAreaChart(tr.activity,w,160,{dur:10.7});
+    wireTrendHover(tr.activity);
+    const tot=tr.activity.reduce((a,b)=>a+b.events,0);
     document.getElementById('x-trend-total').textContent=fmtCompact(tot)+' events';
   }
   // Alerts — section hidden entirely when quiet
@@ -8338,21 +8346,25 @@ a{{color:#0a6aba}}
             if _trends_cache['ts'] > nowt - 60 and _trends_cache['data']:
                 payload = _trends_cache['data']
             else:
-                payload = {'hourly': [], 'blocked_prev_24h': 0, 'daily_runs': [],
+                payload = {'activity': [], 'blocked_prev_24h': 0, 'daily_runs': [],
                            'posture': [], 'eval': {}, 'actions': {}, 'tokens_48h': [],
                            'generated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
                 try:
                     conn = sqlite3.connect(EVENTS_DB, timeout=10)
-                    # hourly events + blocked, zero-filled over the last 24 h
+                    # events + blocked over the last 24h in 15-minute buckets
+                    # (96 points — high-res for the exec activity chart; the
+                    # blocked tile sparkline consumes the same series)
                     got = {r[0]: (r[1], r[2]) for r in conn.execute(
-                        "SELECT strftime('%Y-%m-%dT%H:00:00Z',created_at), COUNT(*), "
+                        "SELECT strftime('%Y-%m-%dT%H:',created_at) || "
+                        "printf('%02d',(CAST(strftime('%M',created_at) AS INTEGER)/15)*15) || ':00Z', "
+                        "COUNT(*), "
                         "SUM(CASE WHEN type='BLOCK' OR policy='domain-filter' THEN 1 ELSE 0 END) "
                         "FROM events WHERE created_at>=datetime('now','-24 hours') GROUP BY 1")}
-                    base = int(nowt // 3600) * 3600
-                    for i in range(23, -1, -1):
-                        key = time.strftime('%Y-%m-%dT%H:00:00Z', time.gmtime(base - i * 3600))
+                    base = int(nowt // 900) * 900
+                    for i in range(95, -1, -1):
+                        key = time.strftime('%Y-%m-%dT%H:%M:00Z', time.gmtime(base - i * 900))
                         ev, bl = got.get(key, (0, 0))
-                        payload['hourly'].append({'t': key, 'events': ev, 'blocked': bl or 0})
+                        payload['activity'].append({'t': key, 'events': ev, 'blocked': bl or 0})
                     payload['blocked_prev_24h'] = conn.execute(
                         "SELECT COUNT(*) FROM events WHERE (type='BLOCK' OR policy='domain-filter') "
                         "AND created_at>=datetime('now','-48 hours') "
