@@ -77,15 +77,25 @@ def run_agent(flow, case):
     if os.path.exists(tmpl_path):
         with open(tmpl_path) as f:
             intent = f.read()
+    # Strip YAML frontmatter (parity with run-agent.sh load_skill) — it's
+    # loader metadata, not prompt content, and a prompt beginning with '---'
+    # gets eaten by claude's CLI arg parser as an option (the 2026-07-22
+    # silent-zero-scores bug).
+    if intent.startswith('---'):
+        parts = intent.split('---', 2)
+        if len(parts) >= 3:
+            intent = parts[2].lstrip('\n')
     prompt = (f"{intent}\n\n--- EVAL CASE ---\nAssess this item and state your "
               f"decision as you would (classification / recommendation / plan). "
               f"Do NOT take any action — this is an offline evaluation.\n"
               f"{json.dumps(case['input'], indent=2)}")
     try:
         # No bypassPermissions; action tools disallowed. Pure text assessment.
-        out = subprocess.run(['claude', '-p', prompt, '--model', 'opus',
+        # Prompt goes via stdin (claude -p reads it) so no prompt content can
+        # ever be parsed as a CLI flag.
+        out = subprocess.run(['claude', '-p', '--model', 'opus',
                               '--disallowedTools', _SCORER_DISALLOWED],
-                             capture_output=True, text=True, timeout=600)
+                             input=prompt, capture_output=True, text=True, timeout=600)
         if not out.stdout.strip():
             # Empty output scores as all-zeros downstream — surface WHY so a
             # broken runner can't masquerade as a bad agent (2026-07-22: the
