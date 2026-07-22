@@ -3159,7 +3159,7 @@ body{background:var(--bg);color:var(--ink-soft);font-family:var(--mono);font-siz
 .fbtn{background:var(--bg-3);border:1px solid var(--line-hi);color:var(--ink-soft);padding:3px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-family:inherit}
 .fbtn.active{background:var(--accent);color:var(--bg);border-color:var(--accent)}
 .fbtn:hover{border-color:var(--accent)}
-.fbtn.guard{border-color:#ff6688}.fbtn.mcp-f{border-color:#aa88ff}
+.fbtn.guard{border-color:#e85578}.fbtn.mcp-f{border-color:#a878e0}
 .finput{background:var(--bg-1);border:1px solid var(--line-hi);color:var(--ink-soft);padding:3px 8px;border-radius:6px;font-size:11px;font-family:inherit;width:130px}
 
 .main{display:grid;grid-template-columns:2fr 1fr;gap:10px;padding:0 24px 12px;height:calc(100vh - 310px)}
@@ -3169,39 +3169,39 @@ body{background:var(--bg);color:var(--ink-soft);font-family:var(--mono);font-siz
 
 .ev{padding:2px 8px;border-bottom:1px solid var(--line);display:flex;gap:6px;font-size:11px}
 .ev:hover{background:var(--bg-2)}
-.ev.agent{background:#0a1a0a;border-left:3px solid #00ff88}
-.ev.guard{background:#1a0a10;border-left:3px solid #ff6688}
-.ev.mcp{background:#0f0a1a;border-left:3px solid #aa88ff}
+.ev.agent{background:#0a1a0a;border-left:3px solid #27a86f}
+.ev.guard{background:#1a0a10;border-left:3px solid #e85578}
+.ev.mcp{background:#0f0a1a;border-left:3px solid #a878e0}
 .ev .tp{width:50px;font-weight:bold}
-.tp.EXEC{color:#00b4d8}.tp.KPROBE{color:#ffaa00}.tp.EXIT{color:#607080}.tp.GUARD{color:#ff6688}.tp.MCP{color:#aa88ff}.tp.BLOCK{color:#ff4444;font-weight:bold}.tp.PROXY{color:#44ddaa}
-.ev.nftables{background:#1a0808;border-left:3px solid #ff4444}
-.ev.tinyproxy{background:#081a10;border-left:3px solid #44ddaa}
-.stag.nftables{background:#301010;color:#ff4444}
-.stag.mcp-scan{background:#102030;color:#00ddff}
+.tp.EXEC{color:#5de3ff}.tp.KPROBE{color:#b3831c}.tp.EXIT{color:#607080}.tp.GUARD{color:#e85578}.tp.MCP{color:#a878e0}.tp.BLOCK{color:#e8506a;font-weight:bold}.tp.PROXY{color:#21a184}
+.ev.nftables{background:#1a0808;border-left:3px solid #e8506a}
+.ev.tinyproxy{background:#081a10;border-left:3px solid #21a184}
+.stag.nftables{background:#301010;color:#e8506a}
+.stag.mcp-scan{background:#102030;color:#45c8e8}
 .stag.skill-scan{background:#201030;color:#dd88ff}
-.ev.mcp-scan{background:#081018;border-left:3px solid #00ddff}
+.ev.mcp-scan{background:#081018;border-left:3px solid #45c8e8}
 .ev.skill-scan{background:#100818;border-left:3px solid #dd88ff}
-.tp.SCAN{color:#00ddff}
-.tp.TOOL{color:#ff88cc}
-.tp.SKILL{color:#ffdd44}
-.ev.skill-dispatch{background:#181808;border-left:3px solid #ffdd44}
-.ev.webhook{background:#081018;border-left:3px solid #44aaff}
-.ev.defenseclaw{background:#0c0c20;border-left:3px solid #6688ff}
-.stag.defenseclaw{background:#181830;color:#6688ff}
-.tp.DEFENSE{color:#6688ff}
-.stag.skill-dispatch{background:#202010;color:#ffdd44}
-.ev.claude-code{background:#180818;border-left:3px solid #ff88cc}
-.stag.claude-code{background:#201020;color:#ff88cc}
-.stag.tinyproxy{background:#103020;color:#44ddaa}
+.tp.SCAN{color:#45c8e8}
+.tp.TOOL{color:#e88fc0}
+.tp.SKILL{color:#e0b83c}
+.ev.skill-dispatch{background:#181808;border-left:3px solid #e0b83c}
+.ev.webhook{background:#081018;border-left:3px solid #2f96ea}
+.ev.defenseclaw{background:#0c0c20;border-left:3px solid #7a8cf0}
+.stag.defenseclaw{background:#181830;color:#7a8cf0}
+.tp.DEFENSE{color:#7a8cf0}
+.stag.skill-dispatch{background:#202010;color:#e0b83c}
+.ev.claude-code{background:#180818;border-left:3px solid #e88fc0}
+.stag.claude-code{background:#201020;color:#e88fc0}
+.stag.tinyproxy{background:#103020;color:#21a184}
 .ev .uid{width:40px;color:var(--muted)}
 .ev .bin{width:150px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ev .args{flex:1;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ev .pol{color:var(--warn);font-size:10px}
 .ev .tm{width:96px;color:var(--muted-dim);font-size:10px}
 .stag{font-size:8px;padding:1px 3px;border-radius:2px;margin-left:3px}
-.stag.tetragon{background:#203040;color:#00b4d8}
-.stag.codeguard{background:#301020;color:#ff6688}
-.stag.mcp{background:#1a1030;color:#aa88ff}
+.stag.tetragon{background:#203040;color:#5de3ff}
+.stag.codeguard{background:#301020;color:#e85578}
+.stag.mcp{background:#1a1030;color:#a878e0}
 
 .si{padding:5px 10px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;font-size:11px}
 .si .n{color:var(--ink-soft)}.si .c{color:var(--accent-bright);font-weight:bold}
@@ -3313,15 +3313,15 @@ body.view-ops #view-exec{display:none}
      keeps its full flex budget. -->
 <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
   <div style="display:flex;align-items:center;gap:8px">
-    <a href="#" onclick="showConstitution();return false" style="color:#bb88ff;font-size:11px;text-decoration:none;border:1px solid #443060;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#ccaaff';this.style.borderColor='#ccaaff'" onmouseout="this.style.color='#bb88ff';this.style.borderColor='#443060'">Constitution &harr; Rings</a>
-    <a href="/agent-walk" target="_blank" style="color:#00ff88;font-size:11px;text-decoration:none;border:1px solid #205040;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#88ffaa';this.style.borderColor='#88ffaa'" onmouseout="this.style.color='#00ff88';this.style.borderColor='#205040'">Agent Walk &#x2197;</a>
-    <a href="#" onclick="openOperatorTui();return false" style="color:#6688ff;font-size:11px;text-decoration:none;border:1px solid #303860;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#88aaff';this.style.borderColor='#88aaff'" onmouseout="this.style.color='#6688ff';this.style.borderColor='#303860'">Operator TUI &#x2197;</a>
+    <a href="#" onclick="showConstitution();return false" style="color:#a878e0;font-size:11px;text-decoration:none;border:1px solid #443060;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#c9b3f2';this.style.borderColor='#c9b3f2'" onmouseout="this.style.color='#a878e0';this.style.borderColor='#443060'">Constitution &harr; Rings</a>
+    <a href="/agent-walk" target="_blank" style="color:#27a86f;font-size:11px;text-decoration:none;border:1px solid #205040;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#7bd8b0';this.style.borderColor='#7bd8b0'" onmouseout="this.style.color='#27a86f';this.style.borderColor='#205040'">Agent Walk &#x2197;</a>
+    <a href="#" onclick="openOperatorTui();return false" style="color:#7a8cf0;font-size:11px;text-decoration:none;border:1px solid #303860;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#9db4f5';this.style.borderColor='#9db4f5'" onmouseout="this.style.color='#7a8cf0';this.style.borderColor='#303860'">Operator TUI &#x2197;</a>
     <div class="vtoggle"><button id="vt-exec" onclick="location.hash='exec'">Exec</button><button id="vt-ops" onclick="location.hash='ops'">Ops</button></div>
     <div class="live" id="agent-status">&#9679; LIVE</div>
   </div>
   <div style="display:flex;align-items:center;gap:8px">
-    <a href="/codegraph" target="_blank" style="color:#ffaa00;font-size:11px;text-decoration:none;border:1px solid #604020;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#ffcc44';this.style.borderColor='#ffcc44'" onmouseout="this.style.color='#ffaa00';this.style.borderColor='#604020'">Codegraph &#x2197;</a>
-    <a href="#" onclick="showWhitepaper();return false" style="color:#607080;font-size:11px;text-decoration:none;border:1px solid #304050;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#00b4d8';this.style.borderColor='#00b4d8'" onmouseout="this.style.color='#607080';this.style.borderColor='#304050'">Agent Defense-in-Depth Whitepaper</a>
+    <a href="/codegraph" target="_blank" style="color:#b3831c;font-size:11px;text-decoration:none;border:1px solid #604020;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#d9a02b';this.style.borderColor='#d9a02b'" onmouseout="this.style.color='#b3831c';this.style.borderColor='#604020'">Codegraph &#x2197;</a>
+    <a href="#" onclick="showWhitepaper();return false" style="color:#607080;font-size:11px;text-decoration:none;border:1px solid #304050;padding:4px 10px;border-radius:6px;white-space:nowrap" onmouseover="this.style.color='#5de3ff';this.style.borderColor='#5de3ff'" onmouseout="this.style.color='#607080';this.style.borderColor='#304050'">Agent Defense-in-Depth Whitepaper</a>
   </div>
 </div>
 </div>
@@ -3400,22 +3400,22 @@ body.view-ops #view-exec{display:none}
 <button class="fbtn" data-preset="agent" onclick="toggleFilter(this)">Agent</button>
 <button class="fbtn" data-types="EXEC,FORK,EXIT,SIGNAL" onclick="toggleFilter(this)">Tetragon</button>
 <button class="fbtn" data-types="RENAME,UNLINK" onclick="toggleFilter(this)">Files</button>
-<button class="fbtn" data-types="BLOCK" style="border-color:#ff4444" onclick="toggleFilter(this)">Firewall</button>
-<button class="fbtn" data-types="PROXY" style="border-color:#44ddaa" onclick="toggleFilter(this)">Proxy</button>
-<button class="fbtn" data-types="SCAN" style="border-color:#00ddff" onclick="toggleFilter(this)">Scan</button>
-<button class="fbtn" data-types="GUARD" style="border-color:#ff6688" onclick="toggleFilter(this)">CodeGuard</button>
-<button class="fbtn" data-types="TOOL" style="border-color:#ff88cc" onclick="toggleFilter(this)">Claude</button>
-<button class="fbtn" data-types="MCP" style="border-color:#aa88ff" onclick="toggleFilter(this)">MCP</button>
-<button class="fbtn" data-types="SKILL" style="border-color:#ffdd44" onclick="toggleFilter(this)">Skills</button>
-<button class="fbtn" data-types="WEBHOOK" style="border-color:#44aaff" onclick="toggleFilter(this)">Webhook</button>
-<button class="fbtn" data-types="DEFENSE" style="border-color:#6688ff" onclick="toggleFilter(this)">AI-Defense</button>
+<button class="fbtn" data-types="BLOCK" style="border-color:#e8506a" onclick="toggleFilter(this)">Firewall</button>
+<button class="fbtn" data-types="PROXY" style="border-color:#21a184" onclick="toggleFilter(this)">Proxy</button>
+<button class="fbtn" data-types="SCAN" style="border-color:#45c8e8" onclick="toggleFilter(this)">Scan</button>
+<button class="fbtn" data-types="GUARD" style="border-color:#e85578" onclick="toggleFilter(this)">CodeGuard</button>
+<button class="fbtn" data-types="TOOL" style="border-color:#e88fc0" onclick="toggleFilter(this)">Claude</button>
+<button class="fbtn" data-types="MCP" style="border-color:#a878e0" onclick="toggleFilter(this)">MCP</button>
+<button class="fbtn" data-types="SKILL" style="border-color:#e0b83c" onclick="toggleFilter(this)">Skills</button>
+<button class="fbtn" data-types="WEBHOOK" style="border-color:#2f96ea" onclick="toggleFilter(this)">Webhook</button>
+<button class="fbtn" data-types="DEFENSE" style="border-color:#7a8cf0" onclick="toggleFilter(this)">AI-Defense</button>
 <label style="margin-left:8px">Search:</label>
 <input class="finput" id="search" placeholder="grep pattern..." oninput="debouncedRefresh()" style="width:250px">
 </div>
 
 <div class="main">
 <div class="panel">
-<div class="phdr"><span><span style="margin-right:16px">Event Stream &middot;</span><span style="margin-right:4px"><span style="color:#00ff88">&#9632;</span> Agent</span> <span style="margin-right:4px"><span style="color:#ff4444">&#9632;</span> Firewall</span> <span style="margin-right:4px"><span style="color:#44ddaa">&#9632;</span> Proxy</span> <span style="margin-right:4px"><span style="color:#ff6688">&#9632;</span> CodeGuard</span> <span style="margin-right:4px"><span style="color:#aa88ff">&#9632;</span> MCP</span> <span style="margin-right:4px"><span style="color:#00ddff">&#9632;</span> Scanners</span> <span style="margin-right:4px"><span style="color:#ffdd44">&#9632;</span> Skills</span> <span><span style="color:#ff88cc">&#9632;</span> Claude</span></span><span class="muted" id="sup"></span></div>
+<div class="phdr"><span><span style="margin-right:16px">Event Stream &middot;</span><span style="margin-right:4px"><span style="color:#27a86f">&#9632;</span> Agent</span> <span style="margin-right:4px"><span style="color:#e8506a">&#9632;</span> Firewall</span> <span style="margin-right:4px"><span style="color:#21a184">&#9632;</span> Proxy</span> <span style="margin-right:4px"><span style="color:#e85578">&#9632;</span> CodeGuard</span> <span style="margin-right:4px"><span style="color:#a878e0">&#9632;</span> MCP</span> <span style="margin-right:4px"><span style="color:#45c8e8">&#9632;</span> Scanners</span> <span style="margin-right:4px"><span style="color:#e0b83c">&#9632;</span> Skills</span> <span><span style="color:#e88fc0">&#9632;</span> Claude</span></span><span class="muted" id="sup"></span></div>
 <div class="pbody" id="evts"></div>
 </div>
 <div class="rpanels">
@@ -3712,7 +3712,7 @@ else if(typeof renderExec==='function'){renderExec(d);}
 if(curView==='ops')renderEval();
 }
 function updateHeaderStatus(r){
-const asi=document.getElementById('agent-status');if(r.agent_running){asi.innerHTML='&#9679; LIVE';asi.style.color='#00ff88'}else{asi.innerHTML='&#9679; IDLE';asi.style.color='#ff4444'}
+const asi=document.getElementById('agent-status');if(r.agent_running){asi.innerHTML='&#9679; LIVE';asi.style.color='#27a86f'}else{asi.innerHTML='&#9679; IDLE';asi.style.color='#e8506a'}
 }
 function renderOps(d){
 const s=d.stats,r=d.rings,t=d.stats.tokens||{};
@@ -3740,7 +3740,7 @@ document.getElementById('r9d').textContent=`open · ${r.r9_prs_merged||0} merged
 // Ring status colors
 if(r.r6_blocked>0)document.querySelector('#ring6 .status').className='status yellow';
 if(r.r7_blocked>0)document.querySelector('#ring7 .status').className='status yellow';
-if(r.r8_validation_failed>0){document.querySelector('#ring8 .status').className='status red';document.getElementById('r8v').style.color='#ff4444';}
+if(r.r8_validation_failed>0){document.querySelector('#ring8 .status').className='status red';document.getElementById('r8v').style.color='#e8506a';}
 else{document.getElementById('r8v').style.color='';}
 if(r.r9_prs_rejected>0)document.querySelector('#ring9 .status').className='status yellow';
 
@@ -3753,7 +3753,7 @@ th+=`<div class="si"><span class="n">Output</span><span class="c">${((t.output||
 th+=`<div class="si"><span class="n">Cache Read</span><span class="c">${((t.cache_read||0)/1e6).toFixed(1)}M</span></div>`;
 th+=`<div class="si"><span class="n">Cache Create</span><span class="c">${((t.cache_create||0)/1e6).toFixed(1)}M</span></div>`;
 th+=`<div class="si"><span class="n">API Messages</span><span class="c">${t.messages||0}</span></div>`;
-th+=`<div class="si"><span class="n" style="color:#00ff88">API Cost (avoided)</span><span class="c" style="color:#00ff88">$${t.estimated_cost_usd||0}</span></div>`;
+th+=`<div class="si"><span class="n" style="color:#27a86f">API Cost (avoided)</span><span class="c" style="color:#27a86f">$${t.estimated_cost_usd||0}</span></div>`;
 // Two ROI views: current billing cycle (resets on the subscription bill
 // day each month) and lifetime (cumulative since the first cycle).
 // Server-provided so the JS doesn't need its own date math.
@@ -3761,14 +3761,14 @@ const cyc=t.cycle||{},life=t.lifetime||{};
 const cycCost=cyc.estimated_cost_usd||0;
 const cycSub=cyc.subscription_amount_usd||200;
 const cycRoi=cycCost-cycSub;
-const cycRoiColor=cycRoi>=0?'#00ff88':'#ffaa00';
+const cycRoiColor=cycRoi>=0?'#27a86f':'#b3831c';
 const cycRoiLabel=cycRoi>=0?'Cycle ROI (profit)':'Cycle ROI (building)';
 const cycPct=Math.round((cycCost/cycSub)*100);
 const lifeCost=life.estimated_cost_usd||0;
 const lifeSub=life.subscription_total_usd||cycSub;
 const cycles=life.subscription_cycles_paid||1;
 const lifeRoi=lifeCost-lifeSub;
-const lifeRoiColor=lifeRoi>=0?'#00ff88':'#ffaa00';
+const lifeRoiColor=lifeRoi>=0?'#27a86f':'#b3831c';
 const lifeRoiLabel=lifeRoi>=0?'Lifetime ROI (profit)':'Lifetime ROI (building)';
 const lifePct=Math.round((lifeCost/lifeSub)*100);
 th+=`<div class="si"><span class="n">— This Cycle (since ${cyc.cycle_start_iso||'?'}) —</span><span class="c"></span></div>`;
@@ -3801,8 +3801,8 @@ else if(o.includes('check_runs')||o.includes('ci_run'))cats.ci+=cnt;
 const tr=cats.ir+cats.pr_r+cats.dr+cats.ci;
 const tw=cats.iw+cats.pr_w+cats.dw;
 gh='';
-gh+=`<div class="si"><span class="n" style="color:#44ddaa">Total Reads</span><span class="c">${tr}</span></div>`;
-gh+=`<div class="si"><span class="n" style="color:#ffaa00">Total Writes</span><span class="c">${tw}</span></div>`;
+gh+=`<div class="si"><span class="n" style="color:#21a184">Total Reads</span><span class="c">${tr}</span></div>`;
+gh+=`<div class="si"><span class="n" style="color:#b3831c">Total Writes</span><span class="c">${tw}</span></div>`;
 gh+=`<div class="si"><span class="n">Issue Read</span><span class="c">${cats.ir}</span></div>`;
 gh+=`<div class="si"><span class="n">Issue Write</span><span class="c">${cats.iw}</span></div>`;
 gh+=`<div class="si"><span class="n">PR Read</span><span class="c">${cats.pr_r}</span></div>`;
@@ -3817,19 +3817,19 @@ cs+=`<div class="si clickable" onclick="showMcpScan()"><span class="n"><span cla
 cs+=`<div class="si clickable" onclick="showPromptScan()"><span class="n"><span class="stag codeguard">scan</span> Prompt Scanner</span><span class="c">${r.r6_prompts_scanned||0} prompts · ${r.r6_prompt_threats||0} threats · ${r.r6_prompt_advisory||0} advisory</span></div>`;
 cs+=`<div class="si clickable" onclick="showSkillScan()"><span class="n"><span class="stag codeguard">scan</span> Skill Scanner</span><span class="c">${r.r6_skill_status||'unknown'}</span></div>`;
 cs+=`<div class="si clickable" onclick="showCodeGuard()"><span class="n"><span class="stag codeguard">scan</span> CodeGuard</span><span class="c">${r.r6_files_scanned||0} files · ${r.r6_findings||0} findings</span></div>`;
-cs+=`<div class="si clickable" onclick="showTetragon()"><span class="n"><span class="stag tetragon">ebpf</span> Tetragon</span><span class="c" style="color:#00ff88">active</span></div>`;
+cs+=`<div class="si clickable" onclick="showTetragon()"><span class="n"><span class="stag tetragon">ebpf</span> Tetragon</span><span class="c" style="color:#27a86f">active</span></div>`;
 cs+=`<div class="si clickable" onclick="showAibom()"><span class="n"><span class=\"stag codeguard\">scan</span> AIBOM (C++)</span><span class="c">${r.r6_aibom_components||0} components · ${r.r6_aibom_models||0} models</span></div>`;
 cs+=`<div class="si"><span class="n muted">AI Defense SDK</span><span class="c muted">pending license</span></div>`;
 cs+=`<div class="si"><span class="n muted">A2A Scanner</span><span class="c muted">single agent (N/A)</span></div>`;
-cs+=`<div class="si"><span class="n">Project SBOM</span><span class="c"><a href="/sbom.json" target="_blank" style="color:#00b4d8;text-decoration:none">View</a></span></div>`;
-cs+=`<div class="si"><span class="n">Agent SBOM</span><span class="c"><a href="/agent-sbom.json" target="_blank" style="color:#00b4d8;text-decoration:none">View</a></span></div>`;
+cs+=`<div class="si"><span class="n">Project SBOM</span><span class="c"><a href="/sbom.json" target="_blank" style="color:#5de3ff;text-decoration:none">View</a></span></div>`;
+cs+=`<div class="si"><span class="n">Agent SBOM</span><span class="c"><a href="/agent-sbom.json" target="_blank" style="color:#5de3ff;text-decoration:none">View</a></span></div>`;
 document.getElementById('cisco-scanners').innerHTML=cs;
 // Policies
 // Recent Agent Activity
 let ph='';
 const activity=r.recent_activity||[];
 const titles=r.issue_titles||{};
-const opColors={'Commented on issue':'#00b4d8','Created PR':'#00ff88','Replied to discussion':'#aa88ff','Read discussion':'#607080','Reviewed PR':'#ffaa00','Checked CI':'#44ddaa','Searched issues':'#607080'};
+const opColors={'Commented on issue':'#5de3ff','Created PR':'#27a86f','Replied to discussion':'#a878e0','Read discussion':'#607080','Reviewed PR':'#b3831c','Checked CI':'#21a184','Searched issues':'#607080'};
 for(const a of [...activity].reverse()){
 const col=opColors[a.op]||'#c8d8e8';
 const t=fmtTime(a.time);
@@ -3862,17 +3862,17 @@ let h='';
 if(!flows.length){h='<div class="si"><span class="n muted">No eval runs yet</span></div>';}
 else{for(const f of flows){
 const pr=(f.pass_rate==null)?'&mdash;':f.pass_rate+'%';
-const col=(f.pass_rate==null)?'#607080':(f.pass_rate>=80?'#00ff88':(f.pass_rate>=50?'#ffaa00':'#ff4444'));
+const col=(f.pass_rate==null)?'#607080':(f.pass_rate>=80?'#27a86f':(f.pass_rate>=50?'#b3831c':'#e8506a'));
 let sc='';if(f.scores){const ks=Object.keys(f.scores).slice(0,3);sc=ks.map(k=>`${k} ${Math.round(f.scores[k]*100)}%`).join(' · ');}
 h+=`<div class="si"><span class="n"><span style="color:#c8d8e8">${flabel[f.flow]||esc(f.flow)}</span> <span style="color:${col};font-weight:bold">${pr}</span> <span style="color:#505060;font-size:10px">${f.ok||0}/${f.runs||0} ok${sc?' · '+esc(sc):''}</span></span></div>`;
 }}
 if(recent.length){
 h+='<div style="margin-top:6px;border-top:1px solid #1a2230;padding-top:4px">';
 for(const e of recent.slice(0,6)){
-const scol=e.status==='ok'?'#00ff88':'#ff4444';
+const scol=e.status==='ok'?'#27a86f':'#e8506a';
 const ref=e.ref?('#'+esc(String(e.ref))):'';
 const walk=e.trace_id?`onclick="window.open('/agent-walk?trace='+encodeURIComponent('${e.trace_id}'),'_blank')" style="cursor:pointer"`:'';
-const gal=e.galileo_trace_url?` <a href="${e.galileo_trace_url}" target="_blank" style="color:#80c0ff;text-decoration:none;font-size:10px">&#8599;G</a>`:'';
+const gal=e.galileo_trace_url?` <a href="${e.galileo_trace_url}" target="_blank" style="color:#5de3ff;text-decoration:none;font-size:10px">&#8599;G</a>`:'';
 h+=`<div class="si" ${walk}><span class="n"><span style="color:#505060;font-size:10px">${fmtTime(e.ts)}</span> <span style="color:${scol}">&#9679;</span> <span style="color:#c8d8e8">${esc(e.flow)}${ref}</span>${gal}</span></div>`;
 }
 h+='</div>';}
@@ -3901,7 +3901,7 @@ const sev=t.is_safe?'SAFE':(t.severity||'HIGH');
 fh+=`<div class="modal-finding ${sev}" style="margin-bottom:6px">`;
 fh+=`<span class="sev ${sev}">${sev}</span> <strong>${esc(t.tool_name)}</strong>`;
 if(t.tool_description)fh+=`<div class="detail" style="margin-top:2px">${esc(t.tool_description)}</div>`;
-if(t.threat_name)fh+=`<div class="detail" style="margin-top:2px;color:#ff6688">Threat: ${esc(t.threat_name)}</div>`;
+if(t.threat_name)fh+=`<div class="detail" style="margin-top:2px;color:#e85578">Threat: ${esc(t.threat_name)}</div>`;
 if(t.is_safe)fh+=`<div class="detail" style="margin-top:2px">No threats detected</div>`;
 if(t.analyzer)fh+=`<div class="detail" style="margin-top:2px;color:#405060;font-size:10px">Analyzer: ${esc(t.analyzer)}</div>`;
 fh+=`</div>`}
@@ -3936,7 +3936,7 @@ for(const name of Object.keys(byPrompt).sort()){
   fh+=`<span class="sev ${headSev}">${headSev}</span> <strong>${esc(name)}</strong>`;
   fh+=` <span style="color:#607080;font-size:10px;margin-left:6px">${g.threats.length} threats · ${g.advisory.length} advisory</span>`;
   for(const f of g.threats){
-    fh+=`<div class="detail" style="margin-top:4px;color:#ff6688">⚠ ${esc(f.severity||'')} ${esc(f.technique_name||'')}: ${esc(f.summary||'')}</div>`;
+    fh+=`<div class="detail" style="margin-top:4px;color:#e85578">⚠ ${esc(f.severity||'')} ${esc(f.technique_name||'')}: ${esc(f.summary||'')}</div>`;
   }
   for(const f of g.advisory){
     fh+=`<div class="detail" style="margin-top:2px;color:#888a98">${esc(f.severity||'')} · ${esc(f.summary||'')}</div>`;
@@ -4087,10 +4087,10 @@ if(args.length>200)args=args.slice(0,200)+'…';
 const bin=e.binary?(e.binary.split('/').pop()||e.binary):'';
 fh+=`<div class="modal-finding ${cls}" style="margin-bottom:2px;padding:4px 8px">`;
 fh+=`<span style="color:#607080;margin-right:8px">${fmtTime(e.time||'')}</span>`;
-if(e.type)fh+=`<span style="color:#ffaa00;margin-right:6px;font-weight:bold">${esc(e.type)}</span>`;
-if(bin)fh+=`<span style="color:#80c0ff;margin-right:6px">${esc(bin)}</span>`;
+if(e.type)fh+=`<span style="color:#b3831c;margin-right:6px;font-weight:bold">${esc(e.type)}</span>`;
+if(bin)fh+=`<span style="color:#5de3ff;margin-right:6px">${esc(bin)}</span>`;
 fh+=`${esc(args)}`;
-if(e.policy)fh+=` <span style="color:#ff6688;font-size:10px">[${esc(e.policy)}]</span>`;
+if(e.policy)fh+=` <span style="color:#e85578;font-size:10px">[${esc(e.policy)}]</span>`;
 fh+=`</div>`}
 fh+='</div>';}
 document.getElementById('ring-events-list').innerHTML=fh;
@@ -4125,8 +4125,8 @@ const summary=t.summary||'(no summary)';
 fh+=`<div class="modal-finding SAFE clickable" style="margin-bottom:2px;padding:4px 8px;cursor:pointer" onclick="window.open('/agent-walk?trace='+encodeURIComponent('${t.trace_id}'),'_blank')">`;
 fh+=`<span style="color:#607080;margin-right:8px">${esc(startStr)}</span>`;
 if(dur)fh+=`<span style="color:#80ffaa;margin-right:6px">(${dur})</span>`;
-fh+=`<span style="color:#ffaa00;margin-right:6px">${(t.event_count||0).toLocaleString()} ev</span>`;
-if(evType)fh+=`<span style="color:#80c0ff;margin-right:6px">${esc(evType)}</span>`;
+fh+=`<span style="color:#b3831c;margin-right:6px">${(t.event_count||0).toLocaleString()} ev</span>`;
+if(evType)fh+=`<span style="color:#5de3ff;margin-right:6px">${esc(evType)}</span>`;
 fh+=`<span>${esc(summary).substring(0,80)}</span>`;
 fh+='</div>';}
 fh+='</div>';}
@@ -4154,24 +4154,24 @@ fetch('/api/prs').then(r=>r.json()).then(d=>{
 let fh='';
 if(d.open&&d.open.length>0){
 fh+='<p style="color:#607080;margin-bottom:6px;font-weight:bold">Open PRs awaiting review:</p>';
-for(const p of d.open)fh+=`<div class="modal-finding MEDIUM" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/aethersdr/AetherSDR/pull/${p.number}" target="_blank" style="color:#00b4d8;text-decoration:none">#${p.number}</a> ${esc(p.title)}${p.draft?' <span style="color:#607080;font-size:10px">(draft)</span>':''}</div>`}
+for(const p of d.open)fh+=`<div class="modal-finding MEDIUM" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/aethersdr/AetherSDR/pull/${p.number}" target="_blank" style="color:#5de3ff;text-decoration:none">#${p.number}</a> ${esc(p.title)}${p.draft?' <span style="color:#607080;font-size:10px">(draft)</span>':''}</div>`}
 if(d.merged&&d.merged.length>0){
 fh+='<p style="color:#607080;margin-bottom:6px;margin-top:12px;font-weight:bold">Recently merged:</p>';
-for(const p of d.merged)fh+=`<div class="modal-finding SAFE" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/aethersdr/AetherSDR/pull/${p.number}" target="_blank" style="color:#00b4d8;text-decoration:none">#${p.number}</a> ${esc(p.title)}</div>`}
+for(const p of d.merged)fh+=`<div class="modal-finding SAFE" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/aethersdr/AetherSDR/pull/${p.number}" target="_blank" style="color:#5de3ff;text-decoration:none">#${p.number}</a> ${esc(p.title)}</div>`}
 if(d.rejected&&d.rejected.length>0){
 fh+='<p style="color:#607080;margin-bottom:6px;margin-top:12px;font-weight:bold">Rejected:</p>';
-for(const p of d.rejected)fh+=`<div class="modal-finding HIGH" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/aethersdr/AetherSDR/pull/${p.number}" target="_blank" style="color:#00b4d8;text-decoration:none">#${p.number}</a> ${esc(p.title)}</div>`}
+for(const p of d.rejected)fh+=`<div class="modal-finding HIGH" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/aethersdr/AetherSDR/pull/${p.number}" target="_blank" style="color:#5de3ff;text-decoration:none">#${p.number}</a> ${esc(p.title)}</div>`}
 if(d.issues&&d.issues.length>0){
-const stateColors={done:'#00ff88',failed:'#ff4444',declined:'#607080',implement:'#ffaa00',waiting:'#44ddaa',triage:'#00b4d8','new':'#c8d8e8'};
+const stateColors={done:'#27a86f',failed:'#e8506a',declined:'#607080',implement:'#b3831c',waiting:'#21a184',triage:'#5de3ff','new':'#c8d8e8'};
 fh+='<p style="color:#607080;margin-bottom:6px;margin-top:12px;font-weight:bold">Issue pipeline (from DB):</p>';
 for(const i of d.issues){
 const col=stateColors[i.state]||'#c8d8e8';
 const det=i.detail?` <span style="color:#607080;font-size:10px">— ${esc(i.detail.substring(0,60))}</span>`:'';
 const ts=fmtTime(i.last_seen);
-fh+=`<div class="modal-finding SAFE" style="margin-bottom:3px;padding:4px 8px;display:flex;align-items:center;gap:8px"><a href="https://github.com/aethersdr/AetherSDR/issues/${i.number}" target="_blank" style="color:#00b4d8;text-decoration:none;min-width:40px">#${i.number}</a><span style="color:${col};font-weight:bold;min-width:70px">${i.state}</span><span style="color:#8090a0;font-size:10px;min-width:90px">${esc(i.last_action||'')}</span>${det}<span style="color:#505060;font-size:9px;margin-left:auto">${ts}</span></div>`}}
+fh+=`<div class="modal-finding SAFE" style="margin-bottom:3px;padding:4px 8px;display:flex;align-items:center;gap:8px"><a href="https://github.com/aethersdr/AetherSDR/issues/${i.number}" target="_blank" style="color:#5de3ff;text-decoration:none;min-width:40px">#${i.number}</a><span style="color:${col};font-weight:bold;min-width:70px">${i.state}</span><span style="color:#8090a0;font-size:10px;min-width:90px">${esc(i.last_action||'')}</span>${det}<span style="color:#505060;font-size:9px;margin-left:auto">${ts}</span></div>`}}
 if(d.discussions&&d.discussions.length>0){
 fh+='<p style="color:#607080;margin-bottom:6px;margin-top:12px;font-weight:bold">Discussions responded to:</p>';
-for(const disc of d.discussions)fh+=`<div class="modal-finding SAFE" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/aethersdr/AetherSDR/discussions/${disc.number}" target="_blank" style="color:#00b4d8;text-decoration:none">#${disc.number}</a> ${esc(disc.title)} <span style="color:#607080;font-size:10px">${esc(disc.category)} · ${disc.comments} comments</span></div>`}
+for(const disc of d.discussions)fh+=`<div class="modal-finding SAFE" style="margin-bottom:3px;padding:4px 8px"><a href="https://github.com/aethersdr/AetherSDR/discussions/${disc.number}" target="_blank" style="color:#5de3ff;text-decoration:none">#${disc.number}</a> ${esc(disc.title)} <span style="color:#607080;font-size:10px">${esc(disc.category)} · ${disc.comments} comments</span></div>`}
 document.getElementById('r9-pr-list').innerHTML=fh;
 }).catch(()=>{document.getElementById('r9-pr-list').innerHTML='<p style="color:#604040">Failed to load PR data.</p>'})}
 function showValidation(){
@@ -4195,7 +4195,7 @@ fh+=`<span class="sev ${sev}">${v.result}</span> ${esc(v.run_time)} — ${v.file
 if(isFail&&v.blocked_reasons.length>0){
 fh+=`<div style="margin-top:4px">`;
 for(const reason of v.blocked_reasons){
-if(reason)fh+=`<div class="detail" style="color:#ff4444;margin-top:2px">&#x2718; ${esc(reason)}</div>`;
+if(reason)fh+=`<div class="detail" style="color:#e8506a;margin-top:2px">&#x2718; ${esc(reason)}</div>`;
 }
 fh+=`</div>`}
 fh+=`</div>`}
@@ -4216,17 +4216,17 @@ const principles=[
 {n:'X',t:'The Operator Outranks Every Agent',s:'STRONG',a:'aetherclaude-eligible label is maintainer-only; Override A/B/C gates'},
 {n:'XI',t:'Persist Atomically',s:'STRONG',a:'SQLite ACID + temp-then-rename for every JSON artifact'},
 ];
-let h='<p style="color:#607080;margin-bottom:12px">11 inviolable principles from <a href="https://github.com/CiscoDevNet/foundry-security-spec/blob/main/constitution.md" target="_blank" style="color:#00b4d8">CiscoDevNet/foundry-security-spec</a> mapped to AetherClaude rings and files. Strong&times;7, Partial&times;2, N/A&times;2 (domain mismatch).</p>';
+let h='<p style="color:#607080;margin-bottom:12px">11 inviolable principles from <a href="https://github.com/CiscoDevNet/foundry-security-spec/blob/main/constitution.md" target="_blank" style="color:#5de3ff">CiscoDevNet/foundry-security-spec</a> mapped to AetherClaude rings and files. Strong&times;7, Partial&times;2, N/A&times;2 (domain mismatch).</p>';
 for(const p of principles){
 const cls=p.s==='STRONG'?'SAFE':(p.s==='MEDIUM'||p.s==='PARTIAL')?'MEDIUM':'SAFE';
-const chipColor=p.s==='STRONG'?'#80ffaa':(p.s==='PARTIAL'||p.s==='MEDIUM')?'#ffaa00':'#607080';
+const chipColor=p.s==='STRONG'?'#80ffaa':(p.s==='PARTIAL'||p.s==='MEDIUM')?'#b3831c':'#607080';
 h+=`<div class="modal-finding ${cls}" style="margin-bottom:4px">`;
 h+=`<span style="display:inline-block;min-width:54px;font-size:9px;padding:1px 5px;background:#1a2030;color:${chipColor};border:1px solid ${chipColor}40;border-radius:3px;text-align:center;margin-right:6px">${p.s}</span>`;
 h+=`<span style="color:#a0a8b0;margin-right:6px;font-weight:bold">${p.n}.</span>`;
 h+=`<strong>${p.t}</strong>`;
 h+=`<div class="detail" style="margin-top:2px;color:#90a0b8;font-size:11px;margin-left:60px">${p.a}</div>`;
 h+=`</div>`;}
-h+='<div class="detail" style="margin-top:12px;color:#607080;font-size:10px">Full mapping with source-file links: <a href="https://github.com/ten9876/aetherclaude/blob/main/docs/constitution-mapping.md" target="_blank" style="color:#00b4d8">docs/constitution-mapping.md</a>. Pinned at foundry-security-spec @ <code>c770bf77</code>.</div>';
+h+='<div class="detail" style="margin-top:12px;color:#607080;font-size:10px">Full mapping with source-file links: <a href="https://github.com/ten9876/aetherclaude/blob/main/docs/constitution-mapping.md" target="_blank" style="color:#5de3ff">docs/constitution-mapping.md</a>. Pinned at foundry-security-spec @ <code>c770bf77</code>.</div>';
 document.getElementById('modal-title').textContent='Foundry Constitution ↔ AetherClaude Mapping';
 document.getElementById('modal-body').innerHTML=h;
 document.getElementById('modal').classList.add('show');
@@ -4258,9 +4258,9 @@ setInterval(refresh,REFRESH_MS);refresh();
 <button class="modal-close" onclick="closeWp()">&times;</button>
 <div class="wp-content">
 <h1>9 Rings of Defense</h1>
-<p style="text-align:center;color:#00b4d8;font-size:15px">Securing an Autonomous AI Coding Agent<br>with Isovalent and Cisco AI Defense</p>
+<p style="text-align:center;color:#5de3ff;font-size:15px">Securing an Autonomous AI Coding Agent<br>with Isovalent and Cisco AI Defense</p>
 <p class="meta">Jeremy Fielder &middot; Systems Engineer, Strategic Accounts &middot; Cisco Systems<br>April 2026 &middot; v2.1 &middot; Red team review: Grok (xAI)</p>
-<p style="text-align:center;margin:12px 0"><a href="/whitepaper.pdf" target="_blank" style="color:#00b4d8;font-size:12px;text-decoration:none;border:1px solid #00b4d844;padding:6px 14px;border-radius:6px" onmouseover="this.style.borderColor='#00b4d8';this.style.background='#00b4d810'" onmouseout="this.style.borderColor='#00b4d844';this.style.background='none'">Open printable version (save as PDF from browser)</a></p>
+<p style="text-align:center;margin:12px 0"><a href="/whitepaper.pdf" target="_blank" style="color:#5de3ff;font-size:12px;text-decoration:none;border:1px solid #5de3ff44;padding:6px 14px;border-radius:6px" onmouseover="this.style.borderColor='#5de3ff';this.style.background='#5de3ff10'" onmouseout="this.style.borderColor='#5de3ff44';this.style.background='none'">Open printable version (save as PDF from browser)</a></p>
 
 <h2>1. Executive Summary</h2>
 <p><strong>An autonomous AI agent is writing code on a public open-source project right now, monitored by Cisco's Isovalent and AI Defense scanners, on an $80 Raspberry Pi.</strong></p>
@@ -4357,14 +4357,14 @@ setInterval(refresh,REFRESH_MS);refresh();
 <h3>Unified Event Stream</h3>
 <p>All security events are interleaved in a single scrolling feed, each tagged with a source label and color-coded for rapid scanning:</p>
 <ul>
-<li><strong style="color:#00ff88">Agent</strong> (green): AetherClaude UID 965 process activity</li>
-<li><strong style="color:#ff4444">Firewall</strong> (red): nftables BLOCK events with destination details</li>
-<li><strong style="color:#44ddaa">Proxy</strong> (teal): tinyproxy allowed/denied domain connections</li>
-<li><strong style="color:#ff6688">CodeGuard</strong> (pink): DefenseClaw scan results and blocks</li>
-<li><strong style="color:#aa88ff">MCP</strong> (purple): GitHub API operations and content validation</li>
-<li><strong style="color:#00ddff">Scanners</strong> (cyan): MCP Scanner and Skill Scanner events</li>
-<li><strong style="color:#ffdd44">Skills</strong> (yellow): Orchestrator skill dispatch (triage, implement, review, etc.)</li>
-<li><strong style="color:#ff88cc">Claude</strong> (pink): Claude Code tool calls with per-tool breakdown</li>
+<li><strong style="color:#27a86f">Agent</strong> (green): AetherClaude UID 965 process activity</li>
+<li><strong style="color:#e8506a">Firewall</strong> (red): nftables BLOCK events with destination details</li>
+<li><strong style="color:#21a184">Proxy</strong> (teal): tinyproxy allowed/denied domain connections</li>
+<li><strong style="color:#e85578">CodeGuard</strong> (pink): DefenseClaw scan results and blocks</li>
+<li><strong style="color:#a878e0">MCP</strong> (purple): GitHub API operations and content validation</li>
+<li><strong style="color:#45c8e8">Scanners</strong> (cyan): MCP Scanner and Skill Scanner events</li>
+<li><strong style="color:#e0b83c">Skills</strong> (yellow): Orchestrator skill dispatch (triage, implement, review, etc.)</li>
+<li><strong style="color:#e88fc0">Claude</strong> (pink): Claude Code tool calls with per-tool breakdown</li>
 </ul>
 <p>Tetragon eBPF events have their own sub-filters: <strong>EXEC</strong> (process start with full command line), <strong>KPROBE</strong> (kernel probe intercepts&mdash;syscalls like tcp_connect, setuid, ptrace), and <strong>EXIT</strong> (process termination). Filter buttons toggle each event type and source. An "AetherClaude" filter isolates UID 965 events. A "Hide System" toggle removes OS noise to focus on agent activity. Full-text search spans all fields.</p>
 
