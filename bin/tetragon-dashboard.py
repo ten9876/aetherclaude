@@ -3091,28 +3091,6 @@ def process_event(event):
 HTML = r"""<!DOCTYPE html>
 <html><head><title>AI-Agent Defense-In-Depth Dashboard</title><meta charset="utf-8">
 <style>
-/* CiscoSans (Cisco's official brand typeface) — served from
-   PRIVATE_FONTS_DIR (NOT in the git tree). Full family with seven
-   weights × Roman+Oblique. Files: CiscoSansTT{Thin,ExtraLight,Light,
-   Regular,Medium,Bold,Heavy}{,Oblique}.ttf. Apply by adding 'CiscoSans'
-   to any element's font-family stack; weights resolve naturally
-   (font-weight:300 → Light, 400 → Regular, 500 → Medium, 700 → Bold,
-   etc.). Falls back to the existing system stack if the files aren't
-   present. */
-@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTThin.ttf')              format('truetype'); font-weight: 100; font-style: normal;  font-display: swap; }
-@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTThinOblique.ttf')       format('truetype'); font-weight: 100; font-style: italic;  font-display: swap; }
-@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTExtraLight.ttf')        format('truetype'); font-weight: 200; font-style: normal;  font-display: swap; }
-@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTExtraLightOblique.ttf') format('truetype'); font-weight: 200; font-style: italic;  font-display: swap; }
-@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTLight.ttf')             format('truetype'); font-weight: 300; font-style: normal;  font-display: swap; }
-@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTLightOblique.ttf')      format('truetype'); font-weight: 300; font-style: italic;  font-display: swap; }
-@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTRegular.ttf')           format('truetype'); font-weight: 400; font-style: normal;  font-display: swap; }
-@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTRegularOblique.ttf')    format('truetype'); font-weight: 400; font-style: italic;  font-display: swap; }
-@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTMedium.ttf')            format('truetype'); font-weight: 500; font-style: normal;  font-display: swap; }
-@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTMediumOblique.ttf')     format('truetype'); font-weight: 500; font-style: italic;  font-display: swap; }
-@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTBold.ttf')              format('truetype'); font-weight: 700; font-style: normal;  font-display: swap; }
-@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTBoldOblique.ttf')       format('truetype'); font-weight: 700; font-style: italic;  font-display: swap; }
-@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTHeavy.ttf')             format('truetype'); font-weight: 800; font-style: normal;  font-display: swap; }
-@font-face { font-family: 'CiscoSans'; src: url('/fonts/CiscoSansTTHeavyOblique.ttf')      format('truetype'); font-weight: 800; font-style: italic;  font-display: swap; }
 /* ── AetherSDR design tokens (aethersdr.com) ─────────────────────────────
    Surfaces + chrome come from the brand stylesheet; the cat-* and status
    tokens are the dataviz-validated palettes (colorblind-checked on both
@@ -3135,16 +3113,16 @@ HTML = r"""<!DOCTYPE html>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:var(--bg);color:var(--ink-soft);font-family:var(--mono);font-size:13px}
 .header{background:var(--bg-1);padding:12px 24px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
-.header h1{font-family:'CiscoSans',var(--sans);font-size:20px;color:var(--accent-bright);letter-spacing:1px;font-weight:400}
-.header .sub{font-family:'CiscoSans',var(--sans);color:var(--muted-dim);font-size:11px}
+.header h1{font-family:var(--sans);font-size:20px;color:var(--accent-bright);letter-spacing:1px;font-weight:400}
+.header .sub{font-family:var(--sans);color:var(--muted-dim);font-size:11px}
 .header .live{color:var(--good);font-size:12px;animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 
 .rings{display:grid;grid-template-columns:repeat(9,1fr);gap:8px;padding:12px 24px}
 .ring{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-sm);padding:10px;text-align:center;position:relative}
 .ring .num{font-size:10px;color:var(--muted-dim);position:absolute;top:4px;left:8px}
-.ring .name{font-family:'CiscoSans',var(--sans);font-size:10px;font-weight:500;color:var(--muted);margin-bottom:4px}
-.ring .value{font-family:'CiscoSans',var(--sans);font-size:26px;font-weight:300;color:var(--accent-bright);letter-spacing:0}
+.ring .name{font-family:var(--sans);font-size:10px;font-weight:500;color:var(--muted);margin-bottom:4px}
+.ring .value{font-family:var(--sans);font-size:26px;font-weight:300;color:var(--accent-bright);letter-spacing:0}
 .ring .detail{font-size:10px;color:var(--muted);margin-top:2px}
 .ring.ok{border-color:var(--line)}
 .ring.warn{border-color:var(--warn)}
@@ -3164,7 +3142,7 @@ body{background:var(--bg);color:var(--ink-soft);font-family:var(--mono);font-siz
 
 .main{display:grid;grid-template-columns:2fr 1fr;gap:10px;padding:0 24px 12px;height:calc(100vh - 310px)}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;display:flex;flex-direction:column}
-.phdr{font-family:'CiscoSans',var(--sans);padding:6px 10px;background:var(--bg-2);border-bottom:1px solid var(--line);font-size:11px;color:var(--accent-bright);font-weight:600;letter-spacing:0.3px;display:flex;justify-content:space-between}
+.phdr{font-family:var(--sans);padding:6px 10px;background:var(--bg-2);border-bottom:1px solid var(--line);font-size:11px;color:var(--accent-bright);font-weight:600;letter-spacing:0.3px;display:flex;justify-content:space-between}
 .pbody{overflow-y:auto;flex:1;padding:2px}
 
 .ev{padding:2px 8px;border-bottom:1px solid var(--line);display:flex;gap:6px;font-size:11px}
@@ -3215,7 +3193,7 @@ body{background:var(--bg);color:var(--ink-soft);font-family:var(--mono);font-siz
 .modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:1000;justify-content:center;align-items:center}
 .modal-overlay.show{display:flex}
 .modal{background:var(--bg-1);border:1px solid var(--line-hi);border-radius:var(--radius);padding:20px;max-width:700px;width:90%;max-height:80vh;overflow-y:auto;color:var(--ink-soft)}
-.modal h2{font-family:'CiscoSans',var(--sans);color:var(--accent-bright);margin-bottom:12px;font-size:17px;letter-spacing:0.5px;font-weight:500}
+.modal h2{font-family:var(--sans);color:var(--accent-bright);margin-bottom:12px;font-size:17px;letter-spacing:0.5px;font-weight:500}
 .modal-close{float:right;cursor:pointer;color:var(--muted-dim);font-size:20px;border:none;background:none}
 .modal-close:hover{color:var(--crit)}
 .modal-finding{padding:8px 12px;margin:6px 0;border-radius:6px;font-size:12px}
@@ -3230,7 +3208,7 @@ body{background:var(--bg);color:var(--ink-soft);font-family:var(--mono);font-siz
 .modal-overlay.wp .modal{max-width:900px;max-height:90vh}
 .wp-content{line-height:1.7;font-family:var(--sans);font-size:13px;color:var(--ink-soft)}
 .wp-content h1{color:var(--accent-bright);font-size:22px;margin:24px 0 8px;letter-spacing:1px;text-align:center}
-.wp-content h2{font-family:'CiscoSans',var(--sans);color:var(--accent-bright);font-size:17px;font-weight:600;margin:20px 0 8px;border-bottom:1px solid var(--line);padding-bottom:4px}
+.wp-content h2{font-family:var(--sans);color:var(--accent-bright);font-size:17px;font-weight:600;margin:20px 0 8px;border-bottom:1px solid var(--line);padding-bottom:4px}
 .wp-content h3{color:var(--accent);font-size:14px;margin:16px 0 6px}
 .wp-content p{margin:8px 0}
 .wp-content ul,ol{margin:8px 0 8px 20px}
@@ -4038,7 +4016,7 @@ if(vs.length>0){
   for(const v of vs){
     const sc=vulnSev(v.severity);
     const sum=esc((v.summary||'').substring(0,120))||'(no summary)';
-    const link=(v.references&&v.references[0])?` <a href="${esc(v.references[0])}" target="_blank" style="color:#00bceb;text-decoration:none">[advisory]</a>`:'';
+    const link=(v.references&&v.references[0])?` <a href="${esc(v.references[0])}" target="_blank" style="color:#5de3ff;text-decoration:none">[advisory]</a>`:'';
     fh+=`<div class="detail" style="margin-left:6px;margin-top:3px;font-size:10px;color:#a0a8b0;line-height:1.4"><span class="sev ${sc}" style="font-size:9px;padding:1px 5px">${esc(v.severity||'UNKNOWN')}</span> <code style="color:#7080a0">${esc(v.id||'')}</code>${link} — ${sum}</div>`;
   }
 }
@@ -4267,8 +4245,8 @@ setInterval(refresh,REFRESH_MS);refresh();
 <p>AetherClaude is an AI coding agent that triages GitHub issues, implements fixes, reviews community pull requests, detects duplicates, explains CI failures, answers community questions, and compiles release notes for AetherSDR&mdash;an open-source Linux-native SDR client for the amateur radio community. It runs eight skills triggered in real time by GitHub webhooks, with an hourly fallback timer, unattended, on dedicated commodity hardware.</p>
 <p>AetherSDR has a community of over 1,000 users around the world actively consuming software produced by this pipeline&mdash;running AetherSDR builds that include AI-authored code, filing bug reports that the agent triages, and requesting features that the agent implements. Contributors who have never written a line of C++ are shaping the project through AI-assisted issue and feature requests that AetherClaude turns into production-ready code. This has democratized participation: the barrier to contributing is no longer knowing how to code, it's knowing how to describe what you need.</p>
 <p>This paper documents the <strong>9-ring defense-in-depth model</strong> securing that deployment. Each ring addresses distinct attack vectors&mdash;from kernel-level packet filtering (Ring 1) through Cisco AI Defense static analysis (Ring 6) to mandatory human review (Ring 9). An attacker must penetrate all nine rings to cause damage to the upstream project.</p>
-<p>Four <a href="https://www.cisco.com/site/us/en/products/security/ai-defense/index.html" target="_blank" style="color:#00bceb;text-decoration:none;border-bottom:1px solid #00bceb44" onmouseover="this.style.borderBottomColor='#00bceb'" onmouseout="this.style.borderBottomColor='#00bceb44'">Cisco AI Defense technologies</a> are in production today. <strong><a href="https://isovalent.com/products/runtime-security/" target="_blank" style="color:#00bceb;text-decoration:none">Cilium Tetragon (Isovalent)</a></strong> provides eBPF-based process execution tracking, network connection monitoring, and privilege escalation detection. <strong><a href="https://cisco-ai-defense.github.io/docs/defenseclaw" target="_blank" style="color:#00bceb;text-decoration:none">DefenseClaw CodeGuard</a></strong> scans every changed file and blocks HIGH/CRITICAL findings. <strong><a href="https://github.com/cisco-ai-defense/mcp-scanner" target="_blank" style="color:#00bceb;text-decoration:none">MCP Scanner</a></strong> performs YARA + Prompt Defense analysis on all MCP tool declarations. <strong><a href="https://github.com/cisco-ai-defense/skill-scanner" target="_blank" style="color:#00bceb;text-decoration:none">Skill Scanner</a></strong> analyzes agent skill templates for injection risks. Additionally, a custom <strong><a href="https://github.com/cisco-ai-defense/aibom" target="_blank" style="color:#00bceb;text-decoration:none">C++ AIBOM scanner</a></strong> generates AI Bills of Materials and <strong>agent-sbom</strong> inventories the agent infrastructure itself. All run on ARM64.</p>
-<p>All nine rings feed into a <strong><a href="https://dashboard.aethersdr.com" target="_blank" class="print-link" style="color:#00bceb;text-decoration:none">live Defense-in-Depth Dashboard</a></strong> with SQLite-backed event history, real-time metrics from eight data sources, clickable scanner detail modals, and secret redaction on all API responses.</p>
+<p>Four <a href="https://www.cisco.com/site/us/en/products/security/ai-defense/index.html" target="_blank" style="color:#5de3ff;text-decoration:none;border-bottom:1px solid #5de3ff44" onmouseover="this.style.borderBottomColor='#5de3ff'" onmouseout="this.style.borderBottomColor='#5de3ff44'">Cisco AI Defense technologies</a> are in production today. <strong><a href="https://isovalent.com/products/runtime-security/" target="_blank" style="color:#5de3ff;text-decoration:none">Cilium Tetragon (Isovalent)</a></strong> provides eBPF-based process execution tracking, network connection monitoring, and privilege escalation detection. <strong><a href="https://cisco-ai-defense.github.io/docs/defenseclaw" target="_blank" style="color:#5de3ff;text-decoration:none">DefenseClaw CodeGuard</a></strong> scans every changed file and blocks HIGH/CRITICAL findings. <strong><a href="https://github.com/cisco-ai-defense/mcp-scanner" target="_blank" style="color:#5de3ff;text-decoration:none">MCP Scanner</a></strong> performs YARA + Prompt Defense analysis on all MCP tool declarations. <strong><a href="https://github.com/cisco-ai-defense/skill-scanner" target="_blank" style="color:#5de3ff;text-decoration:none">Skill Scanner</a></strong> analyzes agent skill templates for injection risks. Additionally, a custom <strong><a href="https://github.com/cisco-ai-defense/aibom" target="_blank" style="color:#5de3ff;text-decoration:none">C++ AIBOM scanner</a></strong> generates AI Bills of Materials and <strong>agent-sbom</strong> inventories the agent infrastructure itself. All run on ARM64.</p>
+<p>All nine rings feed into a <strong><a href="https://dashboard.aethersdr.com" target="_blank" class="print-link" style="color:#5de3ff;text-decoration:none">live Defense-in-Depth Dashboard</a></strong> with SQLite-backed event history, real-time metrics from eight data sources, clickable scanner detail modals, and secret redaction on all API responses.</p>
 
 <h2>2. The Problem</h2>
 <p>Open-source projects have a scaling problem. A solo maintainer receives bug reports, feature requests, and community questions at a rate that exceeds available time. AI coding agents promise to bridge this gap&mdash;but they create a novel threat model.</p>
@@ -4482,9 +4460,9 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
 <style>
   html, body { margin:0; padding:0; height:100%; background:#0a0a1a; color:#d0d8e0; font-family:'SF Pro Text', system-ui, sans-serif; }
   header { position:fixed; top:0; left:0; right:0; height:48px; background:#101020; border-bottom:1px solid #203050; display:flex; align-items:center; padding:0 16px; gap:16px; z-index:10; }
-  header h1 { margin:0; font-size:14px; font-weight:600; color:#00bceb; letter-spacing:0.5px; text-transform:uppercase; }
+  header h1 { margin:0; font-size:14px; font-weight:600; color:#5de3ff; letter-spacing:0.5px; text-transform:uppercase; }
   header a.back { color:#607080; text-decoration:none; font-size:11px; border:1px solid #203050; padding:4px 10px; border-radius:4px; }
-  header a.back:hover { color:#00bceb; border-color:#00bceb; }
+  header a.back:hover { color:#5de3ff; border-color:#5de3ff; }
   .controls { display:flex; align-items:center; gap:14px; font-size:11px; color:#809090; }
   .controls label { display:flex; align-items:center; gap:6px; }
   .controls input[type=range] { width:120px; }
@@ -4492,18 +4470,18 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
   #stats { color:#607080; font-size:11px; margin-left:auto; }
   #sigma-container { position:fixed; top:48px; left:0; right:320px; bottom:0; background:#08081a; }
   aside#side { position:fixed; top:48px; right:0; bottom:0; width:320px; background:#0f0f22; border-left:1px solid #203050; overflow-y:auto; padding:16px; box-sizing:border-box; font-size:11px; }
-  aside h3 { color:#00bceb; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; margin:18px 0 8px 0; border-bottom:1px solid #203050; padding-bottom:4px; }
+  aside h3 { color:#5de3ff; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; margin:18px 0 8px 0; border-bottom:1px solid #203050; padding-bottom:4px; }
   aside h3:first-child { margin-top:0; }
   .field { display:flex; gap:6px; margin:4px 0; }
   .field .k { color:#607080; min-width:80px; }
   .field .v { color:#d0d8e0; word-break:break-all; font-family:'SF Mono', monospace; font-size:10px; }
   .neighbor { padding:3px 6px; margin:2px 0; border:1px solid #203050; border-radius:3px; cursor:pointer; font-family:'SF Mono', monospace; font-size:10px; color:#a0b0c0; }
-  .neighbor:hover { border-color:#00bceb; color:#00bceb; }
+  .neighbor:hover { border-color:#5de3ff; color:#5de3ff; }
   .community-row { display:flex; justify-content:space-between; padding:3px 6px; cursor:pointer; border-radius:3px; }
   .community-row:hover { background:#1a1a2a; }
   .community-swatch { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:middle; margin-right:6px; }
   #empty-state { padding:20px; text-align:center; color:#607080; font-size:12px; line-height:1.6; }
-  .loading-spinner { display:inline-block; width:12px; height:12px; border:2px solid #203050; border-top-color:#00bceb; border-radius:50%; animation:spin 0.8s linear infinite; vertical-align:middle; }
+  .loading-spinner { display:inline-block; width:12px; height:12px; border:2px solid #203050; border-top-color:#5de3ff; border-radius:50%; animation:spin 0.8s linear infinite; vertical-align:middle; }
   @keyframes spin { to { transform: rotate(360deg); } }
   /* Phase-3 live overlay. The .live-dot pulses while the SSE stream
    * is connected. Per-trace rows list the active claude runs and the
@@ -4519,11 +4497,11 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
   /* HTML 3D-overlay labels — pill style matching the 2D label
    * renderer. Positioned absolutely; the JS overlay loop sets
    * `transform: translate(x,y)` each frame. */
-  .threed-label { position:absolute; top:0; left:0; padding:2px 6px; background:rgba(10,10,26,0.92); color:#e0e8f0; font-family:'SF Mono', monospace; font-size:11px; font-weight:600; border-radius:3px; border:1px solid #00bceb; white-space:nowrap; transform:translate(-9999px,-9999px); will-change:transform; }
+  .threed-label { position:absolute; top:0; left:0; padding:2px 6px; background:rgba(10,10,26,0.92); color:#e0e8f0; font-family:'SF Mono', monospace; font-size:11px; font-weight:600; border-radius:3px; border:1px solid #5de3ff; white-space:nowrap; transform:translate(-9999px,-9999px); will-change:transform; }
   /* Refactor watch-list — high-betweenness symbols. Click jumps the
    * camera to the node and selects it in the detail panel. */
   .bridge-row { display:flex; align-items:baseline; gap:6px; padding:3px 6px; font-family:'SF Mono', monospace; font-size:10px; cursor:pointer; border-radius:3px; border-left:2px solid transparent; }
-  .bridge-row:hover { background:#1a1a2a; border-left-color:#00bceb; }
+  .bridge-row:hover { background:#1a1a2a; border-left-color:#5de3ff; }
   .bridge-row .bname { color:#d0d8e0; flex:1; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; }
   .bridge-row .bscope { color:#607080; }
   .bridge-row .bscore { color:#ffaa00; min-width:46px; text-align:right; }
@@ -4553,7 +4531,7 @@ CODEGRAPH_HTML = r"""<!DOCTYPE html>
     </label>
     <label id="min-degree-label">min degree: <input type="range" id="min-degree" min="0" max="50" value="5"><span id="min-degree-val">5</span></label>
     <label>search: <input type="text" id="search" placeholder="symbol name..."></label>
-    <button id="back-to-dirs" style="display:none;background:#101025;color:#00bceb;border:1px solid #00bceb;padding:3px 10px;border-radius:3px;font-size:11px;cursor:pointer">&larr; Back to directories</button>
+    <button id="back-to-dirs" style="display:none;background:#101025;color:#5de3ff;border:1px solid #5de3ff;padding:3px 10px;border-radius:3px;font-size:11px;cursor:pointer">&larr; Back to directories</button>
   </div>
   <span id="stats"><span class="loading-spinner"></span> loading...</span>
 </header>
@@ -4628,7 +4606,7 @@ function drawLabelWithPill(context, data, settings) {
   const y = data.y - (data.size || 4) - h - 3;
   // Pill backdrop (dark, ~90% opaque) bordered with the node's color.
   context.fillStyle = 'rgba(10, 10, 26, 0.92)';
-  context.strokeStyle = data.color || '#00bceb';
+  context.strokeStyle = data.color || '#5de3ff';
   context.lineWidth = 1;
   if (context.roundRect) {
     context.beginPath();
@@ -4808,7 +4786,7 @@ function rebuildConceptGraph(data) {
   // Color palette by concept kind — keeps the categorical distinction
   // visible even when zoomed out.
   const conceptPalette = {
-    subsystem:  '#00bceb',  // cyan — architectural backbone
+    subsystem:  '#5de3ff',  // cyan — architectural backbone
     pattern:    '#ffaa00',  // amber — recurring solutions
     principle:  '#ff66cc',  // pink — inviolable rules
     feature:    '#88ddaa',  // mint — user-facing capability
@@ -5366,7 +5344,7 @@ function rebuild3DGraph(data) {
       // edges go through linkVisibility below.)
       .linkColor(l => {
         const srcId = (l.source && l.source.id !== undefined) ? l.source.id : l.source;
-        if (_3d.selectedId != null) return '#00bceb';
+        if (_3d.selectedId != null) return '#5de3ff';
         const srcNode = (l.source && l.source.community !== undefined)
           ? l.source
           : (data.nodes.find(n => n.id === srcId) || {});
@@ -5678,13 +5656,13 @@ function rebuildGraph(data) {
         const ext = g.extremities(edge);
         const both = _state.searchMatches.has(ext[0]) && _state.searchMatches.has(ext[1]);
         if (!both) return { ...data, hidden: true };
-        return { ...data, color: '#00bceb', size: 0.8, zIndex: 1 };
+        return { ...data, color: '#5de3ff', size: 0.8, zIndex: 1 };
       }
       const sel = _state.highlightedId;
       if (!sel) return data;
       const ext = g.extremities(edge);
       const touches = (ext[0] === sel || ext[1] === sel);
-      if (touches) return { ...data, color: '#00bceb', size: 0.8, zIndex: 1 };
+      if (touches) return { ...data, color: '#5de3ff', size: 0.8, zIndex: 1 };
       return { ...data, hidden: true };
     },
   });
@@ -6155,12 +6133,12 @@ AGENT_WALK_HTML = r"""<!DOCTYPE html>
 <style>
 body{background:#0a0a1a;color:#c8d8e8;font-family:'SF Mono','Fira Code',monospace;font-size:12px;margin:0;padding:0}
 header{background:#0e0e22;padding:10px 20px;border-bottom:1px solid #20304a;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
-header h1{margin:0;font-family:'CiscoSans',system-ui,sans-serif;font-size:16px;color:#00bceb;font-weight:500;letter-spacing:0.5px}
+header h1{margin:0;font-family:system-ui,sans-serif;font-size:16px;color:#5de3ff;font-weight:500;letter-spacing:0.5px}
 header .picker{display:flex;align-items:center;gap:6px}
 header select,header input{background:#0a0a1a;color:#c8d8e8;border:1px solid #304050;padding:4px 8px;font-family:inherit;font-size:11px;border-radius:3px;min-width:200px}
 header select{min-width:340px}
 header a.back{color:#607080;font-size:11px;text-decoration:none;margin-left:auto;border:1px solid #304050;padding:4px 10px;border-radius:6px}
-header a.back:hover{color:#00bceb;border-color:#00bceb}
+header a.back:hover{color:#5de3ff;border-color:#5de3ff}
 .meta{padding:8px 20px;color:#8090a0;font-size:11px;border-bottom:1px solid #20304a;background:#0e0e22}
 .meta .label{color:#607080;margin-right:4px}
 .meta .val{color:#c8d8e8;margin-right:18px}
@@ -6173,11 +6151,11 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
 .time-axis{stroke:#304050;stroke-width:1}
 .time-tick{fill:#607080;font-size:10px}
 .event-dot{cursor:pointer;transition:r 0.1s}
-.event-dot:hover{stroke:#00bceb;stroke-width:2}
-.event-dot.sel{stroke:#00bceb;stroke-width:2}
+.event-dot:hover{stroke:#5de3ff;stroke-width:2}
+.event-dot.sel{stroke:#5de3ff;stroke-width:2}
 .color-WEBHOOK{fill:#aa88ff}
 .color-SKILL{fill:#00ff88}
-.color-SCAN{fill:#00b4d8}
+.color-SCAN{fill:#5de3ff}
 .color-DEFENSE{fill:#6688ff}
 .color-MCP{fill:#ffaa00}
 .color-EXEC{fill:#607080}
@@ -6191,15 +6169,15 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
  * space so the swimlane (A) above keeps its natural height. */
 #bottom-pane{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#20304a;border-top:1px solid #20304a;min-height:340px;height:42vh}
 #log-stream,#detail{padding:12px 20px;background:#0e0e22;font-size:11px;line-height:1.5;overflow-y:auto}
-#log-stream h3,#detail h3{font-family:'CiscoSans',system-ui,sans-serif;margin:0 0 8px 0;font-size:13px;color:#00bceb;font-weight:500;letter-spacing:0.3px;position:sticky;top:0;background:#0e0e22;padding-bottom:6px;border-bottom:1px solid #20304a;z-index:1}
+#log-stream h3,#detail h3{font-family:system-ui,sans-serif;margin:0 0 8px 0;font-size:13px;color:#5de3ff;font-weight:500;letter-spacing:0.3px;position:sticky;top:0;background:#0e0e22;padding-bottom:6px;border-bottom:1px solid #20304a;z-index:1}
 #detail .row{display:flex;margin-bottom:4px}
 #detail .k{color:#607080;width:120px;flex-shrink:0}
 #detail .v{color:#c8d8e8;font-family:'SF Mono',monospace;word-break:break-all}
-#detail .stage-pill{display:inline-block;background:#203040;color:#00bceb;padding:1px 8px;border-radius:10px;font-size:10px;margin-left:6px}
+#detail .stage-pill{display:inline-block;background:#203040;color:#5de3ff;padding:1px 8px;border-radius:10px;font-size:10px;margin-left:6px}
 /* Log stream rows. Compact monospace so dense traces stay readable. */
 #log-stream .lrow{display:flex;gap:8px;padding:2px 4px 2px 6px;font-family:'SF Mono',monospace;font-size:10px;border-radius:2px;cursor:pointer;align-items:baseline;border-left:3px solid #303040;background:#0e0e22}
 #log-stream .lrow:hover{filter:brightness(1.4)}
-#log-stream .lrow.cur{box-shadow:inset 0 0 0 1px #00bceb;color:#fff}
+#log-stream .lrow.cur{box-shadow:inset 0 0 0 1px #5de3ff;color:#fff}
 #log-stream .lrow .lt{color:#505060;width:80px;flex-shrink:0}
 #log-stream .lrow .lstage{color:#607080;width:30px;flex-shrink:0;text-align:right}
 #log-stream .lrow .ltype{width:80px;flex-shrink:0;text-overflow:ellipsis;overflow:hidden;white-space:nowrap}
@@ -6225,8 +6203,8 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
 .legend .swatch{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle}
 .player{display:flex;align-items:center;gap:10px;padding:8px 20px;background:#0e0e22;border-bottom:1px solid #20304a;font-size:11px}
 .player button{background:#101025;color:#c8d8e8;border:1px solid #304050;padding:4px 12px;font-family:inherit;font-size:11px;border-radius:3px;cursor:pointer}
-.player button:hover{border-color:#00bceb;color:#00bceb}
-.player button.active{background:#203040;color:#00bceb;border-color:#00bceb}
+.player button:hover{border-color:#5de3ff;color:#5de3ff}
+.player button.active{background:#203040;color:#5de3ff;border-color:#5de3ff}
 .player .speed-label{color:#607080}
 .player .progress{flex:1;height:4px;background:#101025;border-radius:2px;position:relative;overflow:hidden;margin:0 12px}
 .player .progress .bar{position:absolute;left:0;top:0;height:100%;background:#00ff88;width:0;transition:width 0.05s linear}
@@ -6254,7 +6232,7 @@ header a.back:hover{color:#00bceb;border-color:#00bceb}
 .live-bar .label{color:#ff5555;font-weight:bold;letter-spacing:0.5px}
 .live-bar .meta{color:#607080}
 .live-bar button{background:#101025;color:#c8d8e8;border:1px solid #304050;padding:4px 12px;font-family:inherit;font-size:11px;border-radius:3px;cursor:pointer}
-.live-bar button:hover{border-color:#00bceb;color:#00bceb}
+.live-bar button:hover{border-color:#5de3ff;color:#5de3ff}
 .live-bar .switch-live{margin-left:auto;background:#102030;border-color:#205070;color:#88ccff}
 .live-bar .switch-live:hover{border-color:#88ccff;color:#bbe0ff}
 /* Live nudge pill on replay mode (when trace is still active) */
@@ -6619,7 +6597,7 @@ function logStreamRenderUpTo(idx){
     const colorCls='color-'+(e.type||'OTHER');
     h+=`<div class="lrow ${srcCls}${cur}" data-i="${i}" onclick="logStreamSelect(${i})">`+
        `<span class="lt">${fmtTime(e.time)}</span>`+
-       `<span class="lstage" style="color:#00bceb">${stage||'·'}</span>`+
+       `<span class="lstage" style="color:#5de3ff">${stage||'·'}</span>`+
        `<span class="ltype ${colorCls}" style="font-weight:bold">${esc(e.type||'')}</span>`+
        `<span class="larg">${esc((e.binary||'').replace(/^claude:/,'')+' '+(e.args||''))}</span>`+
        `</div>`;
@@ -6648,7 +6626,7 @@ function logStreamAppend(idx){
   div.setAttribute('onclick',`logStreamSelect(${idx})`);
   div.innerHTML=
     `<span class="lt">${fmtTime(e.time)}</span>`+
-    `<span class="lstage" style="color:#00bceb">${stage||'·'}</span>`+
+    `<span class="lstage" style="color:#5de3ff">${stage||'·'}</span>`+
     `<span class="ltype ${colorCls}" style="font-weight:bold">${esc(e.type||'')}</span>`+
     `<span class="larg">${esc((e.binary||'').replace(/^claude:/,'')+' '+(e.args||''))}</span>`;
   body.appendChild(div);
@@ -7878,7 +7856,7 @@ a{{color:#0a6aba}}
                 import re as _re2
                 page = _re2.sub(r'<p style="text-align:center;margin:12px 0"><a href="/whitepaper\.pdf"[^<]*>[^<]*</a></p>', '', page)
                 # Fix dark-theme colors for print
-                page = page.replace('color:#00b4d8', 'color:#0a4a7a').replace('color:#00bceb', 'color:#0a6aba').replace('color:#607080', 'color:#666').replace('color:#4090d0', 'color:#0a6aba').replace('color:#405060', 'color:#888')
+                page = page.replace('color:#5de3ff', 'color:#0a4a7a').replace('color:#5de3ff', 'color:#0a6aba').replace('color:#607080', 'color:#666').replace('color:#4090d0', 'color:#0a6aba').replace('color:#405060', 'color:#888')
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
