@@ -86,6 +86,13 @@ def run_agent(flow, case):
         out = subprocess.run(['claude', '-p', prompt, '--model', 'opus',
                               '--disallowedTools', _SCORER_DISALLOWED],
                              capture_output=True, text=True, timeout=600)
+        if not out.stdout.strip():
+            # Empty output scores as all-zeros downstream — surface WHY so a
+            # broken runner can't masquerade as a bad agent (2026-07-22: the
+            # 05:00 job silently produced empty outputs; exit/stderr were
+            # swallowed here).
+            print(f'  run_agent({flow}): EMPTY output, exit={out.returncode}, '
+                  f'stderr: {out.stderr.strip()[:300]}', file=sys.stderr)
         return out.stdout
     except Exception as e:
         print(f'  run_agent({flow}) failed: {e}', file=sys.stderr)
