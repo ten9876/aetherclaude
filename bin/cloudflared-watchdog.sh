@@ -21,6 +21,7 @@ set -euo pipefail
 
 URL="https://dashboard.aethersdr.com/"
 LABEL="system/com.aetherclaude.cloudflared"
+PLIST="/Library/LaunchDaemons/com.aetherclaude.cloudflared.plist"
 STATE_DIR="/Users/aetherclaude/logs"
 STATE_FILE="${STATE_DIR}/.cloudflared-watchdog-consecutive-530"
 LOG_FILE="${STATE_DIR}/cloudflared-watchdog.log"
@@ -43,8 +44,18 @@ case "$code" in
         printf '%s' "$consec" > "$STATE_FILE"
         log "public URL code=${code} (${consec} consecutive bad)"
         if [ "$consec" -ge 2 ]; then
-            log "kickstarting ${LABEL}"
-            launchctl kickstart -k "$LABEL"
+            # kickstart only restarts a LOADED job. If the job got booted out
+            # (e.g. a deploy bootout without a successful bootstrap, or churn),
+            # kickstart fails and the tunnel stays down — the exact failure we
+            # hit 2026-07-22. So bootstrap when the job is absent, kickstart
+            # when it's loaded. Belt-and-suspenders with KeepAlive.
+            if launchctl print "$LABEL" >/dev/null 2>&1; then
+                log "kickstarting ${LABEL}"
+                launchctl kickstart -k "$LABEL"
+            else
+                log "job not loaded — bootstrapping ${LABEL}"
+                launchctl bootstrap system "$PLIST"
+            fi
             printf '0' > "$STATE_FILE"
         fi
         ;;
