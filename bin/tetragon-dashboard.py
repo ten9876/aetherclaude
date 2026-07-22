@@ -3616,7 +3616,7 @@ function renderExec(d){
      click:'showRunSuccess()'},
     {lbl:'Eval quality',val:(ev.score_mean!=null)?ev.score_mean+'%':'—',
      sub:(ev.score_mean!=null)?`scored across ${ev.score_flows} flow${ev.score_flows===1?'':'s'} · daily eval`:'no scored evals yet',
-     spark:'',click:'showEvalQuality()'},
+     spark:svgSparkline((ev.quality_48h||[]).map(x=>x.score)),click:'showEvalQuality()'},
     {lbl:'Cycle API cost avoided',val:cost==null?'—':'$'+Number(cost).toFixed(0),
      sub:roi==null?'Claude MAX subscription':`breakeven ${roi}% · MAX $${sub}/cycle`,
      spark:svgSparkline(tok48),click:'showApiCost()'}];
@@ -8389,6 +8389,34 @@ a{{color:#0a6aba}}
                             score_flows = len(fmeans)
                     except Exception:
                         pass
+                    # 48h quality series for the tile sparkline: one point per
+                    # experiment BATCH (the daily 05:00 job posts all flows
+                    # within seconds; a >10-min gap starts a new batch). Batch
+                    # score = mean of its per-flow scorer means. Sparse by
+                    # nature — experiments are daily, not hourly.
+                    quality_48h = []
+                    try:
+                        exp_rows = conn.execute(
+                            "SELECT CAST(strftime('%s',replace(ts,'T',' ')) AS INTEGER), scores_json "
+                            "FROM eval_results WHERE kind='experiment' AND scores_json IS NOT NULL "
+                            "AND replace(ts,'T',' ')>=datetime('now','-2 days') ORDER BY ts ASC").fetchall()
+                        batches = []
+                        for ep, sj in exp_rows:
+                            sc = json.loads(sj)
+                            vals = [v for v in sc.values() if isinstance(v, (int, float))]
+                            if not vals or ep is None:
+                                continue
+                            fm = sum(vals) / len(vals)
+                            if batches and ep - batches[-1]['end'] <= 600:
+                                batches[-1]['means'].append(fm)
+                                batches[-1]['end'] = ep
+                            else:
+                                batches.append({'start': ep, 'end': ep, 'means': [fm]})
+                        quality_48h = [{'t': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(b['start'])),
+                                        'score': round(100.0 * sum(b['means']) / len(b['means']))}
+                                       for b in batches]
+                    except Exception:
+                        pass
                     # 7-day daily success-rate series for the Run success
                     # tile's trendline. Days with no runs carry pass_rate null
                     # (rendered as a gap, never faked). The modal's per-flow
@@ -8408,7 +8436,8 @@ a{{color:#0a6aba}}
                     payload['eval'] = {'pass_rate_24h': cur, 'runs_24h': cur_n or 0,
                                        'pass_rate_prev_24h': prev,
                                        'success_7d': success_7d,
-                                       'score_mean': score_mean, 'score_flows': score_flows}
+                                       'score_mean': score_mean, 'score_flows': score_flows,
+                                       'quality_48h': quality_48h}
                     conn.close()
                 except Exception as ex:
                     payload['error'] = str(ex)
