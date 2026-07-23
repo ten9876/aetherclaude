@@ -1056,6 +1056,7 @@ review_single_pr() {
         return 1
     }
     log "Reviewed PR #${pr_number}"
+    record_action "$pr_number" "review" "reviewed" "success" "$pr_title"
 
     # Standalone CodeGuard advisory comment — a durable structured record
     # alongside the review's inline comments.

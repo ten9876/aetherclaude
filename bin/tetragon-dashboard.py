@@ -1831,6 +1831,11 @@ def scan_rings():
                             m = re.search(r'Responding to discussion #(\d+): (.+)', oline)
                             if m:
                                 issue_titles['d' + m.group(1)] = m.group(2)
+                            # PR review lines carry the PR title too (shared by
+                            # number space with issues for the activity markers).
+                            m = re.search(r'Reviewing PR #(\d+): (.+?) by @', oline)
+                            if m:
+                                issue_titles[m.group(1)] = m.group(2)
                     ring_stats['issue_titles'] = issue_titles
                 except:
                     pass
@@ -3640,7 +3645,7 @@ function svgAreaChart(buckets,w,h,opts){
       const mxp=padL+frac*iw;
       const fi=frac*(buckets.length-1),i0=Math.floor(fi),i1=Math.min(i0+1,buckets.length-1);
       const myp=ys[i0]+(ys[i1]-ys[i0])*(fi-i0);
-      marks+=`<circle cx="${mxp.toFixed(1)}" cy="${myp.toFixed(1)}" r="4.5" fill="${opts.markerColor||'#d94fd4'}" stroke="#0e1a2a" stroke-width="2"/>`;
+      marks+=`<circle cx="${mxp.toFixed(1)}" cy="${myp.toFixed(1)}" r="${m.r||4.5}" fill="${m.color||opts.markerColor||'#d94fd4'}" stroke="#0e1a2a" stroke-width="2"/>`;
       markHits+=`<circle cx="${mxp.toFixed(1)}" cy="${myp.toFixed(1)}" r="11" fill="transparent" data-m="${mi}" style="cursor:pointer"/>`;
     });
   }
@@ -3651,6 +3656,22 @@ function svgAreaChart(buckets,w,h,opts){
     adot+
     `<line id="${cid}-cross" y1="${padT}" y2="${(padT+ih).toFixed(1)}" x1="0" x2="0" stroke="rgba(120,190,230,.28)" stroke-width="1" visibility="hidden"/>`+
     labels+hits+marks+markHits+`</svg>`;
+}
+// Edge-aware tooltip placement: default to the right of the cursor, but flip
+// to the left when the card would overflow the viewport's right edge, and
+// clamp vertically so tall cards (many findings) never render offscreen.
+function placeTip(tt,ev){
+  tt.style.display='block';
+  tt.style.left='-9999px';tt.style.top='0px';   // measure offscreen first
+  const rc=tt.getBoundingClientRect();
+  const vw=window.innerWidth,vh=window.innerHeight,pad=14,edge=8;
+  let left=ev.clientX+pad;
+  if(left+rc.width>vw-edge)left=ev.clientX-rc.width-pad;   // flip to the left
+  if(left<edge)left=edge;
+  let top=ev.clientY-10;
+  if(top+rc.height>vh-edge)top=vh-rc.height-edge;          // lift up if tall
+  if(top<edge)top=edge;
+  tt.style.left=left+'px';tt.style.top=top+'px';
 }
 function wireTrendHover(buckets,opts){
   opts=opts||{};
@@ -3666,7 +3687,7 @@ function wireTrendHover(buckets,opts){
       const m=opts.markers[+r.dataset.m];if(!m)return;
       cross.setAttribute('visibility','hidden');
       tt.innerHTML=opts.mtip(m);
-      tt.style.display='block';tt.style.left=(ev.clientX+14)+'px';tt.style.top=(ev.clientY-10)+'px';
+      placeTip(tt,ev);
       return;
     }
     if(!r.dataset||r.dataset.i===undefined){tt.style.display='none';cross.setAttribute('visibility','hidden');return}
@@ -3674,7 +3695,7 @@ function wireTrendHover(buckets,opts){
     cross.setAttribute('x1',r.dataset.x);cross.setAttribute('x2',r.dataset.x);cross.setAttribute('visibility','visible');
     const dt=new Date(b.t);
     tt.innerHTML=`${isNaN(dt)?b.t:dt.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})} — ${tip(b)}`;
-    tt.style.display='block';tt.style.left=(ev.clientX+14)+'px';tt.style.top=(ev.clientY-10)+'px';
+    placeTip(tt,ev);
   });
   svg.addEventListener('mouseleave',()=>{tt.style.display='none';cross.setAttribute('visibility','hidden')});
 }
@@ -3769,27 +3790,66 @@ function renderExec(d){
   if(tw.dataset.key!==key&&tr.activity){
     tw.dataset.key=key;
     const w=Math.max(tw.clientWidth||0,320);
-    // CodeGuard run markers: clustered server-side (5-min gap); hover shows
-    // the run's events as a data card.
-    const cg=tr.codeguard_24h||[];
-    const cgCard=m=>{
-      const f=s=>{const d=new Date(s);return isNaN(d)?'':d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})};
-      const t0=f(m.t),t1=f(m.t_end);
-      let s=`<div style="white-space:normal;max-width:380px">`+
-        `<div style="font-weight:600;color:#eaf2fb;margin-bottom:5px"><span style="color:#d94fd4">&#9679;</span> CodeGuard run &middot; ${t0}${(t1&&t1!==t0)?'&ndash;'+t1:''} &middot; ${m.count} event${m.count===1?'':'s'}</div>`;
-      for(const e of (m.events||[]).slice(0,8)){
-        s+=`<div style="display:flex;gap:6px;margin-top:2px;font-size:11px">`+
-           `<span style="color:#d94fd4;font-weight:600;flex:0 0 auto">${esc(e.type||'EVENT')}</span>`+
-           `<span style="color:#c4d4e8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.args||e.policy||'')}</span></div>`;
+    const titles=(lastData&&lastData.rings&&lastData.rings.issue_titles)||{};
+    const fT=s=>{const d=new Date(s);return isNaN(d)?'':d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})};
+    // Workflow-kind styling: color + label + issue/PR prefix.
+    const WF={triage:{c:'#21a184',l:'Triage',p:'#'},implement:{c:'#bd7c20',l:'Implement',p:'#'},
+              review:{c:'#a878e0',l:'PR review',p:'PR #'},detect:{c:'#e85578',l:'Antares',p:'#'}};
+    // CodeGuard OS-telemetry run markers (clustered server-side, magenta).
+    const cg=(tr.codeguard_24h||[]).map(m=>({...m,kind:'codeguard',color:'#d94fd4',r:4}));
+    // Workflow markers (triage / implement / review / antares passes).
+    const wf=(tr.workflow_24h||[]).map(m=>({...m,color:(WF[m.kind]||{}).c||'#5de3ff'}));
+    // One merged, time-sorted marker array; per-marker color drives the dot.
+    const marks=cg.concat(wf).sort((a,b)=>new Date(a.t)-new Date(b.t));
+    // Unified hover card — dispatches on kind.
+    const card=m=>{
+      if(m.kind==='codeguard'){
+        const t0=fT(m.t),t1=fT(m.t_end);
+        let s=`<div style="white-space:normal;max-width:380px">`+
+          `<div style="font-weight:600;color:#eaf2fb;margin-bottom:5px"><span style="color:#d94fd4">&#9679;</span> CodeGuard run &middot; ${t0}${(t1&&t1!==t0)?'&ndash;'+t1:''} &middot; ${m.count} event${m.count===1?'':'s'}</div>`;
+        for(const e of (m.events||[]).slice(0,8)){
+          s+=`<div style="display:flex;gap:6px;margin-top:2px;font-size:11px">`+
+             `<span style="color:#d94fd4;font-weight:600;flex:0 0 auto">${esc(e.type||'EVENT')}</span>`+
+             `<span style="color:#c4d4e8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.args||e.policy||'')}</span></div>`;
+        }
+        if(m.count>(m.events||[]).length)s+=`<div style="color:#8598b4;margin-top:4px;font-size:10px">+${m.count-(m.events||[]).length} more &middot; full detail in the CodeGuard modal</div>`;
+        return s+'</div>';
       }
-      if(m.count>(m.events||[]).length)s+=`<div style="color:#8598b4;margin-top:4px;font-size:10px">+${m.count-(m.events||[]).length} more &middot; full detail in the CodeGuard modal</div>`;
+      // Workflow card: kind · #/PR # + title, then the sweep finding line(s).
+      const wk=WF[m.kind]||{c:'#5de3ff',l:m.kind,p:'#'};
+      const title=titles[m.num]||'';
+      let s=`<div style="white-space:normal;max-width:400px">`+
+        `<div style="font-weight:600;color:#eaf2fb;margin-bottom:2px"><span style="color:${wk.c}">&#9679;</span> ${wk.l} &middot; ${wk.p}${esc(m.num)} &middot; ${fT(m.t)}</div>`;
+      if(title)s+=`<div style="color:#c4d4e8;font-size:12px;margin-bottom:5px">${esc(title)}</div>`;
+      // Antares finding (verdict + rationale/candidates).
+      if(m.antares){
+        s+=`<div style="display:flex;gap:6px;margin-top:3px;font-size:11px">`+
+           `<span style="color:#e85578;font-weight:600;flex:0 0 auto">Antares</span>`+
+           `<span style="color:#d7e2f2">${esc(m.antares)}</span></div>`;
+      }else if(m.antares_verdict){
+        s+=`<div style="font-size:11px;margin-top:3px"><span style="color:#e85578;font-weight:600">Antares</span> <span style="color:#8598b4">${esc(m.antares_verdict)}</span></div>`;
+      }else if(m.kind==='detect'&&m.detail){
+        s+=`<div style="font-size:11px;margin-top:3px"><span style="color:#e85578;font-weight:600">Antares</span> <span style="color:#d7e2f2">${esc(m.detail)}</span></div>`;
+      }
+      // CodeGuard PR finding.
+      if(m.codeguard){
+        s+=`<div style="display:flex;gap:6px;margin-top:3px;font-size:11px">`+
+           `<span style="color:#d94fd4;font-weight:600;flex:0 0 auto">CodeGuard</span>`+
+           `<span style="color:#d7e2f2">${esc(m.codeguard)}${m.codeguard_more>0?` <span style="color:#8598b4">+${m.codeguard_more} more</span>`:''}</span></div>`;
+      }
+      if(!m.antares&&!m.antares_verdict&&!m.codeguard&&!(m.kind==='detect'&&m.detail))
+        s+=`<div style="color:#8598b4;font-size:10px;margin-top:3px">no sweep findings</div>`;
       return s+'</div>';
     };
-    tw.innerHTML=svgAreaChart(tr.activity,w,160,{dur:10.7,markers:cg,mtip:cgCard});
-    wireTrendHover(tr.activity,{markers:cg,mtip:cgCard});
+    tw.innerHTML=svgAreaChart(tr.activity,w,160,{dur:10.7,markers:marks,mtip:card});
+    wireTrendHover(tr.activity,{markers:marks,mtip:card});
     const tot=tr.activity.reduce((a,b)=>a+b.events,0);
+    // Legend — count by kind, then total events.
+    const kc={};wf.forEach(m=>{kc[m.kind]=(kc[m.kind]||0)+1});
+    let leg=Object.keys(WF).filter(k=>kc[k]).map(k=>`<span style="color:${WF[k].c}">&#9679;</span> ${kc[k]} ${WF[k].l.toLowerCase()}`).join(' &nbsp; ');
+    if(cg.length)leg+=`${leg?' &nbsp; ':''}<span style="color:#d94fd4">&#9679;</span> ${cg.length} CodeGuard`;
     document.getElementById('x-trend-total').innerHTML=
-      `${cg.length?`<span style="color:#d94fd4">&#9679;</span> ${cg.length} CodeGuard run${cg.length===1?'':'s'} &nbsp;&middot;&nbsp; `:''}${fmtCompact(tot)} events`;
+      `${leg?leg+' &nbsp;&middot;&nbsp; ':''}${fmtCompact(tot)} events`;
   }
   // Alerts — section hidden entirely when quiet
   const alerts=s.alerts||[];
@@ -8774,6 +8834,71 @@ a{{color:#0a6aba}}
                         payload['codeguard_24h'] = cg_clusters[-50:]
                     except Exception:
                         payload['codeguard_24h'] = []
+                    # Workflow markers: triage / implement / review / antares
+                    # (detect) passes from issue_actions, each enriched with a
+                    # first-line finding summary from the Antares + CodeGuard
+                    # sweeps for that issue/PR. Titles are joined client-side
+                    # from rings.issue_titles.
+                    try:
+                        # Antares summary per number (prefer a vulnerable verdict).
+                        ant_sum = {}
+                        for num, verdict, cand, rat in conn.execute(
+                                "SELECT issue_number, verdict, file_path, rationale "
+                                "FROM detector_findings "
+                                "WHERE scan_time>=datetime('now','-24 hours') "
+                                "ORDER BY id ASC"):
+                            if num is None:
+                                continue
+                            k = str(num)
+                            if verdict == 'vulnerable' and (rat or cand):
+                                ant_sum[k] = ('vulnerable', (rat or '').strip()
+                                              or ('candidate: ' + (cand or '')))
+                            elif k not in ant_sum:
+                                ant_sum[k] = (verdict or 'clean', '')
+                        # CodeGuard PR summary per ref (first finding + count).
+                        cg_sum = {}
+                        for ref, sev, rid, ctitle in conn.execute(
+                                "SELECT ref, severity, rule_id, title "
+                                "FROM codeguard_findings "
+                                "WHERE source='pr' AND ref IS NOT NULL "
+                                "AND scan_time>=datetime('now','-24 hours') "
+                                "ORDER BY id ASC"):
+                            k = str(ref)
+                            cg_sum.setdefault(k, []).append(
+                                '[%s] %s %s' % (sev or '', rid or '', (ctitle or '')[:70]))
+                        iac = sqlite3.connect(ISSUE_ACTIONS_DB, timeout=10)
+                        wf = []
+                        for num, action, state, outcome, detail, ca in iac.execute(
+                                "SELECT issue_number, action, state, outcome, detail, created_at "
+                                "FROM issue_actions "
+                                "WHERE action IN ('triage','implement','review','detect') "
+                                "AND outcome!='started' "
+                                # Real ISO timestamps only — migrated rows carry a
+                                # 'migration-…' created_at that lexically defeats the
+                                # window filter and is an unparseable marker time.
+                                "AND created_at GLOB '2[0-9][0-9][0-9]-*' "
+                                "AND replace(created_at,'T',' ')>=datetime('now','-24 hours') "
+                                "ORDER BY created_at ASC LIMIT 600"):
+                            k = str(num)
+                            mk = {'t': (ca or '').replace(' ', 'T') + 'Z',
+                                  'kind': action, 'num': k,
+                                  'state': state or '', 'outcome': outcome or ''}
+                            av = ant_sum.get(k)
+                            if av:
+                                mk['antares_verdict'] = av[0]
+                                if av[1]:
+                                    mk['antares'] = av[1][:180]
+                            cv = cg_sum.get(k)
+                            if cv:
+                                mk['codeguard'] = cv[0]
+                                mk['codeguard_more'] = len(cv) - 1
+                            if action == 'detect' and detail:
+                                mk['detail'] = detail[:180]
+                            wf.append(mk)
+                        iac.close()
+                        payload['workflow_24h'] = wf[-250:]
+                    except Exception:
+                        payload['workflow_24h'] = []
                     # eval pass rates, two 24h windows (ts is ISO w/ 'T' — normalize)
                     def _pr(where):
                         tot, ok = conn.execute(
