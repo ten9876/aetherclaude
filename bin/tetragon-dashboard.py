@@ -3945,7 +3945,7 @@ fetch('/api/cartographer').then(r=>r.json()).then(cd=>{
   if(!cd.available){el.textContent='no pack yet';return}
   const tot=Object.values(cd.categories||{}).reduce((a,b)=>a+b,0);
   el.classList.remove('muted');
-  el.innerHTML=`${tot} sites · ${cd.open_cve_count} CVEs · <a href="/repo-context.md" target="_blank" style="color:#5de3ff;text-decoration:none">pack</a>`;
+  el.innerHTML=`${tot} sites · ${cd.open_cve_count} CVEs · <a href="/cartographer" target="_blank" style="color:#5de3ff;text-decoration:none">view</a>`;
   const row=document.getElementById('carto-row');
   if(row)row.title=`HEAD ${(cd.head_sha||'').slice(0,12)} · ${cd.subsystems} subsystems · generated ${cd.generated_at}`;
 }).catch(()=>{});
@@ -7291,6 +7291,113 @@ loadRecentTraces();
 </script>
 </body></html>"""
 
+# Cartographer viewer — renders repo-context.json (the Cartographer pack) as
+# styled cards/tables in the AetherSDR design language. Self-contained, no
+# external deps (CSP-safe). Served at /cartographer; the scanner row links here.
+CARTOGRAPHER_HTML = r"""<!DOCTYPE html>
+<html><head><title>Cartographer — Repo Context</title><meta charset="utf-8">
+<style>
+:root{--bg:#060b13;--bg-1:#0a121e;--bg-2:#0e1a2a;--bg-3:#12233a;--panel:rgba(18,34,56,.55);--ink:#eaf2fb;--ink-soft:#c4d4e8;--muted:#8598b4;--muted-dim:#5f708a;--line:rgba(120,165,210,.12);--line-hi:rgba(120,190,230,.28);--accent:#3aa7ff;--accent-bright:#5de3ff;--good:#27a86f;--warn:#b3831c;--crit:#e8506a;--radius:16px;--radius-sm:11px;--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,sans-serif;--mono:'SF Mono','JetBrains Mono','Fira Code',ui-monospace,Menlo,monospace}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink-soft);font-family:var(--sans);font-size:13px}
+.hdr{background:var(--bg-1);border-bottom:1px solid var(--line);padding:12px 24px;display:flex;justify-content:space-between;align-items:baseline}
+.hdr h1{font-size:19px;color:var(--accent-bright);font-weight:600;letter-spacing:.4px}
+.hdr .sub{color:var(--muted-dim);font-size:11px;font-family:var(--mono)}
+.hdr a{color:var(--muted);font-size:11px;text-decoration:none;border:1px solid var(--line-hi);border-radius:8px;padding:4px 12px}
+.hdr a:hover{color:var(--accent-bright);border-color:var(--accent)}
+.wrap{max-width:1200px;margin:0 auto;padding:20px 24px 60px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-sm);padding:14px 16px}
+.kpi .l{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px}
+.kpi .v{font-size:26px;font-weight:600;color:var(--ink);margin-top:4px}
+.kpi .v.crit{color:var(--crit)}.kpi .v.warn{color:var(--warn)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px 22px;margin-bottom:16px}
+.panel h2{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:12px;font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;color:var(--muted);font-weight:600;padding:5px 8px;border-bottom:1px solid var(--line-hi);position:sticky;top:0;background:var(--bg-1)}
+td{padding:5px 8px;border-bottom:1px solid var(--line);color:var(--ink-soft);vertical-align:top}
+td.mono,.mono{font-family:var(--mono);font-size:11px}
+tr:hover td{background:var(--bg-2)}
+.cat{margin-bottom:14px;border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden}
+.cat>summary{cursor:pointer;padding:10px 14px;background:var(--bg-2);font-weight:600;color:var(--ink-soft);list-style:none;display:flex;justify-content:space-between;align-items:center}
+.cat>summary::-webkit-details-marker{display:none}
+.cat>summary:hover{background:var(--bg-3)}
+.cat .body{padding:4px 14px 10px}
+.cat .desc{color:var(--muted);font-size:11px;font-weight:400;margin-left:10px}
+.pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;border-radius:100px}
+.sev-CRITICAL{background:rgba(232,80,106,.14);color:#f2879b}.sev-HIGH{background:rgba(232,80,106,.10);color:var(--crit)}
+.sev-MEDIUM{background:rgba(179,131,28,.14);color:#d9a02b}.sev-LOW{background:rgba(39,168,111,.14);color:var(--good)}
+.chip{display:inline-block;background:var(--bg-3);border:1px solid var(--line-hi);border-radius:100px;padding:2px 10px;font-size:11px;margin:2px 4px 2px 0;color:var(--ink-soft)}
+.chip .n{color:var(--accent-bright);font-weight:600;margin-left:4px}
+.loading,.empty{color:var(--muted-dim);padding:40px;text-align:center}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px}
+a.src{color:var(--accent);text-decoration:none}a.src:hover{color:var(--accent-bright)}
+</style></head><body>
+<div class="hdr">
+  <div><h1>Cartographer &middot; Repo Context</h1><div class="sub" id="freshness">loading&hellip;</div></div>
+  <a href="/">&larr; Dashboard</a>
+</div>
+<div class="wrap" id="root"><div class="loading">Loading repo-context pack&hellip;</div></div>
+<script>
+const CAT_COLOR={buffer_ops:'#e85578',format:'#bd7c20',cmd_exec:'#e8506a',path_ops:'#2f96ea',alloc_free:'#a878e0',deserial:'#21a184',input_read:'#5de3ff'};
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function shortsym(s){s=String(s||'');const p=s.split('::');return p[p.length-1]||s}
+fetch('/repo-context.json').then(r=>{if(!r.ok)throw 0;return r.json()}).then(render).catch(()=>{
+  document.getElementById('root').innerHTML='<div class="empty">No repo-context pack available yet.<br><span style="font-size:11px">The Cartographer runs on the codegraph refresh cadence (nightly + on push).</span></div>';
+});
+function render(p){
+  const l0=p.l0_repo_card||{},subs=p.l1_subsystems||[],sec=p.l2_security||{},keys=p.l3_key_symbols||[];
+  document.getElementById('freshness').innerHTML=`HEAD ${esc((l0.head_sha||'').slice(0,12))} &middot; ${esc(l0.extractor_version||'')} &middot; generated ${esc(p.generated_at||'')}`;
+  let h='';
+  // L0 KPIs
+  const cveCls=l0.open_cve_count>0?'crit':'';
+  h+='<div class="kpis">'+[
+    ['Symbols',(l0.symbol_count||0).toLocaleString(),''],
+    ['Edges',(l0.edge_count||0).toLocaleString(),''],
+    ['Subsystems',l0.community_count||subs.length||0,''],
+    ['Tagged sites',l0.call_tag_count||0,''],
+    ['Open CVEs',l0.open_cve_count||0,cveCls],
+    ['Dependencies',l0.dependency_count||0,''],
+  ].map(([l,v,c])=>`<div class="kpi"><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`).join('')+'</div>';
+  // L2 security overlay (lead with it — the point of the page)
+  h+='<div class="panel"><h2>Security overlay</h2>';
+  const cats=sec.categories||{};
+  if(!sec.available||!Object.keys(cats).length){h+='<div class="empty">No call-site overlay (DB predates the tagger).</div>';}
+  else{
+    for(const [cat,d] of Object.entries(cats)){
+      const col=CAT_COLOR[cat]||'#8598b4';
+      h+=`<details class="cat"${cat==='buffer_ops'||cat==='cmd_exec'?' open':''}><summary><span><span class="dot" style="background:${col}"></span>${esc(cat)}<span class="desc">${esc(d.desc||'')}</span></span><span class="pill" style="background:${col}22;color:${col}">${d.count} sites</span></summary><div class="body"><table><thead><tr><th>File:line</th><th>API</th><th>Enclosing function</th><th>betw.</th></tr></thead><tbody>`;
+      for(const s of (d.top_sites||[])){
+        h+=`<tr><td class="mono">${esc(s.file)}:${s.line}</td><td class="mono" style="color:${col}">${esc(s.api)}</td><td class="mono">${esc(shortsym(s.function))}</td><td class="mono">${(s.betweenness||0).toFixed(3)}</td></tr>`;
+      }
+      h+='</tbody></table></div></details>';
+    }
+    const ib=sec.input_boundaries||[];
+    if(ib.length){h+='<h2 style="margin-top:16px">Input boundaries &middot; attack surface</h2>';
+      for(const b of ib.slice(0,15))h+=`<span class="chip">${esc(shortsym(b.function))}<span class="n">${(b.betweenness||0).toFixed(2)}</span></span>`;}
+  }
+  h+='</div>';
+  // Dependency CVEs
+  const cves=sec.dependency_cves||[];
+  if(cves.length){
+    h+='<div class="panel"><h2>Dependency CVEs</h2><table><thead><tr><th>Severity</th><th>Component</th><th>CVE</th><th>Summary</th></tr></thead><tbody>';
+    for(const v of cves)h+=`<tr><td><span class="pill sev-${esc(v.severity||'')}">${esc(v.severity||'?')}</span></td><td>${esc(v.component)}</td><td class="mono">${esc(v.id)}</td><td>${esc(v.summary||'')}</td></tr>`;
+    h+='</tbody></table></div>';
+  }
+  // L1 subsystems
+  h+='<div class="panel"><h2>Subsystem map</h2><table><thead><tr><th>Subsystem</th><th>Symbols</th><th>Key members</th><th>Concepts</th></tr></thead><tbody>';
+  for(const s of subs)h+=`<tr><td class="mono">${esc(s.label)}</td><td>${s.size}</td><td class="mono">${(s.key_symbols||[]).map(shortsym).map(esc).slice(0,4).join(', ')}</td><td>${(s.concepts||[]).map(esc).join(', ')||'&mdash;'}</td></tr>`;
+  h+='</tbody></table></div>';
+  // L3 key symbols
+  h+='<div class="panel"><h2>Key symbols &middot; by betweenness</h2><table><thead><tr><th>Symbol</th><th>Location</th><th>Subsystem</th><th>betw.</th></tr></thead><tbody>';
+  for(const k of keys)h+=`<tr><td class="mono">${esc(shortsym(k.symbol))}</td><td class="mono">${esc(k.loc)}</td><td class="mono">${esc(k.subsystem)}</td><td class="mono">${(k.betweenness||0).toFixed(3)}</td></tr>`;
+  h+='</tbody></table></div>';
+  h+='<div style="text-align:right;margin-top:8px"><a class="src" href="/repo-context.md" target="_blank">raw markdown &#x2197;</a> &nbsp; <a class="src" href="/repo-context.json" target="_blank">json &#x2197;</a></div>';
+  document.getElementById('root').innerHTML=h;
+}
+</script>
+</body></html>"""
+
 def _classify_agent_walk_stage(typ, src, args, binary):
     """Return 1..10 for the 10 walk stages; 0 if uncategorized.
 
@@ -7467,6 +7574,11 @@ class H(BaseHTTPRequestHandler):
             # client-side. See bin/codegraph-extract.py + analyze.py.
             self.send_response(200); self.send_header('Content-Type', 'text/html'); self.end_headers()
             self.wfile.write(CODEGRAPH_HTML.encode())
+        elif self.path == '/cartographer' or self.path.startswith('/cartographer?'):
+            # Cartographer repo-context viewer — renders repo-context.json
+            # (Foundry Cartographer pack) as styled cards/tables.
+            self.send_response(200); self.send_header('Content-Type', 'text/html'); self.end_headers()
+            self.wfile.write(CARTOGRAPHER_HTML.encode())
         elif self.path == '/codegraph/graphify' or self.path == '/codegraph/graphify.html':
             # Serve graphify's self-contained graph.html as a fallback
             # view mode. We render it inside an iframe so its vis-network
