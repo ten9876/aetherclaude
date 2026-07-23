@@ -375,7 +375,7 @@ def _process_tu(args_tuple):
                     | TranslationUnit.PARSE_INCOMPLETE,
         )
     except Exception as e:
-        return ({}, [], [], f'parse failed: {e}')
+        return ({}, [], [], [], f'parse failed: {e}')
 
     symbols = {}     # usr -> dict
     edges = []       # (src_usr, dst_usr, kind)
