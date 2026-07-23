@@ -24,7 +24,10 @@ CONTROL="valid.adi"                     # must parse cleanly (valid use preserve
 # Harness + corpus live in THIS repo (aetherclaude), not the target source, so
 # they default relative to this script and are overridable. --repo is only the
 # AetherSDR checkout whose $FILE gets compiled under the sanitizers.
-SELF_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+# Resolve through the deploy symlink farm (/Users/aetherclaude/bin -> Shared).
+_src="${BASH_SOURCE[0]:-$0}"
+while [ -L "$_src" ]; do _d="$(cd -P "$(dirname "$_src")" && pwd)"; _src="$(readlink "$_src")"; case "$_src" in /*) ;; *) _src="$_d/$_src";; esac; done
+SELF_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 HARNESS="$SELF_DIR/../tools/validator/adif_validate.cpp"
 CORPUS="$SELF_DIR/../tools/validator/corpus"
 while [ $# -gt 0 ]; do

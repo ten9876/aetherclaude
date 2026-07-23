@@ -388,8 +388,10 @@ run_validator() {
     llvmprefix="$(/opt/homebrew/bin/brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)"
     [ -d "$qtprefix/lib/QtCore.framework" ] && [ -x "$llvmprefix/bin/clang++" ] || {
         log "VALIDATOR: no Qt/LLVM toolchain — skipping #${number}"; return 0; }
-    local tools
-    tools="$(cd /Users/aetherclaude/bin/../tools/validator 2>/dev/null && pwd -P)" || return 0
+    # Canonical live-clone tools dir (/Users/aetherclaude/bin is a symlink farm
+    # into /Users/Shared/aetherclaude/bin, so tools are under /Users/Shared).
+    local tools="/Users/Shared/aetherclaude/tools/validator"
+    [ -d "$tools" ] || return 0
 
     local cwe; cwe="$(jq -r '.cwe // ""' "$cache" 2>/dev/null)"
     local any=0 cand file harness dict seed vout verdict

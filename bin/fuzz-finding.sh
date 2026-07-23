@@ -16,7 +16,10 @@ set -uo pipefail
 
 REPO=""; OUT=""; SECS=45; CWE="CWE-787"
 FILE="src/core/AdifParser.cpp"
-SELF_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+# Resolve through the deploy symlink farm (/Users/aetherclaude/bin -> Shared).
+_src="${BASH_SOURCE[0]:-$0}"
+while [ -L "$_src" ]; do _d="$(cd -P "$(dirname "$_src")" && pwd)"; _src="$(readlink "$_src")"; case "$_src" in /*) ;; *) _src="$_d/$_src";; esac; done
+SELF_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 HARNESS="$SELF_DIR/../tools/validator/adif_fuzz.cpp"
 DICT="$SELF_DIR/../tools/validator/adif.dict"
 SEED="$SELF_DIR/../tools/validator/corpus/valid.adi"   # seed only VALID input

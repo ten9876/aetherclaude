@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aetherclaude.antares-sweep</string>
+
+    <!--
+      Nightly full-repo Antares sweep — runs the Detector across ~20 CWE
+      categories (N passes each, parallel), unions the candidates, fuzz-
+      validates the ones with a harness, and writes a report to
+      data/antares/sweeps/. Advisory: it never files issues or edits code.
+
+      Fires at 02:00 America/Los_Angeles (launchd uses local time; the Mini is
+      on PT). One hour before the 03:00 codegraph refresh, which is fine — the
+      sweep explores the live workspace source directly.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/bash</string>
+        <string>/Users/Shared/aetherclaude/bin/antares-sweep.sh</string>
+    </array>
+
+    <key>UserName</key>
+    <string>aetherclaude</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/aetherclaude</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin</string>
+        <key>ANTARES_OLLAMA_URL</key>
+        <string>http://127.0.0.1:11434/api/chat</string>
+        <key>ANTARES_MODEL</key>
+        <string>antares-1b</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>2</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- Long job (~15 min); never overlap with a running instance (the script
+         also holds a mkdir lock). Nice value keeps it off the agent's back. -->
+    <key>Nice</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/Shared/aetherclaude/logs/antares-sweep.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/Shared/aetherclaude/logs/antares-sweep.log</string>
+</dict>
+</plist>
