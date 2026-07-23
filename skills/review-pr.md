@@ -20,14 +20,28 @@ ${COPILOT_COMMENTS}
 Commit signature status (one line per commit in this PR):
 ${PR_COMMITS}
 
+Cisco DefenseClaw CodeGuard static-analysis findings on this PR's changed
+files (empty if none):
+${CODEGUARD_FINDINGS}
+
 If Copilot flagged issues, verify them against the diff — confirm valid concerns
 and note any false positives. Reference Copilot findings in your review where relevant.
+
+If CodeGuard reported findings above, treat them the same way: confirm each
+against the diff before repeating it (CodeGuard can false-positive, especially
+on test/example code and non-secret constants). Fold the ones you confirm into
+your review as INLINE comments anchored to the flagged line when it's in the
+diff — credit them as "CodeGuard flagged …" — and silently drop any that are
+clearly wrong. Hardcoded-secret findings (CG-CRED-*) are almost always worth
+surfacing even when small.
 
 Review this PR for:
 1. AetherSDR conventions (AppSettings not QSettings, RAII, C++20 idioms)
 2. Obvious bugs, null pointer risks, resource leaks
 3. Files that seem outside the PR stated scope
 4. Missing error handling at system boundaries
+5. Security issues — hardcoded secrets, unsafe exec/command injection, path
+   traversal (CodeGuard findings above are a starting point, not the ceiling)
 
 Post your review using create_pr_review with pr_number=${PR_NUMBER}.
 Use event COMMENT only — never APPROVE or REQUEST_CHANGES.

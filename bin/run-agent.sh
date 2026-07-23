@@ -1008,35 +1008,70 @@ review_single_pr() {
 
     local review_log="$LOGDIR/pr-review-${pr_number}-$(date +%Y%m%d-%H%M%S).log"
 
+    # Check out the PR HEAD (the proposed changes, not main) into a throwaway
+    # worktree — shared by CodeGuard (feeds the review) and the Antares
+    # Detector (runs after). Best-effort: if checkout fails, both are skipped
+    # and the review still runs on the diff alone.
+    local pr_worktree="/tmp/aetherclaude/pr-${pr_number}"
+    local have_pr_worktree=0
+    rm -rf "$pr_worktree" 2>/dev/null
+    git -C "$WORKSPACE" worktree prune 2>/dev/null || true
+    if git -C "$WORKSPACE" fetch -q origin "pull/${pr_number}/head" 2>/dev/null \
+       && git -C "$WORKSPACE" worktree add -q --detach "$pr_worktree" FETCH_HEAD 2>/dev/null; then
+        have_pr_worktree=1
+    else
+        log "PR #${pr_number}: could not check out head — CodeGuard + Antares skipped"
+    fi
+
+    # Cisco CodeGuard static analysis on the PR's changed files (advisory).
+    # Shared scanner (also the Validation Gate's) tags rows source=pr. Findings
+    # become a block Claude folds into its review AND a standalone advisory
+    # comment. Never blocks the review.
+    local codeguard_block="" cg_count=0
+    if [ "$have_pr_worktree" = 1 ] && [ -x /Users/aetherclaude/bin/codeguard-scan.sh ]; then
+        local codeguard_json
+        codeguard_json=$(/Users/aetherclaude/bin/codeguard-scan.sh "$pr_worktree" pr "$pr_number" 2>/dev/null || echo '{"findings":[]}')
+        cg_count=$(printf '%s' "$codeguard_json" | jq '.findings | length' 2>/dev/null || echo 0)
+        if [ "${cg_count:-0}" -gt 0 ]; then
+            codeguard_block=$(printf '%s' "$codeguard_json" | jq -r '.findings[] | "- [\(.severity)] \(.id) — \(.title) in `\(.file)` \(.location // "")"' 2>/dev/null | head -40)
+            record_action "$pr_number" "codeguard_pr" "scanned" "success" "${cg_count} finding(s)"
+            log "CODEGUARD: PR #${pr_number} — ${cg_count} finding(s)"
+        else
+            record_action "$pr_number" "codeguard_pr" "clean" "success" "no findings"
+        fi
+    fi
+
     # render_skill_full prepends `/goal <condition>` from the skill
     # file's frontmatter so Claude keeps iterating until the review
     # is actually posted (Claude Code 2.1.139+ feature). Per-skill
     # rollout — other skills still use render_skill until each one
     # is verified with /goal.
     local prompt
-    prompt=$(render_skill_full "review-pr" "PR_NUMBER" "$pr_number" "PR_TITLE" "$pr_title" "PR_AUTHOR" "$pr_author" "PR_FILES" "$pr_files" "PR_DIFF" "$sanitized_diff" "COPILOT_COMMENTS" "$copilot_comments" "PR_COMMITS" "$commit_signatures")
+    prompt=$(render_skill_full "review-pr" "PR_NUMBER" "$pr_number" "PR_TITLE" "$pr_title" "PR_AUTHOR" "$pr_author" "PR_FILES" "$pr_files" "PR_DIFF" "$sanitized_diff" "COPILOT_COMMENTS" "$copilot_comments" "PR_COMMITS" "$commit_signatures" "CODEGUARD_FINDINGS" "$codeguard_block")
 
     cd "$WORKSPACE"
     run_claude "$prompt" "$review_log" || {
         log "ERROR: PR review failed for #${pr_number}"
+        [ "$have_pr_worktree" = 1 ] && git -C "$WORKSPACE" worktree remove "$pr_worktree" --force 2>/dev/null || true
         return 1
     }
     log "Reviewed PR #${pr_number}"
 
-    # Antares Detector on the PR HEAD (the proposed changes, not main).
-    # Best-effort worktree checkout; advisory + fail-open, runs after the
-    # review so it never blocks it.
-    local pr_worktree="/tmp/aetherclaude/pr-${pr_number}"
-    rm -rf "$pr_worktree" 2>/dev/null
-    git -C "$WORKSPACE" worktree prune 2>/dev/null || true
-    if git -C "$WORKSPACE" fetch -q origin "pull/${pr_number}/head" 2>/dev/null \
-       && git -C "$WORKSPACE" worktree add -q --detach "$pr_worktree" FETCH_HEAD 2>/dev/null; then
+    # Standalone CodeGuard advisory comment — a durable structured record
+    # alongside the review's inline comments.
+    if [ "${cg_count:-0}" -gt 0 ]; then
+        local cg_comment cg_payload
+        cg_comment=$(printf '**Cisco CodeGuard — static analysis of this PR (%s finding(s))**\n\n%s\n\n<sub>Automated static scan by Cisco DefenseClaw CodeGuard on the changed files. Advisory — some may be false positives; the review above verifies them.</sub>' "$cg_count" "$codeguard_block")
+        cg_payload=$(jq -n --arg b "$cg_comment" '{body:$b}')
+        post_bot_comment "/repos/${REPO}/issues/${pr_number}/comments" "$token" "$cg_payload" issue_comment > /dev/null 2>&1 || true
+    fi
+
+    # Antares Detector on the same PR-HEAD worktree (advisory + fail-open).
+    if [ "$have_pr_worktree" = 1 ]; then
         run_antares_detector "$pr_number" "$pr_title" \
             "$(printf 'Changed files in this PR:\n%s' "$pr_files")" \
             "$token" "$pr_worktree" pr || true
         git -C "$WORKSPACE" worktree remove "$pr_worktree" --force 2>/dev/null || true
-    else
-        log "ANTARES: could not check out PR #${pr_number} head — skipping detector"
     fi
 }
 

@@ -153,87 +153,32 @@ if [ "$TOTAL_LINES" -gt 1000 ]; then
 fi
 
 # --- Check 7: Cisco DefenseClaw CodeGuard static analysis ---
-# `defenseclaw-gateway scan code` is a fully standalone CLI — it doesn't
-# delegate to the running daemon, it opens its own audit-store SQLite. With
-# the supervised daemon already holding ~/.defenseclaw/audit.db in WAL mode,
-# the CLI fails with `unable to open database file (14)` (SQLITE_CANTOPEN).
-# Isolate each scan into its own HOME so the CLI gets a fresh audit DB.
-CODEGUARD="/Users/aetherclaude/.local/bin/defenseclaw-gateway"
-if [ -x "$CODEGUARD" ]; then
+# Delegated to bin/codeguard-scan.sh — the SINGLE shared CodeGuard
+# implementation, also used to scan every contributor PR (run-agent.sh
+# review_single_pr). It scans the files changed vs main in this worktree,
+# records findings to the events DB (tagged source=agent) + codeguard-
+# latest.json, and prints the aggregated findings JSON. This gate then blocks
+# on HIGH/CRITICAL.
+CODEGUARD_SCAN="${CODEGUARD_SCAN_BIN:-/Users/aetherclaude/bin/codeguard-scan.sh}"
+if [ -x "$CODEGUARD_SCAN" ]; then
     log "Running CodeGuard static analysis..."
+    CG_RESULT=$("$CODEGUARD_SCAN" "$WORKSPACE" agent "${AETHER_ISSUE:-}" 2>/dev/null || echo '{"findings":[]}')
 
-    CODEGUARD_HOME=$(mktemp -d -t codeguard-scan.XXXXXX)
-    mkdir -p "$CODEGUARD_HOME/.defenseclaw"
-    trap 'rm -rf "$CODEGUARD_HOME"' EXIT
+    HIGH_COUNT=$(echo "$CG_RESULT" | jq '[.findings[] | select(.severity == "HIGH" or .severity == "CRITICAL")] | length' 2>/dev/null || echo 0)
+    MEDIUM_COUNT=$(echo "$CG_RESULT" | jq '[.findings[] | select(.severity == "MEDIUM")] | length' 2>/dev/null || echo 0)
 
-    for file in $CHANGED_FILES; do
-        # Only scan files that exist and have supported extensions
-        [ -f "$WORKSPACE/$file" ] || continue
-        case "$file" in
-            *.cpp|*.h|*.c|*.py|*.js|*.ts|*.go|*.java|*.rb|*.php|*.sh|*.yaml|*.yml|*.json|*.xml|*.rs)
-                ;;
-            *)
-                continue
-                ;;
-        esac
-
-        SCAN_RESULT=$(env HOME="$CODEGUARD_HOME" "$CODEGUARD" scan code "$WORKSPACE/$file" --json 2>/dev/null || echo '{"findings":[]}')
-
-        # Save findings to SQLite + JSON for dashboard
-        echo "$SCAN_RESULT" | SCAN_FILE="$file" python3 -c "
-import sys, json, sqlite3, os
-try:
-    d = json.loads(sys.stdin.read())
-    findings = d.get('findings', [])
-    scan_file = os.environ.get('SCAN_FILE', '')
-    if findings:
-        # Append to JSON (for backward compat)
-        existing = []
-        try:
-            with open('/Users/aetherclaude/logs/codeguard-latest.json') as f:
-                existing = json.load(f)
-        except: pass
-        existing.extend(findings)
-        with open('/Users/aetherclaude/logs/codeguard-latest.json', 'w') as f:
-            json.dump(existing, f)
-        # Insert into SQLite
-        db = sqlite3.connect('/Users/aetherclaude/data/events.db')
-        db.execute('''CREATE TABLE IF NOT EXISTS codeguard_findings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            scan_time TEXT DEFAULT CURRENT_TIMESTAMP,
-            file_path TEXT, rule_id TEXT, severity TEXT,
-            title TEXT, description TEXT, location TEXT, remediation TEXT
-        )''')
-        for f in findings:
-            db.execute(
-                'INSERT INTO codeguard_findings (file_path, rule_id, severity, title, description, location, remediation) VALUES (?,?,?,?,?,?,?)',
-                (scan_file, f.get('id',''), f.get('severity',''), f.get('title',''),
-                 f.get('description',''), f.get('location',''), f.get('remediation',''))
-            )
-        db.commit()
-        db.close()
-except: pass
-" 2>/dev/null
-
-        # Check for HIGH or CRITICAL findings
-        HIGH_COUNT=$(echo "$SCAN_RESULT" | jq '[.findings[] | select(.severity == "HIGH" or .severity == "CRITICAL")] | length' 2>/dev/null || echo 0)
-        MEDIUM_COUNT=$(echo "$SCAN_RESULT" | jq '[.findings[] | select(.severity == "MEDIUM")] | length' 2>/dev/null || echo 0)
-
-        if [ "$HIGH_COUNT" -gt 0 ]; then
-            FINDING_DETAILS=$(echo "$SCAN_RESULT" | jq -r '.findings[] | select(.severity == "HIGH" or .severity == "CRITICAL") | "  \(.id) [\(.severity)]: \(.title) at \(.location)"' 2>/dev/null)
-            log "BLOCKED: CodeGuard found $HIGH_COUNT HIGH/CRITICAL findings in $file:"
-            echo "$FINDING_DETAILS" | while read -r detail; do
-                log "  $detail"
-            done
-            ERRORS=$((ERRORS + 1))
-        fi
-
-        if [ "$MEDIUM_COUNT" -gt 0 ]; then
-            log "WARNING: CodeGuard found $MEDIUM_COUNT MEDIUM findings in $file (review recommended)"
-        fi
-    done
+    if [ "${HIGH_COUNT:-0}" -gt 0 ]; then
+        log "BLOCKED: CodeGuard found $HIGH_COUNT HIGH/CRITICAL finding(s):"
+        echo "$CG_RESULT" | jq -r '.findings[] | select(.severity == "HIGH" or .severity == "CRITICAL") | "  \(.id) [\(.severity)]: \(.title) at \(.file) \(.location // "")"' 2>/dev/null | while read -r detail; do
+            log "  $detail"
+        done
+        ERRORS=$((ERRORS + 1))
+    fi
+    if [ "${MEDIUM_COUNT:-0}" -gt 0 ]; then
+        log "WARNING: CodeGuard found $MEDIUM_COUNT MEDIUM finding(s) (review recommended)"
+    fi
 else
-    log "WARNING: CodeGuard not available at $CODEGUARD — skipping static analysis"
+    log "WARNING: codeguard-scan.sh not available at $CODEGUARD_SCAN — skipping static analysis"
 fi
 
 # --- Check 8: Skill Scanner — injected .claude/ commands ---

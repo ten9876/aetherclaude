@@ -542,8 +542,16 @@ def init_db():
         title TEXT,
         description TEXT,
         location TEXT,
-        remediation TEXT
+        remediation TEXT,
+        source TEXT DEFAULT 'agent',
+        ref TEXT
     )''')
+    # Migrate DBs created before the source/ref tagging (agent vs PR scans).
+    _cg_cols = {r[1] for r in conn.execute('PRAGMA table_info(codeguard_findings)')}
+    if 'source' not in _cg_cols:
+        conn.execute("ALTER TABLE codeguard_findings ADD COLUMN source TEXT DEFAULT 'agent'")
+    if 'ref' not in _cg_cols:
+        conn.execute('ALTER TABLE codeguard_findings ADD COLUMN ref TEXT')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_cg_severity ON codeguard_findings(severity)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_cg_scan_time ON codeguard_findings(scan_time)')
     conn.execute('''CREATE TABLE IF NOT EXISTS mcp_scan_results (
