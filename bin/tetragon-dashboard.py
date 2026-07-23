@@ -3404,7 +3404,7 @@ body.view-ops #view-exec{display:none}
       <a href="/codegraph" target="_blank">Codegraph &#x2197;</a>
       <a href="/cartographer" target="_blank">Cartographer &#x2197;</a>
       <a href="#" onclick="openOperatorTui();document.getElementById('hmenu').removeAttribute('open');return false">Operator TUI &#x2197;</a>
-      <a href="#" onclick="showConstitution();document.getElementById('hmenu').removeAttribute('open');return false">Constitution &harr; Rings</a>
+      <a href="#" onclick="showConstitution();document.getElementById('hmenu').removeAttribute('open');return false">Foundry Security Spec</a>
       <a href="#" onclick="showWhitepaper();document.getElementById('hmenu').removeAttribute('open');return false">Defense-in-Depth Whitepaper</a>
     </div>
   </details>
@@ -4641,30 +4641,27 @@ wireTrendHover(tok,{id:'x-cost-svg',tip:b=>`<b>${fmtCompact(b.total)}</b> tokens
 function showWhitepaper(){document.getElementById('wp-modal').classList.add('show')}
 function showConstitution(){
 const principles=[
-{n:'I',t:'Evidence Over Assertion',s:'PARTIAL',a:'validate-diff + CodeGuard gate; post-triage citation health check footnotes unresolved path:line claims'},
-{n:'II',t:'Surface Only What Survives',s:'STRONG',a:'zero-effort auto-close, 7-day stale-close, one-comment-per-triage, label-gated promotion to maintainer review'},
-{n:'III',t:'Liveness By Heartbeat, Never By Clock',s:'STRONG',a:'session-JSONL mtime heartbeat (CLAUDE_MAX_IDLE=180s); CLAUDE_HARD_CEILING=3600s is the only wall-clock bound'},
-{n:'IV',t:'Claims Are Atomic And Mortal',s:'STRONG',a:'per-issue lockfiles + issue-actions.db ledger with mortal run_id'},
-{n:'V',t:'The Provider Is The Rate Arbiter',s:'STRONG',a:'webhook-paced cadence + adaptive auto-retry on Anthropic backpressure'},
-{n:'VI',t:'Coverage Before Yield',s:'N/A',a:'event-driven; no termination decision to make'},
-{n:'VII',t:'Exploited Means Demonstrated',s:'MEDIUM',a:'validate-diff runs independently of Claude; human review on every merge'},
-{n:'VIII',t:'Fingerprints Are Stable Under Edit',s:'N/A',a:'no finding domain (GitHub issue # is the stable identifier)'},
-{n:'IX',t:'Sandbox By Infrastructure, Not By Prompt',s:'STRONG',a:'pf + tinyproxy + launchd UID-965 + Claude permission system'},
-{n:'X',t:'The Operator Outranks Every Agent',s:'STRONG',a:'aetherclaude-eligible label is maintainer-only; Override A/B/C gates'},
-{n:'XI',t:'Persist Atomically',s:'STRONG',a:'SQLite ACID + temp-then-rename for every JSON artifact'},
+{n:'I',t:'Evidence Over Assertion',d:"A finding's verdict is determined by checkable evidence, not by model confidence."},
+{n:'II',t:'Surface Only What Survives',d:"Humans see findings that have passed the gates. Everything else stays in the internal store."},
+{n:'III',t:'Liveness By Heartbeat, Never By Clock',d:"An agent is alive if it heartbeated recently. Wall-clock runtime says nothing about health."},
+{n:'IV',t:'Claims Are Atomic And Mortal',d:"Two agents claiming the same unit of work concurrently get different units. A claim dies with its holder."},
+{n:'V',t:'The Provider Is The Rate Arbiter',d:"The system does not pre-throttle below the upstream provider's actual limit. It handles the provider's backpressure and adapts."},
+{n:'VI',t:'Coverage Before Yield',d:"The system does not stop itself on low yield until the operator's stated goals have been credibly attempted."},
+{n:'VII',t:'Exploited Means Demonstrated',d:"The exploited flag is set only by an independent, clean-room reproduction — not by the agent that wrote the proof-of-concept."},
+{n:'VIII',t:'Fingerprints Are Stable Under Edit',d:"A finding's identity is its location in the code's structure (path, symbol, vulnerability class), not its position in the text."},
+{n:'IX',t:'Sandbox By Infrastructure, Not By Prompt',d:"Network egress and filesystem write boundaries are enforced by the runtime environment. Prompt-level rules are defense-in-depth, never the enforcement layer."},
+{n:'X',t:'The Operator Outranks Every Agent',d:"Operator instructions are authoritative. Peer-agent messages and prior-agent notes are hints."},
+{n:'XI',t:'Persist Atomically',d:"No reader ever observes a partially-written or deleted-but-not-yet-rewritten state."},
 ];
-let h='<p style="color:#607080;margin-bottom:12px">11 inviolable principles from <a href="https://github.com/CiscoDevNet/foundry-security-spec/blob/main/constitution.md" target="_blank" style="color:#5de3ff">CiscoDevNet/foundry-security-spec</a> mapped to AetherClaude rings and files. Strong&times;7, Partial&times;2, N/A&times;2 (domain mismatch).</p>';
+let h='<p style="color:#607080;margin-bottom:12px">11 inviolable principles from <a href="https://github.com/CiscoDevNet/foundry-security-spec/blob/main/constitution.md" target="_blank" style="color:#5de3ff">CiscoDevNet/foundry-security-spec</a>.</p>';
 for(const p of principles){
-const cls=p.s==='STRONG'?'SAFE':(p.s==='MEDIUM'||p.s==='PARTIAL')?'MEDIUM':'SAFE';
-const chipColor=p.s==='STRONG'?'#80ffaa':(p.s==='PARTIAL'||p.s==='MEDIUM')?'#b3831c':'#607080';
-h+=`<div class="modal-finding ${cls}" style="margin-bottom:4px">`;
-h+=`<span style="display:inline-block;min-width:54px;font-size:9px;padding:1px 5px;background:#1a2030;color:${chipColor};border:1px solid ${chipColor}40;border-radius:3px;text-align:center;margin-right:6px">${p.s}</span>`;
+h+=`<div class="modal-finding SAFE" style="margin-bottom:4px">`;
 h+=`<span style="color:#a0a8b0;margin-right:6px;font-weight:bold">${p.n}.</span>`;
 h+=`<strong>${p.t}</strong>`;
-h+=`<div class="detail" style="margin-top:2px;color:#90a0b8;font-size:11px;margin-left:60px">${p.a}</div>`;
+h+=`<div class="detail" style="margin-top:2px;color:#90a0b8;font-size:11px;margin-left:24px">${p.d}</div>`;
 h+=`</div>`;}
-h+='<div class="detail" style="margin-top:12px;color:#607080;font-size:10px">Full mapping with source-file links: <a href="https://github.com/ten9876/aetherclaude/blob/main/docs/constitution-mapping.md" target="_blank" style="color:#5de3ff">docs/constitution-mapping.md</a>. Pinned at foundry-security-spec @ <code>c770bf77</code>.</div>';
-document.getElementById('modal-title').textContent='Foundry Constitution ↔ AetherClaude Mapping';
+h+='<div class="detail" style="margin-top:12px;color:#607080;font-size:10px">Source: <a href="https://github.com/CiscoDevNet/foundry-security-spec/blob/main/constitution.md" target="_blank" style="color:#5de3ff">foundry-security-spec/constitution.md</a> @ <code>c770bf77</code> (published 2026-05-12).</div>';
+document.getElementById('modal-title').textContent='Cisco Foundry Security Spec';
 document.getElementById('modal-body').innerHTML=h;
 document.getElementById('modal').classList.add('show');
 }
