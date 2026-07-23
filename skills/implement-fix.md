@@ -19,6 +19,7 @@ ${ISSUE_COMMENTS}
 ${ATTACHMENTS}
 ${RETRY_CONTEXT}
 ${REPO_PACK}
+${DETECTOR_CANDIDATES}
 
 Your task for this pass (IMPLEMENT):
 1. **Read the project constitution first.** If `.specify/memory/constitution.md`
@@ -30,7 +31,11 @@ Your task for this pass (IMPLEMENT):
    voice on what conventions a fix must honor. If a proposed change would
    violate a principle, do NOT work around it — halt and leave a single
    comment requesting an amendment, then stop.
-2. Read the relevant source files.
+2. Read the relevant source files. If the **Antares Detector** localized
+   candidate file(s) above, read those first — they are the model's best guess
+   at where the vulnerability lives — but treat them as a lead, not gospel:
+   confirm the actual defect yourself before editing, and widen your search if
+   they don't pan out.
 3. **Check blast radius BEFORE editing any non-trivial structural symbol.**
    Identify the seed symbol(s) you're about to change (the class / function
    the edit centers on), then call the codegraph MCP:

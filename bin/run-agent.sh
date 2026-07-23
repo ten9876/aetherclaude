@@ -276,6 +276,88 @@ post_bot_comment() {
     printf '%s' "$response"
 }
 
+# =====================================================================
+# Antares Detector (Foundry Detector stage). Runs Cisco Foundation AI's
+# Antares-1B locally to localize candidate vulnerable file(s) for an
+# issue/PR, seeded by the Cartographer security overlay. ADVISORY and
+# FAIL-OPEN: it never blocks triage — any failure is a silent no-op.
+#
+# Side effects: writes the dashboard feed (antares-latest.json) + a per-issue
+# cache (data/antares/issue-<N>.json) that the implement-fix pass consumes;
+# posts a GitHub advisory comment ONLY when it localizes candidate files
+# (so non-code issues stay quiet); records a "detect" action.
+#
+# Args: NUMBER TITLE CONTEXT_TEXT TOKEN REPO_DIR [KIND]
+#   REPO_DIR — the checkout to explore (main workspace for issues, a PR-head
+#              worktree for PRs). KIND is "issue" (default) or "pr", label only.
+# =====================================================================
+run_antares_detector() {
+    local number="$1" title="$2" context_text="$3" token="$4" repo_dir="$5" kind="${6:-issue}"
+    local detector="/Users/aetherclaude/bin/antares-detector.py"
+    [ -x "$detector" ] || return 0
+    [ -d "$repo_dir" ] || return 0
+
+    # Seed CWE: an explicit CWE-N in the text wins; otherwise generic mode
+    # (the model localizes any vulnerability it can find). Per the operator
+    # decision, the Detector fires on EVERY issue/PR — no security-signal gate.
+    local cwe=""
+    cwe=$(printf '%s\n%s' "$title" "$context_text" | grep -oiE 'CWE-[0-9]+' | head -1 | tr '[:lower:]' '[:upper:]')
+
+    # Model server must be up; otherwise no-op (fail-open, no wasted time).
+    curl -sf -o /dev/null --max-time 3 http://127.0.0.1:11434/api/tags 2>/dev/null || {
+        log "ANTARES: model server down — skipping detector for ${kind} #${number}"
+        return 0
+    }
+
+    local cache_dir="/Users/aetherclaude/data/antares"
+    mkdir -p "$cache_dir" 2>/dev/null || true
+    local out_latest="/Users/aetherclaude/logs/antares-latest.json"
+    local out_issue="${cache_dir}/issue-${number}.json"
+
+    log "ANTARES: localizing for ${kind} #${number}${cwe:+ (${cwe})}"
+    record_action "$number" "detect" "detect" "started" "${cwe:-generic}"
+
+    local ctx
+    ctx=$(printf '%s\n\n%s' "$title" "$context_text" | head -c 3500)
+
+    # The detector has its own hard per-command + overall timeouts and always
+    # prints JSON (even fail-open), so `|| true` is belt-and-suspenders.
+    if [ -n "$cwe" ]; then
+        /usr/bin/python3 "$detector" --repo "$repo_dir" --cwe "$cwe" \
+            --context "$ctx" --issue "$number" --out "$out_latest" \
+            > "$out_issue" 2>/dev/null || true
+    else
+        /usr/bin/python3 "$detector" --repo "$repo_dir" \
+            --context "$ctx" --issue "$number" --out "$out_latest" \
+            > "$out_issue" 2>/dev/null || true
+    fi
+
+    [ -s "$out_issue" ] || {
+        record_action "$number" "detect" "error" "failure" "no detector output"
+        return 0
+    }
+
+    local verdict cands
+    verdict=$(jq -r '.verdict // "error"' "$out_issue" 2>/dev/null || echo error)
+    cands=$(jq -r '(.candidates // []) | join(", ")' "$out_issue" 2>/dev/null || echo "")
+
+    if [ "$verdict" = "vulnerable" ] && [ -n "$cands" ]; then
+        local files_md rationale comment_body payload
+        files_md=$(jq -r '(.candidates // [])[] | "- `" + . + "`"' "$out_issue" 2>/dev/null || echo "")
+        rationale=$(jq -r '.rationale // ""' "$out_issue" 2>/dev/null || echo "")
+        comment_body=$(printf '**Antares Detector — candidate vulnerable file(s)**%s\n\n%s\n\n%s\n\n<sub>Localized by Cisco Foundation AI **Antares-1B** running locally in the AetherClaude sandbox, seeded by the Cartographer security map. Advisory only — please verify before acting.</sub>' \
+            "${cwe:+ (${cwe})}" "$files_md" "$rationale")
+        payload=$(jq -n --arg b "$comment_body" '{body:$b}')
+        post_bot_comment "/repos/${REPO}/issues/${number}/comments" "$token" "$payload" issue_comment > /dev/null 2>&1 || true
+        record_action "$number" "detect" "vulnerable" "success" "$cands"
+        log "ANTARES: ${kind} #${number} vulnerable — ${cands}"
+    else
+        record_action "$number" "detect" "$verdict" "success" "no candidates"
+        log "ANTARES: ${kind} #${number} verdict=${verdict} (no comment)"
+    fi
+    return 0
+}
+
 # Citation-resolution check (Foundry Principle I — Evidence Over Assertion,
 # partial form). Parses path:line / path:line-line citations from the latest
 # agent comment on an issue and verifies each against the workspace clone
@@ -940,6 +1022,22 @@ review_single_pr() {
         return 1
     }
     log "Reviewed PR #${pr_number}"
+
+    # Antares Detector on the PR HEAD (the proposed changes, not main).
+    # Best-effort worktree checkout; advisory + fail-open, runs after the
+    # review so it never blocks it.
+    local pr_worktree="/tmp/aetherclaude/pr-${pr_number}"
+    rm -rf "$pr_worktree" 2>/dev/null
+    git -C "$WORKSPACE" worktree prune 2>/dev/null || true
+    if git -C "$WORKSPACE" fetch -q origin "pull/${pr_number}/head" 2>/dev/null \
+       && git -C "$WORKSPACE" worktree add -q --detach "$pr_worktree" FETCH_HEAD 2>/dev/null; then
+        run_antares_detector "$pr_number" "$pr_title" \
+            "$(printf 'Changed files in this PR:\n%s' "$pr_files")" \
+            "$token" "$pr_worktree" pr || true
+        git -C "$WORKSPACE" worktree remove "$pr_worktree" --force 2>/dev/null || true
+    else
+        log "ANTARES: could not check out PR #${pr_number} head — skipping detector"
+    fi
 }
 
 # =====================================================================
@@ -1615,6 +1713,14 @@ skill_process_issues() {
             # gets a footnote on the comment, not a state regression.
             check_citations "$number" "$token" || true
 
+            # Antares Detector (Foundry Detector stage) — localize candidate
+            # vulnerable file(s) for this issue and cache them for a later
+            # implement pass. Advisory + fail-open; runs after triage so it
+            # never delays the first response.
+            run_antares_detector "$number" "$title" \
+                "$(printf '%s\n\n%s' "$issue_body" "$issue_comments")" \
+                "$token" "$WORKSPACE" issue || true
+
             # Check if we asked questions (look for ? in our comment).
             # `|| true` on the bare assignment is critical: this fetches
             # from the GitHub API right after the citation-check PATCH,
@@ -1897,10 +2003,25 @@ work that is already merged."
             local repo_pack
             repo_pack=$(/usr/bin/python3 /Users/aetherclaude/bin/codegraph-cartographer.py --implement-context 2>/dev/null || true)
 
+            # Antares Detector candidates from the triage pass (if any). The
+            # cache is written by run_antares_detector; feed the localized
+            # file(s) + rationale into the fixer as a starting point.
+            local detector_candidates=""
+            local ant_cache="/Users/aetherclaude/data/antares/issue-${number}.json"
+            if [ -s "$ant_cache" ] \
+               && [ "$(jq -r '.verdict // ""' "$ant_cache" 2>/dev/null)" = "vulnerable" ]; then
+                local ant_files ant_why
+                ant_files=$(jq -r '(.candidates // [])[] | "- " + .' "$ant_cache" 2>/dev/null || echo "")
+                ant_why=$(jq -r '.rationale // ""' "$ant_cache" 2>/dev/null || echo "")
+                if [ -n "$ant_files" ]; then
+                    detector_candidates=$(printf 'Antares Detector — candidate vulnerable file(s) localized for this issue (a lead, not gospel; confirm before editing):\n%s\n\n%s' "$ant_files" "$ant_why")
+                fi
+            fi
+
             local skill_template
             skill_template=$(load_skill "implement-fix")
             local prompt
-            prompt=$(render_skill "$skill_template" "ISSUE_NUMBER" "$number" "ISSUE_TITLE" "$title" "ISSUE_BODY" "$issue_body" "ISSUE_COMMENTS" "$issue_comments" "ATTACHMENTS" "$attachments_section" "RETRY_CONTEXT" "$retry_context" "REPO_PACK" "$repo_pack" "BRANCH" "$branch" "WORKSPACE" "$WORKTREE")
+            prompt=$(render_skill "$skill_template" "ISSUE_NUMBER" "$number" "ISSUE_TITLE" "$title" "ISSUE_BODY" "$issue_body" "ISSUE_COMMENTS" "$issue_comments" "ATTACHMENTS" "$attachments_section" "RETRY_CONTEXT" "$retry_context" "REPO_PACK" "$repo_pack" "DETECTOR_CANDIDATES" "$detector_candidates" "BRANCH" "$branch" "WORKSPACE" "$WORKTREE")
 
             record_action "$number" "implement" "implement" "started"
             log "Running Claude Code for issue #${number}"
