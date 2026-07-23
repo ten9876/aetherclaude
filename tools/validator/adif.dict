@@ -1,0 +1,16 @@
+# libFuzzer dictionary — ADIF structural tokens so the fuzzer can build valid
+# record framing and reach the field-length parse in extractField.
+"<EOH>"
+"<EOR>"
+"<CALL:"
+"<BAND:"
+"<MODE:"
+"<FREQ:"
+"<SUBMODE:"
+">"
+":"
+"2147483647"
+"99999999999"
+"G3ABC"
+"20m"
+"CW"

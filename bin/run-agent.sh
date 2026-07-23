@@ -358,6 +358,71 @@ run_antares_detector() {
     return 0
 }
 
+# =====================================================================
+# Foundry Validator — after the Detector localizes a candidate, execute the
+# REAL code under ASan/UBSan against crafted input to turn the speculative
+# finding into ground truth (CONFIRMED / UNCONFIRMED). Advisory + FAIL-OPEN.
+#
+# Coverage is a REGISTRY: only files with a committed harness are validated
+# (currently just AdifParser); everything else is a quiet no-op. Needs the
+# local build toolchain (Homebrew Qt + clang) — skips if absent.
+#
+# Reads the Antares per-issue cache (candidates), runs bin/validate-finding.sh,
+# records a 'validate' action, and merges the verdict back into the cache so the
+# implement-fix pass sees "Validator CONFIRMED this".
+#
+# Args: NUMBER REPO_DIR
+# =====================================================================
+run_validator() {
+    local number="$1" repo_dir="$2"
+    local cache="/Users/aetherclaude/data/antares/issue-${number}.json"
+    local validator="/Users/aetherclaude/bin/fuzz-finding.sh"
+    local fuzz_seconds="${ANTARES_FUZZ_SECONDS:-40}"
+    [ -s "$cache" ] || return 0
+    [ -x "$validator" ] || return 0
+    [ "$(jq -r '.verdict // ""' "$cache" 2>/dev/null)" = "vulnerable" ] || return 0
+    # Toolchain presence by directory, not brew's exit code (brew is owned by
+    # another user and may return non-zero for the agent even when installed).
+    local qtprefix llvmprefix
+    qtprefix="$(/opt/homebrew/bin/brew --prefix qt 2>/dev/null || echo /opt/homebrew/opt/qt)"
+    llvmprefix="$(/opt/homebrew/bin/brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)"
+    [ -d "$qtprefix/lib/QtCore.framework" ] && [ -x "$llvmprefix/bin/clang++" ] || {
+        log "VALIDATOR: no Qt/LLVM toolchain — skipping #${number}"; return 0; }
+    local tools
+    tools="$(cd /Users/aetherclaude/bin/../tools/validator 2>/dev/null && pwd -P)" || return 0
+
+    local cwe; cwe="$(jq -r '.cwe // ""' "$cache" 2>/dev/null)"
+    local any=0 cand file harness dict seed vout verdict
+    while IFS= read -r cand; do
+        [ -n "$cand" ] || continue
+        case "$cand" in
+            *AdifParser*) file="src/core/AdifParser.cpp"
+                          harness="$tools/adif_fuzz.cpp"; dict="$tools/adif.dict"
+                          seed="$tools/corpus/valid.adi" ;;
+            *) continue ;;   # no harness registered for this file yet
+        esac
+        any=1
+        log "VALIDATOR: fuzzing ${file} (${fuzz_seconds}s) for #${number}"
+        record_action "$number" "validate" "started" "started" "$file"
+        vout="/Users/aetherclaude/data/antares/validate-${number}.json"
+        "$validator" --repo "$repo_dir" --file "$file" \
+            --harness "$harness" --dict "$dict" --seed "$seed" \
+            --seconds "$fuzz_seconds" ${cwe:+--cwe "$cwe"} \
+            --out "$vout" >/dev/null 2>&1 || true
+        verdict="$(jq -r '.verdict // "error"' "$vout" 2>/dev/null || echo error)"
+        record_action "$number" "validate" "$verdict" "success" "$file"
+        log "VALIDATOR: #${number} ${file} -> ${verdict}"
+        # Merge the verdict into the Antares cache for the fixer + dashboard.
+        if jq --arg f "$file" --arg v "$verdict" \
+              '.validation = {file:$f, verdict:$v}' "$cache" > "${cache}.tmp" 2>/dev/null; then
+            mv "${cache}.tmp" "$cache"
+        fi
+        break   # one validation per issue for now
+    done < <(jq -r '(.candidates // [])[]' "$cache" 2>/dev/null)
+    [ "$any" = 0 ] && log "VALIDATOR: no registered harness for #${number} candidates"
+    return 0
+}
+
 # Citation-resolution check (Foundry Principle I — Evidence Over Assertion,
 # partial form). Parses path:line / path:line-line citations from the latest
 # agent comment on an issue and verifies each against the workspace clone
@@ -1067,11 +1132,13 @@ review_single_pr() {
         post_bot_comment "/repos/${REPO}/issues/${pr_number}/comments" "$token" "$cg_payload" issue_comment > /dev/null 2>&1 || true
     fi
 
-    # Antares Detector on the same PR-HEAD worktree (advisory + fail-open).
+    # Antares Detector on the same PR-HEAD worktree (advisory + fail-open),
+    # then the Validator against that same checkout (before it's removed).
     if [ "$have_pr_worktree" = 1 ]; then
         run_antares_detector "$pr_number" "$pr_title" \
             "$(printf 'Changed files in this PR:\n%s' "$pr_files")" \
             "$token" "$pr_worktree" pr || true
+        run_validator "$pr_number" "$pr_worktree" || true
         git -C "$WORKSPACE" worktree remove "$pr_worktree" --force 2>/dev/null || true
     fi
 }
@@ -1756,6 +1823,9 @@ skill_process_issues() {
             run_antares_detector "$number" "$title" \
                 "$(printf '%s\n\n%s' "$issue_body" "$issue_comments")" \
                 "$token" "$WORKSPACE" issue || true
+            # Foundry Validator: confirm/refute the Detector's candidate by
+            # running the real code under ASan/UBSan (registry-gated, fail-open).
+            run_validator "$number" "$WORKSPACE" || true
 
             # Check if we asked questions (look for ? in our comment).
             # `|| true` on the bare assignment is critical: this fetches
@@ -2046,11 +2116,13 @@ work that is already merged."
             local ant_cache="/Users/aetherclaude/data/antares/issue-${number}.json"
             if [ -s "$ant_cache" ] \
                && [ "$(jq -r '.verdict // ""' "$ant_cache" 2>/dev/null)" = "vulnerable" ]; then
-                local ant_files ant_why
+                local ant_files ant_why ant_val
                 ant_files=$(jq -r '(.candidates // [])[] | "- " + .' "$ant_cache" 2>/dev/null || echo "")
                 ant_why=$(jq -r '.rationale // ""' "$ant_cache" 2>/dev/null || echo "")
+                # Validator verdict, if the finding was exercised under ASan/UBSan.
+                ant_val=$(jq -r 'if .validation then "\nFoundry Validator ran the real code under ASan/UBSan on " + (.validation.file // "?") + ": verdict " + (.validation.verdict // "?") + " (CONFIRMED = a sanitizer reproduced the bug; UNCONFIRMED = it did not reproduce — treat the candidate with more skepticism)." else "" end' "$ant_cache" 2>/dev/null || echo "")
                 if [ -n "$ant_files" ]; then
-                    detector_candidates=$(printf 'Antares Detector — candidate vulnerable file(s) localized for this issue (a lead, not gospel; confirm before editing):\n%s\n\n%s' "$ant_files" "$ant_why")
+                    detector_candidates=$(printf 'Antares Detector — candidate vulnerable file(s) localized for this issue (a lead, not gospel; confirm before editing):\n%s\n\n%s%s' "$ant_files" "$ant_why" "$ant_val")
                 fi
             fi
 

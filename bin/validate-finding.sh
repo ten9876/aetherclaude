@@ -20,23 +20,28 @@ set -uo pipefail
 
 REPO=""; CWE="CWE-787"; OUT=""
 FILE="src/core/AdifParser.cpp"          # the Detector-localized file to compile
-HARNESS_REL="tools/validator/adif_validate.cpp"
-CORPUS_REL="tools/validator/corpus"
 CONTROL="valid.adi"                     # must parse cleanly (valid use preserved)
+# Harness + corpus live in THIS repo (aetherclaude), not the target source, so
+# they default relative to this script and are overridable. --repo is only the
+# AetherSDR checkout whose $FILE gets compiled under the sanitizers.
+SELF_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+HARNESS="$SELF_DIR/../tools/validator/adif_validate.cpp"
+CORPUS="$SELF_DIR/../tools/validator/corpus"
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO="$2"; shift 2;;
     --cwe) CWE="$2"; shift 2;;
     --out) OUT="$2"; shift 2;;
     --file) FILE="$2"; shift 2;;
+    --harness) HARNESS="$2"; shift 2;;
+    --corpus) CORPUS="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
 [ -n "$REPO" ] || { echo "need --repo <AetherSDR checkout>" >&2; exit 2; }
 [ -d "$REPO/src" ] || { echo "no src/ under $REPO" >&2; exit 2; }
-
-HARNESS="$REPO/$HARNESS_REL"; CORPUS="$REPO/$CORPUS_REL"
 [ -f "$HARNESS" ] || { echo "missing harness $HARNESS" >&2; exit 2; }
+[ -d "$CORPUS" ] || { echo "missing corpus dir $CORPUS" >&2; exit 2; }
 
 QT="$(/opt/homebrew/bin/brew --prefix qt 2>/dev/null || echo /opt/homebrew/opt/qt)"
 MOC="$QT/share/qt/libexec/moc"; [ -x "$MOC" ] || MOC="$QT/bin/moc"
