@@ -159,6 +159,7 @@ _last_prompt_scan_mtime = 0.0
 # has actually changed. Triggers on first dashboard cycle (when this is 0).
 _last_skills_mtime = 0.0
 _last_aibom_mtime = 0.0
+_last_antares_mtime = 0.0
 
 # 2-tier ring buffer: memory_buffer is the single source of truth
 MEMORY_BUFFER_MAX = 10000
@@ -607,6 +608,22 @@ def init_db():
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_aibom_vuln_scan_time ON aibom_vulnerabilities(scan_time)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_aibom_vuln_component ON aibom_vulnerabilities(component_name)')
+    # Antares Detector candidate files (Foundry Detector stage). One row per
+    # candidate file the local Antares-1B model localized for an issue/PR.
+    conn.execute('''CREATE TABLE IF NOT EXISTS detector_findings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scan_time TEXT DEFAULT CURRENT_TIMESTAMP,
+        issue_number TEXT,
+        cwe TEXT,
+        verdict TEXT,
+        file_path TEXT,
+        rank INTEGER,
+        rationale TEXT,
+        commands_used INTEGER,
+        trace_id TEXT
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_detector_scan_time ON detector_findings(scan_time)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_detector_issue ON detector_findings(issue_number)')
     conn.execute('''CREATE TABLE IF NOT EXISTS skill_scan_results (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         scan_time TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -1557,6 +1574,43 @@ def scan_rings():
                                             (c.get('name',''), c.get('purl',''), v.get('id',''),
                                              v.get('severity','UNKNOWN'), v.get('score'),
                                              v.get('summary',''), json.dumps(v.get('references', []))))
+                                dbc.commit(); dbc.close()
+                            except: pass
+                except: pass
+
+                # Antares Detector: read the latest localization verdict.
+                try:
+                    ant_file = '/Users/aetherclaude/logs/antares-latest.json'
+                    if os.path.exists(ant_file):
+                        with open(ant_file) as af:
+                            ant = json.load(af)
+                        cands = ant.get('candidates', []) or []
+                        ring_stats['r6_antares_candidates'] = len(cands)
+                        ring_stats['r6_antares_verdict'] = ant.get('verdict', '')
+                        ring_stats['r6_antares_last_issue'] = ant.get('issue', '')
+                        global _last_antares_mtime
+                        ant_mtime = os.path.getmtime(ant_file)
+                        if ant_mtime != _last_antares_mtime:
+                            _last_antares_mtime = ant_mtime
+                            try:
+                                dbc = sqlite3.connect(EVENTS_DB)
+                                if cands:
+                                    for i, fp in enumerate(cands):
+                                        dbc.execute(
+                                            'INSERT INTO detector_findings (issue_number, cwe, verdict, file_path, rank, rationale, commands_used, trace_id) '
+                                            'VALUES (?,?,?,?,?,?,?,?)',
+                                            (str(ant.get('issue', '')), ant.get('cwe', ''),
+                                             ant.get('verdict', ''), fp, i + 1,
+                                             ant.get('rationale', ''), ant.get('commands_used', 0),
+                                             ant.get('trace_id', '')))
+                                else:
+                                    # record clean/no-candidate runs too (file_path NULL)
+                                    dbc.execute(
+                                        'INSERT INTO detector_findings (issue_number, cwe, verdict, commands_used, trace_id) '
+                                        'VALUES (?,?,?,?,?)',
+                                        (str(ant.get('issue', '')), ant.get('cwe', ''),
+                                         ant.get('verdict', ''), ant.get('commands_used', 0),
+                                         ant.get('trace_id', '')))
                                 dbc.commit(); dbc.close()
                             except: pass
                 except: pass
@@ -3932,6 +3986,7 @@ cs+=`<div class="si clickable" onclick="showSkillScan()"><span class="n"><span c
 cs+=`<div class="si clickable" onclick="showCodeGuard()"><span class="n"><span class="stag codeguard">scan</span> CodeGuard</span><span class="c">${r.r6_files_scanned||0} files · ${r.r6_findings||0} findings</span></div>`;
 cs+=`<div class="si clickable" onclick="showTetragon()"><span class="n"><span class="stag tetragon">ebpf</span> Tetragon</span><span class="c" style="color:#27a86f">active</span></div>`;
 cs+=`<div class="si clickable" onclick="showAibom()"><span class="n"><span class=\"stag codeguard\">scan</span> AIBOM (C++)</span><span class="c">${r.r6_aibom_components||0} components · ${r.r6_aibom_models||0} models</span></div>`;
+cs+=`<div class="si clickable" onclick="showAntares()"><span class="n"><span class="stag mcp">detect</span> Antares Detector</span><span class="c">${(r.r6_antares_candidates||0)} candidates${r.r6_antares_last_issue?` · #${r.r6_antares_last_issue}`:''}</span></div>`;
 cs+=`<div class="si"><span class="n muted">AI Defense SDK</span><span class="c muted">pending license</span></div>`;
 cs+=`<div class="si"><span class="n muted">A2A Scanner</span><span class="c muted">single agent (N/A)</span></div>`;
 cs+=`<div class="si"><span class="n">Project SBOM</span><span class="c"><a href="/sbom.json" target="_blank" style="color:#5de3ff;text-decoration:none">View</a></span></div>`;
@@ -4127,6 +4182,40 @@ fh+=`<div class="detail" style="margin-top:2px;color:#405060;font-size:10px">${e
 fh+=`</div>`}
 document.getElementById('cg-findings-list').innerHTML=fh;
 }).catch(()=>{document.getElementById('cg-findings-list').innerHTML='<p style="color:#604040">Failed to load findings from database.</p>'})}
+function showAntares(){
+const cands=lastData.rings?.r6_antares_candidates||0;
+const verdict=lastData.rings?.r6_antares_verdict||'';
+const lastIssue=lastData.rings?.r6_antares_last_issue||'';
+let h='<p style="color:#8598b4;margin-bottom:12px">Cisco Foundation AI <strong>Antares-1B</strong> — a local 1B vulnerability-localization model. On every issue/PR it explores the repo via a sandboxed terminal loop (grep/find/cat/ls only, ≤15 commands), seeded by the Cartographer security overlay, and reports candidate vulnerable files. Advisory (the Foundry Detector stage).</p>';
+const sev=cands>0?'HIGH':'SAFE';
+h+=`<div class="modal-finding ${sev}"><span class="sev ${sev}">${cands>0?'CANDIDATES':'CLEAN'}</span> latest run${lastIssue?` (#${esc(String(lastIssue))})`:''}: ${cands} candidate file${cands===1?'':'s'}${verdict?` · verdict ${esc(verdict)}`:''}</div>`;
+h+=`<div id="antares-list" style="margin-top:12px"><p style="color:#8598b4">Loading detector findings…</p></div>`;
+h+=`<div class="detail" style="margin-top:12px;color:#8598b4">Model served locally via Ollama (loopback) · sandboxed allowlist-jail loop (bin/antares-detector.py) · seeded by the <a href="/cartographer" target="_blank" style="color:#5de3ff;text-decoration:none">Cartographer</a> --cwe overlay</div>`;
+document.getElementById('modal-title').textContent='Antares Detector — Vulnerability Localization';
+document.getElementById('modal-body').innerHTML=h;
+document.getElementById('modal').classList.add('show');
+fetch('/api/antares').then(r=>r.json()).then(d=>{
+let fh='';
+if(!d.findings.length){document.getElementById('antares-list').innerHTML='<p style="color:#8598b4">No detector runs recorded yet.</p>';return}
+fh+=`<p style="color:#8598b4;margin-bottom:8px">${d.runs} run${d.runs===1?'':'s'} · ${d.total} candidate row${d.total===1?'':'s'} in database</p>`;
+// group by run (scan_time)
+const byRun={};
+for(const f of d.findings){(byRun[f.scan_time]=byRun[f.scan_time]||[]).push(f)}
+for(const [ts,rows] of Object.entries(byRun).slice(0,20)){
+const r0=rows[0],hasCand=rows.some(x=>x.file);
+const sc=hasCand?'HIGH':'SAFE';
+fh+=`<div class="modal-finding ${sc}" style="margin-bottom:8px">`;
+fh+=`<span class="sev ${sc}">${hasCand?'CANDIDATES':esc((r0.verdict||'clean').toUpperCase())}</span> `;
+fh+=`<strong>${r0.issue?'#'+esc(String(r0.issue)):'(no issue)'}</strong>${r0.cwe?` · ${esc(r0.cwe)}`:''}`;
+fh+=`<span style="color:#5f708a;font-size:10px;margin-left:6px">${esc(ts)} · ${r0.commands_used||0} cmds</span>`;
+if(hasCand){fh+='<div style="margin-top:4px">';
+for(const f of rows){if(!f.file)continue;
+fh+=`<div class="detail" style="margin-top:2px"><span style="color:#e85578;font-weight:600">${f.rank}.</span> <code>${esc(f.file)}</code></div>`;}
+fh+='</div>';
+if(r0.rationale)fh+=`<div class="detail" style="margin-top:4px;color:#c4d4e8">${esc(r0.rationale)}</div>`;}
+fh+='</div>';}
+document.getElementById('antares-list').innerHTML=fh;
+}).catch(()=>{document.getElementById('antares-list').innerHTML='<p style="color:#604040">Failed to load detector findings.</p>'})}
 function showAibom(){
 const comps=lastData.rings?.r6_aibom_components||0;
 const models=lastData.rings?.r6_aibom_models||0;
@@ -8500,6 +8589,27 @@ a{{color:#0a6aba}}
             except Exception as ex:
                 self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
                 self._send_json({'results': [], 'total': 0, 'error': str(ex)})
+        elif self.path.startswith('/api/antares'):
+            try:
+                conn = sqlite3.connect(EVENTS_DB)
+                rows = conn.execute(
+                    'SELECT scan_time, issue_number, cwe, verdict, file_path, rank, rationale, commands_used, trace_id '
+                    'FROM detector_findings ORDER BY id DESC LIMIT 200'
+                ).fetchall()
+                total = conn.execute('SELECT COUNT(*) FROM detector_findings').fetchone()[0]
+                runs = conn.execute("SELECT COUNT(DISTINCT scan_time) FROM detector_findings").fetchone()[0]
+                conn.close()
+                findings = [{'scan_time': r[0], 'issue': r[1], 'cwe': r[2], 'verdict': r[3],
+                             'file': r[4], 'rank': r[5], 'rationale': r[6],
+                             'commands_used': r[7], 'trace_id': r[8]} for r in rows]
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self._send_json({'findings': findings, 'total': total, 'runs': runs})
+            except Exception as ex:
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+                self._send_json({'findings': [], 'total': 0, 'runs': 0, 'error': str(ex)})
         elif self.path.startswith('/api/aibom'):
             try:
                 conn = sqlite3.connect(EVENTS_DB)
