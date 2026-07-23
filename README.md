@@ -6,7 +6,7 @@ community PRs, detects duplicates, explains CI failures, and compiles release no
 
 ## What it does
 
-Runs on a dedicated Mac Mini, triggered by GitHub webhooks in real time (with an
+Runs on a local machine triggered by GitHub webhooks in real time (with an
 hourly fallback timer). Each cycle:
 
 1. Detects issue state from a SQLite action log
@@ -43,8 +43,7 @@ Every agent run is wrapped in multiple enforcement layers:
 
 Beyond containing the agent, AetherClaude hunts for vulnerabilities in the
 *target* code, mirroring Cisco's Cyber AI Foundry evaluation pipeline
-(Cartographer → Detector → Validator → Patcher). Everything runs locally on the
-Mini — the model never leaves the box.
+(Cartographer → Detector → Validator → Patcher). Everything runs locally — the model never leaves the box.
 
 - **Cartographer** — `bin/codegraph-cartographer.py` turns the clangd/libclang
   code graph into a repo-context pack and a per-CWE **security overlay** (tagged
@@ -108,8 +107,6 @@ Copy `.env.example` to `~/.env` and fill in the two values to bootstrap.
 
 ## Deploying
 
-On the Mac Mini:
-
 ```bash
 git clone https://github.com/ten9876/aetherclaude.git ~/src/aetherclaude
 cd ~/src/aetherclaude
@@ -123,8 +120,7 @@ services.
 Subsequent edits: commit to `main`, then on the Mac Mini run
 `~/src/aetherclaude/scripts/deploy.sh`.
 
-**Standing up an independent instance against your own repo** (not the
-AetherSDR Mac Mini)? See [docs/SELF-HOSTING.md](docs/SELF-HOSTING.md).
+**Standing up an independent instance against your own repo**? See [docs/SELF-HOSTING.md](docs/SELF-HOSTING.md).
 
 ## License
 
