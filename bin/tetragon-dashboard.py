@@ -3936,7 +3936,19 @@ cs+=`<div class="si"><span class="n muted">AI Defense SDK</span><span class="c m
 cs+=`<div class="si"><span class="n muted">A2A Scanner</span><span class="c muted">single agent (N/A)</span></div>`;
 cs+=`<div class="si"><span class="n">Project SBOM</span><span class="c"><a href="/sbom.json" target="_blank" style="color:#5de3ff;text-decoration:none">View</a></span></div>`;
 cs+=`<div class="si"><span class="n">Agent SBOM</span><span class="c"><a href="/agent-sbom.json" target="_blank" style="color:#5de3ff;text-decoration:none">View</a></span></div>`;
+cs+=`<div class="si" id="carto-row"><span class="n"><span class="stag tetragon">map</span> Cartographer</span><span class="c muted" id="carto-val">…</span></div>`;
 document.getElementById('cisco-scanners').innerHTML=cs;
+// Cartographer repo-pack summary — own fetch (published on the codegraph
+// cadence, not the /api/events poll). Fill the row once loaded.
+fetch('/api/cartographer').then(r=>r.json()).then(cd=>{
+  const el=document.getElementById('carto-val');if(!el)return;
+  if(!cd.available){el.textContent='no pack yet';return}
+  const tot=Object.values(cd.categories||{}).reduce((a,b)=>a+b,0);
+  el.classList.remove('muted');
+  el.innerHTML=`${tot} sites · ${cd.open_cve_count} CVEs · <a href="/repo-context.md" target="_blank" style="color:#5de3ff;text-decoration:none">pack</a>`;
+  const row=document.getElementById('carto-row');
+  if(row)row.title=`HEAD ${(cd.head_sha||'').slice(0,12)} · ${cd.subsystems} subsystems · generated ${cd.generated_at}`;
+}).catch(()=>{});
 // Policies
 // Recent Agent Activity
 let ph='';
@@ -8073,6 +8085,44 @@ class H(BaseHTTPRequestHandler):
             except:
                 self.send_response(404)
                 self.end_headers()
+        elif self.path in ('/repo-context.md', '/repo-context.json'):
+            # Cartographer repo-context pack (published to Shared/data by the
+            # codegraph refresh job). md for humans/Claude, json for harnesses.
+            fname = self.path.lstrip('/')
+            ctype = 'application/json' if fname.endswith('.json') else 'text/markdown; charset=utf-8'
+            try:
+                with open(f'/Users/Shared/aetherclaude/data/{fname}', 'rb') as sf:
+                    data = sf.read()
+                self.send_response(200)
+                self.send_header('Content-Type', ctype)
+                self.send_header('Content-Disposition', f'inline; filename="{fname}"')
+                self.end_headers()
+                self.wfile.write(data)
+            except:
+                self.send_response(404)
+                self.end_headers()
+        elif self.path.startswith('/api/cartographer'):
+            # Compact summary for the dashboard scanner row (HEAD sha + site
+            # counts). Reads the pack json; graceful empty on absence.
+            summary = {'available': False}
+            try:
+                with open('/Users/Shared/aetherclaude/data/repo-context.json') as sf:
+                    pk = json.load(sf)
+                l0 = pk.get('l0_repo_card', {})
+                cats = (pk.get('l2_security', {}) or {}).get('categories', {})
+                summary = {'available': True, 'head_sha': l0.get('head_sha', ''),
+                           'generated_at': pk.get('generated_at', ''),
+                           'call_tag_count': l0.get('call_tag_count', 0),
+                           'open_cve_count': l0.get('open_cve_count', 0),
+                           'subsystems': len(pk.get('l1_subsystems', [])),
+                           'categories': {k: v.get('count', 0) for k, v in cats.items()}}
+            except Exception:
+                pass
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self._send_json(summary)
         elif self.path.startswith('/fonts/'):
             # Serve proprietary/branded fonts from PRIVATE_FONTS_DIR
             # (outside the git tree). 404 if the file is missing — CSS
