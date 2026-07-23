@@ -1891,10 +1891,16 @@ work that is already merged."
             local attachments_section
             attachments_section=$(prepare_attachments "$number" "$issue_body" "$issue_comments" "$WORKTREE")
 
+            # Cartographer repo map (L0+L1 slice) — grounds Claude in the
+            # subsystem layout before it reads source. Best-effort: empty if
+            # the pack/DB isn't available, so a missing map never blocks a fix.
+            local repo_pack
+            repo_pack=$(/usr/bin/python3 /Users/aetherclaude/bin/codegraph-cartographer.py --implement-context 2>/dev/null || true)
+
             local skill_template
             skill_template=$(load_skill "implement-fix")
             local prompt
-            prompt=$(render_skill "$skill_template" "ISSUE_NUMBER" "$number" "ISSUE_TITLE" "$title" "ISSUE_BODY" "$issue_body" "ISSUE_COMMENTS" "$issue_comments" "ATTACHMENTS" "$attachments_section" "RETRY_CONTEXT" "$retry_context" "BRANCH" "$branch" "WORKSPACE" "$WORKTREE")
+            prompt=$(render_skill "$skill_template" "ISSUE_NUMBER" "$number" "ISSUE_TITLE" "$title" "ISSUE_BODY" "$issue_body" "ISSUE_COMMENTS" "$issue_comments" "ATTACHMENTS" "$attachments_section" "RETRY_CONTEXT" "$retry_context" "REPO_PACK" "$repo_pack" "BRANCH" "$branch" "WORKSPACE" "$WORKTREE")
 
             record_action "$number" "implement" "implement" "started"
             log "Running Claude Code for issue #${number}"

@@ -18,6 +18,7 @@ ${ISSUE_COMMENTS}
 
 ${ATTACHMENTS}
 ${RETRY_CONTEXT}
+${REPO_PACK}
 
 Your task for this pass (IMPLEMENT):
 1. **Read the project constitution first.** If `.specify/memory/constitution.md`

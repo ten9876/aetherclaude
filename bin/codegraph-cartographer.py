@@ -88,6 +88,11 @@ def _load_aibom(path):
 
 def build_l0(conn, meta, aibom_summary, components):
     open_cves = sum(len(c.get('vulnerabilities', [])) for c in components)
+    community_count = int(meta.get('community_count', 0) or 0)
+    if not community_count:  # metadata absent on some analyze runs — count directly
+        community_count = conn.execute(
+            "SELECT COUNT(DISTINCT community_id) FROM symbols "
+            "WHERE community_id IS NOT NULL AND kind!='concept'").fetchone()[0]
     return {
         'repo': 'AetherSDR',
         'head_sha': meta.get('src_head_sha', ''),
@@ -96,7 +101,7 @@ def build_l0(conn, meta, aibom_summary, components):
         'extracted_at': meta.get('extracted_at', ''),
         'symbol_count': int(meta.get('symbol_count', 0) or 0),
         'edge_count': int(meta.get('edge_count', 0) or 0),
-        'community_count': int(meta.get('community_count', 0) or 0),
+        'community_count': community_count,
         'call_tag_count': int(meta.get('call_tag_count', 0) or 0),
         'language': 'C++ / Qt6',
         'build_system': 'CMake + Ninja',
@@ -281,6 +286,27 @@ def render_md(pack):
     return '\n'.join(o)
 
 
+def render_implement_context(pack):
+    """Compact L0+L1 slice (~repo card + subsystem map) for injection into
+    the implement-fix prompt — grounding before Claude reads source. Kept
+    small (no per-symbol overlay); the full pack is at /repo-context.md and
+    the codegraph MCP serves on-demand detail."""
+    l0, subs = pack['l0_repo_card'], pack['l1_subsystems']
+    if not l0.get('head_sha') and not subs:
+        return ''  # no usable pack — caller substitutes empty
+    nsub = l0['community_count'] or len(subs)
+    o = [f"## Repo map (Cartographer @ {l0['head_sha'][:12] or 'unknown'})\n",
+         f"{l0['language']}, {l0['build_system']} · {l0['symbol_count']:,} symbols · "
+         f"{nsub} subsystems · {l0['open_cve_count']} open dependency CVEs\n",
+         "Subsystems (Louvain communities, key members):"]
+    for s in subs[:15]:
+        km = ', '.join(k.split('::')[-1] for k in s['key_symbols'][:4])
+        o.append(f"- **{s['label']}** ({s['size']}): {km}")
+    o.append("\n_Full security overlay + symbol index: the /cartographer pack; "
+             "call `mcp__codegraph__impact` for blast radius before structural edits._")
+    return '\n'.join(o)
+
+
 def render_cwe_slice(pack, cwe):
     """Focused Markdown slice for the Detector harness: repo card + only the
     overlay categories a given CWE implicates + input boundaries."""
@@ -320,14 +346,24 @@ def main():
     ap.add_argument('--aibom', default=DEFAULT_AIBOM)
     ap.add_argument('--out-dir', default=DEFAULT_OUT_DIR)
     ap.add_argument('--cwe', help='Print a focused CWE slice to stdout (e.g. CWE-787) instead of writing packs.')
+    ap.add_argument('--implement-context', action='store_true',
+                    help='Print the compact L0+L1 slice to stdout (for the implement-fix prompt).')
     ap.add_argument('--stdout', action='store_true', help='Print full markdown pack to stdout.')
     args = ap.parse_args()
 
     if not os.path.exists(args.db):
+        # Graceful: consumers that inline our stdout (implement-fix) get an
+        # empty string rather than a hard error, so a missing DB never breaks
+        # the agent — it just proceeds without the map.
+        if args.implement_context or args.cwe:
+            return 0
         print(f'ERROR: db not found: {args.db}', file=sys.stderr)
         return 2
     pack = build_pack(args.db, args.aibom)
 
+    if args.implement_context:
+        sys.stdout.write(render_implement_context(pack))
+        return 0
     if args.cwe:
         sys.stdout.write(render_cwe_slice(pack, args.cwe))
         return 0
