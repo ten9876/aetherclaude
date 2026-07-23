@@ -88,11 +88,14 @@ def _load_aibom(path):
 
 def build_l0(conn, meta, aibom_summary, components):
     open_cves = sum(len(c.get('vulnerabilities', [])) for c in components)
-    community_count = int(meta.get('community_count', 0) or 0)
-    if not community_count:  # metadata absent on some analyze runs — count directly
-        community_count = conn.execute(
-            "SELECT COUNT(DISTINCT community_id) FROM symbols "
-            "WHERE community_id IS NOT NULL AND kind!='concept'").fetchone()[0]
+    # "Subsystems" = meaningful communities (size>=3), matching the L1 map and
+    # the viewer. The raw analyze count (metadata.community_count) includes
+    # thousands of singletons (median size 1) and would read as ~3500 — not a
+    # useful subsystem number.
+    community_count = conn.execute(
+        "SELECT COUNT(*) FROM (SELECT community_id FROM symbols "
+        "WHERE community_id IS NOT NULL AND kind!='concept' "
+        "GROUP BY community_id HAVING COUNT(*)>=3)").fetchone()[0]
     return {
         'repo': 'AetherSDR',
         'head_sha': meta.get('src_head_sha', ''),
