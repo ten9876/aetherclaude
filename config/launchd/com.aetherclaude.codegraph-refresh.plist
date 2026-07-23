@@ -46,7 +46,7 @@
   <array>
     <string>/bin/bash</string>
     <string>-c</string>
-    <string>/opt/homebrew/bin/docker run --rm --name codegraph-refresh -v /Users/aetherclaude/workspace/AetherSDR:/src:ro -v /Users/Shared/aetherclaude/bin:/tools:ro -v /Users/Shared/aetherclaude/data:/out aetherclaude-codegraph:latest /codegraph-run.sh && /usr/bin/python3 /Users/Shared/aetherclaude/bin/codegraph-cartographer.py</string>
+    <string>/opt/homebrew/bin/docker run --rm --name codegraph-refresh -v /Users/aetherclaude/workspace/AetherSDR:/src:ro -v /Users/Shared/aetherclaude/bin:/tools:ro -v /Users/Shared/aetherclaude/data:/out aetherclaude-codegraph:latest /codegraph-run.sh &amp;&amp; /usr/bin/python3 /Users/Shared/aetherclaude/bin/codegraph-cartographer.py</string>
   </array>
 
   <!--
