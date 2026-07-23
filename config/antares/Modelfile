@@ -1,26 +1,42 @@
 # Antares-1B Detector model for Ollama.
 #
 # Cisco Foundation AI's vulnerability-localization model (fdtn-ai/antares-1b,
-# IBM Granite 4.0 1B base, Apache 2.0). Served on loopback for
-# bin/antares-detector.py. Import once (see README.md):
+# IBM Granite 4.0 "granitemoehybrid" base — Mamba2 + MoE, Apache 2.0). Served
+# on loopback for bin/antares-detector.py. Import once (see README.md):
 #
 #   ollama create antares-1b -f config/antares/Modelfile
 #
-# FROM points at a downloaded GGUF (Q8_0 — a 1B at Q8_0 is ~1.1 GB, runs on
-# Apple Silicon Metal). Adjust the path to wherever you placed the file.
-FROM /Users/Shared/aetherclaude/models/antares-1b-Q8_0.gguf
+# FROM points at the locally-converted GGUF. NOTE: we ship **bf16**, not a
+# Q8_0 quant — Q8_0 corrupts this model's Mamba2/SSM (recurrent) tensors and
+# produces pure garbage output. bf16 is ~3.4 GB and runs fine on Apple Silicon
+# Metal for a 1B. See README.md for the convert step.
+FROM /Users/Shared/aetherclaude/models/antares-1b-bf16.gguf
 
 # Sampling per the model card (temp 0.3 / top_p 1.0 / max_new_tokens 512).
 PARAMETER temperature 0.3
 PARAMETER top_p 1.0
 PARAMETER num_predict 512
 
-# Stop generation before the model hallucinates a tool response — the harness
-# supplies the real <tool_response> after executing each command. This keeps
-# the model's turn to: <think>…</think> <tool_call>…</tool_call>.
+# The agentic loop accumulates tool outputs; Ollama's 4096 default overflows
+# after a few commands ("request exceeds available context"). Antares is
+# 131072-capable; 32768 is ample and its KV cache is tiny for a 1B.
+PARAMETER num_ctx 32768
+
+# Stop before the model hallucinates a tool response — the harness supplies the
+# real <tool_response> after executing each command.
 PARAMETER stop "<tool_response>"
 
-# NOTE: the harness sends its own system prompt per request, so no SYSTEM line
-# here. If Ollama does not infer the Granite chat template from the GGUF
-# metadata (tool calls come out malformed), add an explicit TEMPLATE block —
-# see README.md.
+# Granite 4.0 chat template. Ollama does NOT infer it from the GGUF (it falls
+# back to a bare "{{ .Prompt }}" passthrough, which yields garbage), so we set
+# it explicitly — this reproduces the model's chat_template.jinja: role framing
+# with <|start_of_role|>…<|end_of_role|>…<|end_of_text|>, assistant turns primed
+# with <think>. The harness pre-wraps tool output as a user <tool_response>
+# message, so plain role framing is all that's needed here.
+TEMPLATE """{{- range .Messages -}}
+{{ if eq .Role "system" }}<|start_of_role|>system<|end_of_role|>{{ .Content }}<|end_of_text|>
+{{ else if eq .Role "user" }}<|start_of_role|>user<|end_of_role|>{{ .Content }}<|end_of_text|>
+{{ else if eq .Role "assistant" }}<|start_of_role|>assistant<|end_of_role|>{{ .Content }}<|end_of_text|>
+{{ end }}
+{{- end -}}
+<|start_of_role|>assistant<|end_of_role|><think>
+"""

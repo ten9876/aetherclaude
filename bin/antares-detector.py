@@ -24,7 +24,6 @@ Usage:
 import argparse
 import json
 import os
-import re
 import shlex
 import subprocess
 import sys
@@ -35,26 +34,62 @@ OLLAMA_URL = os.environ.get('ANTARES_OLLAMA_URL', 'http://127.0.0.1:11434/api/ch
 MODEL = os.environ.get('ANTARES_MODEL', 'antares-1b')
 CARTOGRAPHER = '/Users/aetherclaude/bin/codegraph-cartographer.py'
 
-ALLOWED_CMDS = {'grep', 'find', 'cat', 'ls'}
+# Read-only verb allowlist. Every one of these only READS — none can write a
+# file or execute another program. Deliberately excluded: sed/awk (can write &
+# run shells), sort/uniq (write via -o / positional output file), tee/dd/cp/mv
+# (write), xargs/env/find-exec (spawn arbitrary programs). The model gets its
+# paging idioms (head/tail/nl) and pipes, but no write or exec vector.
+ALLOWED_CMDS = {'grep', 'find', 'cat', 'ls', 'head', 'tail', 'nl', 'wc',
+                'cut', 'tr'}
 # find primaries that act rather than list — never allowed.
 FIND_DANGEROUS = {'-exec', '-execdir', '-delete', '-ok', '-okdir',
                   '-fprint', '-fprintf', '-fls', '-fprint0'}
+# Shell operators that must never appear inside a stage (pipes are handled
+# separately as stage separators; everything else is forbidden outright).
+SHELL_OPERATORS = {';', '||', '&&', '&', '>', '>>', '<', '<<', '<<<',
+                   '`', '$(', '$((', ')', '{', '}'}
+MAX_STAGES = 6                 # cap pipeline length
 MAX_OUTPUT_BYTES = 6000        # per-command stdout cap fed back to the model
 PER_CMD_TIMEOUT = 15           # seconds
 OVERALL_TIMEOUT = 240          # seconds — hard ceiling for the whole loop
 
+# Verbs whose own flags can hang — reject those specific args even though the
+# verb reads by default.
+DANGEROUS_ARGS = {
+    'tail': {'-f', '-F', '--follow'},        # -f would hang the pipeline
+}
+
 SYSTEM_PROMPT = (
     "You are a security vulnerability localization agent. The repository is "
-    "mounted at the current directory. Use shell commands (grep, find, cat, "
-    "ls) to explore the codebase and identify the file(s) that contain the "
-    "reported vulnerability. Think step by step. Emit exactly one tool call "
-    "per turn as <tool_call>{\"name\": \"terminal\", \"arguments\": "
-    "{\"command\": \"...\"}}</tool_call>. When you have located the "
-    "vulnerable file(s), call submit_vulnerable_files with their paths; if "
-    "there is no vulnerability, call submit_no_vulnerability_found."
+    "mounted at the current directory. Explore it and identify the file(s) "
+    "that contain the reported vulnerability. Think step by step. Emit exactly "
+    "one tool call per turn as <tool_call>{\"name\": \"terminal\", "
+    "\"arguments\": {\"command\": \"...\"}}</tool_call>.\n"
+    "\n"
+    "SANDBOX RULES — the terminal is read-only (no shell metacharacters except "
+    "the pipe), so obey these or the command is REJECTED and your turn wasted:\n"
+    "- Allowed programs (read-only only): grep, find, cat, ls, head, tail, nl, "
+    "wc, cut, tr. Anything else (sed, awk, sort, uniq, xargs, python, rg) is "
+    "REJECTED.\n"
+    "- Pipes ARE allowed: chain the programs above, e.g. "
+    "grep -rIn \"memcpy\" src | head -n 40.\n"
+    "- NOT allowed: redirection '>' '<', ';' '&&' '||' '&', '$()' or "
+    "backticks. Paths must stay inside the repository (no '..' or absolute "
+    "paths like /etc).\n"
+    "- Useful idioms:\n"
+    "    * search a tree:            grep -rIn \"pattern\" src | head -n 40\n"
+    "    * view code AROUND a match: grep -n -B5 -A20 \"pattern\" path/to/file\n"
+    "    * read a file:              cat path/to/file  (or: nl path | head -n 60)\n"
+    "\n"
+    "You have a limited command budget. Once you have located the vulnerable "
+    "file(s) — a grep hit at the suspect line is usually enough, you do not "
+    "need to read the whole file — call submit_vulnerable_files with their "
+    "paths and a short rationale. If, after exploring, there is no such "
+    "vulnerability, call submit_no_vulnerability_found. Do not exhaust the "
+    "budget re-reading files; submit as soon as you are reasonably confident."
 )
 
-_TOOLCALL_RE = re.compile(r'<tool_call>\s*(\{.*?\})\s*</tool_call>', re.DOTALL)
+_TOOLCALL_OPEN = '<tool_call>'
 
 
 # --------------------------------------------------------------------------
@@ -75,48 +110,127 @@ def _path_ok(tok, repo_root):
     return full == root or full.startswith(root + os.sep)
 
 
-def validate_command(cmd_str, repo_root):
-    """Return (argv, None) if safe to run, or (None, reason) if rejected."""
-    try:
-        argv = shlex.split(cmd_str)
-    except ValueError as e:
-        return None, f'unparseable command: {e}'
+def _validate_stage(argv, repo_root):
+    """Validate one pipeline stage (a single program invocation).
+    Returns (argv, None) if safe, or (None, reason) if rejected."""
     if not argv:
-        return None, 'empty command'
+        return None, 'empty pipeline stage'
     verb = os.path.basename(argv[0])
     if verb not in ALLOWED_CMDS:
-        return None, f'command "{verb}" not in allowlist {sorted(ALLOWED_CMDS)}'
+        return None, (f'command "{verb}" not allowed; use only '
+                      f'{sorted(ALLOWED_CMDS)}')
+    bad_args = DANGEROUS_ARGS.get(verb, set())
     for tok in argv[1:]:
         if verb == 'find' and tok in FIND_DANGEROUS:
             return None, f'find primary {tok} is not permitted'
-        # Any shell-operator-looking token is harmless under shell=False, but
-        # reject the obvious ones so a rejected command reads clearly.
-        if tok in (';', '|', '||', '&&', '&', '>', '<', '`', '$('):
+        if tok in bad_args:
+            return None, f'{verb} {tok} is not permitted'
+        if tok in SHELL_OPERATORS or tok.startswith(('>', '<')):
             return None, f'shell operator {tok!r} not permitted (no shell)'
+        # Reject embedded command substitution / backticks in any token.
+        if '$(' in tok or '`' in tok:
+            return None, f'command substitution in {tok!r} not permitted'
         if not _path_ok(tok, repo_root):
             return None, f'path {tok!r} escapes the repository root'
     return argv, None
 
 
+def validate_command(cmd_str, repo_root):
+    """Parse a (possibly piped) command into validated stages.
+    Returns (stages, None) where stages is a list of argv lists, or
+    (None, reason) if any stage is rejected. Pipes are the ONLY operator
+    allowed; every stage must be a read-only allowlisted program."""
+    try:
+        toks = shlex.split(cmd_str)
+    except ValueError as e:
+        return None, f'unparseable command: {e}'
+    if not toks:
+        return None, 'empty command'
+    # Split the token stream into pipeline stages on bare '|' tokens.
+    # '||' is a distinct token (rejected inside a stage), never a separator.
+    stages, cur = [], []
+    for tok in toks:
+        if tok == '|':
+            stages.append(cur)
+            cur = []
+        else:
+            cur.append(tok)
+    stages.append(cur)
+    if any(not s for s in stages):
+        return None, 'empty pipeline stage (stray |)'
+    if len(stages) > MAX_STAGES:
+        return None, f'pipeline too long (>{MAX_STAGES} stages)'
+    validated = []
+    for st in stages:
+        argv, reason = _validate_stage(st, repo_root)
+        if reason:
+            return None, reason
+        validated.append(argv)
+    return validated, None
+
+
 def run_command(cmd_str, repo_root):
-    """Validate + execute one model command. Returns a <tool_response> body
-    string (never raises)."""
-    argv, reason = validate_command(cmd_str, repo_root)
+    """Validate + execute one model command (single program or a read-only
+    pipeline). Returns a <tool_response> body string (never raises).
+
+    Executes with shell=False and chains stages by wiring each Popen's stdout
+    into the next stage's stdin — so `|` works without a shell interpreting the
+    string. `;`, `>`, `$()`, backticks etc. are inert because no shell ever
+    sees the command; they are also rejected up front for clear feedback."""
+    stages, reason = validate_command(cmd_str, repo_root)
     if reason:
         return f'REJECTED: {reason}'
+    env = {'PATH': '/usr/bin:/bin', 'LANG': 'C'}
+    procs = []
     try:
-        p = subprocess.run(argv, cwd=repo_root, capture_output=True, text=True,
-                           timeout=PER_CMD_TIMEOUT, shell=False,
-                           env={'PATH': '/usr/bin:/bin', 'LANG': 'C'})
-        out = p.stdout or ''
-        if p.returncode != 0 and not out:
-            out = p.stderr or f'(exit {p.returncode}, no output)'
+        prev_out = None
+        for i, argv in enumerate(stages):
+            last = (i == len(stages) - 1)
+            p = subprocess.Popen(
+                argv, cwd=repo_root, env=env,
+                stdin=prev_out,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE if last else subprocess.DEVNULL,
+            )
+            # Let the upstream process receive SIGPIPE if a downstream stage
+            # (e.g. head) exits early.
+            if prev_out is not None:
+                prev_out.close()
+            prev_out = p.stdout
+            procs.append(p)
+        try:
+            out_b, err_b = procs[-1].communicate(timeout=PER_CMD_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            for p in procs:
+                p.kill()
+            for p in procs:
+                try:
+                    p.wait(timeout=2)
+                except Exception:
+                    pass
+            return f'(command timed out after {PER_CMD_TIMEOUT}s)'
+        # Reap upstream stages so they don't linger.
+        for p in procs[:-1]:
+            try:
+                p.wait(timeout=2)
+            except Exception:
+                p.kill()
+        out = (out_b or b'').decode('utf-8', 'replace')
+        if not out:
+            err = (err_b or b'').decode('utf-8', 'replace')
+            rc = procs[-1].returncode
+            out = err or (f'(exit {rc}, no output)' if rc else '')
         if len(out) > MAX_OUTPUT_BYTES:
             out = out[:MAX_OUTPUT_BYTES] + '\n… [truncated]'
         return out or '(no output)'
-    except subprocess.TimeoutExpired:
-        return f'(command timed out after {PER_CMD_TIMEOUT}s)'
+    except FileNotFoundError as e:
+        return f'(program not found: {e})'
     except Exception as e:
+        for p in procs:
+            try:
+                p.kill()
+            except Exception:
+                pass
         return f'(execution error: {e})'
 
 
@@ -142,25 +256,54 @@ def chat(messages, timeout=60):
 
 
 def parse_tool_call(content):
-    """Extract the first <tool_call> JSON. Returns (name, args) or (None, None)."""
-    m = _TOOLCALL_RE.search(content or '')
-    if not m:
+    """Extract the first <tool_call> JSON. Returns (name, args) or (None, None).
+
+    The model reliably opens with `<tool_call>` but often omits the closing
+    `</tool_call>` tag (it ends the turn after the JSON), so we parse the JSON
+    object directly with raw_decode — which stops at the end of the object and
+    ignores any trailing `</tool_call>`, whitespace, or end-of-turn text."""
+    if not content:
+        return None, None
+    marker = content.find(_TOOLCALL_OPEN)
+    if marker == -1:
+        return None, None                       # no tool call -> caller nudges
+    brace = content.find('{', marker + len(_TOOLCALL_OPEN))
+    if brace == -1:
         return None, None
     try:
-        obj = json.loads(m.group(1))
-        return obj.get('name'), obj.get('arguments', {}) or {}
-    except Exception:
+        obj, _ = json.JSONDecoder().raw_decode(content[brace:])
+    except ValueError:
         return None, None
+    if not isinstance(obj, dict):
+        return None, None
+    args = obj.get('arguments', {})
+    if not isinstance(args, dict):        # model sometimes emits a bare string
+        args = {}
+    return obj.get('name'), args
 
 
 def _candidate_files(args):
-    for key in ('files', 'file_paths', 'paths', 'file'):
-        v = args.get(key)
-        if isinstance(v, str):
-            return [v]
-        if isinstance(v, list):
-            return [str(x) for x in v]
-    return []
+    """Collect candidate file paths from submit_vulnerable_files arguments.
+    The model is inconsistent about the key name — 'files', 'file_paths',
+    'paths', and even 'vulnerable_files[]' (a literal '[]' suffix) all show up —
+    so we accept any key that mentions 'file' or 'path', normalizing the '[]'
+    suffix, and dedupe. Values may be a string or a list of strings."""
+    out, seen = [], set()
+
+    def add(v):
+        vals = [v] if isinstance(v, str) else (
+            [str(x) for x in v] if isinstance(v, list) else [])
+        for x in vals:
+            x = x.strip()
+            if x and x not in seen:
+                seen.add(x)
+                out.append(x)
+
+    for key, v in args.items():
+        k = key.rstrip('[]').lower()
+        if 'file' in k or 'path' in k:
+            add(v)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -224,8 +367,15 @@ def localize(repo, cwe, context, max_commands):
             resp = run_command(cmd, repo)
             result['commands_used'] += 1
             result['transcript'].append({'command': cmd, 'response': resp[:500]})
-            messages.append({'role': 'user',
-                             'content': f'<tool_response>\n{resp}\n</tool_response>'})
+            tool_msg = f'<tool_response>\n{resp}\n</tool_response>'
+            remaining = max_commands - result['commands_used']
+            if remaining <= 3:
+                tool_msg += (f'\n\n[Only {remaining} command(s) left. If you have '
+                             'already found the vulnerable file(s), stop exploring '
+                             'and call submit_vulnerable_files now with the path(s) '
+                             'and a one-line rationale. If nothing relevant was '
+                             'found, call submit_no_vulnerability_found.]')
+            messages.append({'role': 'user', 'content': tool_msg})
             continue
         # No parseable tool call — nudge once, then give up on repeats.
         messages.append({'role': 'user', 'content':
@@ -254,8 +404,14 @@ def main():
                           'candidates': []}))
         return 0   # fail-open
 
-    res = localize(os.path.realpath(args.repo), args.cwe.strip(),
-                   args.context, args.max_commands)
+    try:
+        res = localize(os.path.realpath(args.repo), args.cwe.strip(),
+                       args.context, args.max_commands)
+    except Exception as e:
+        # Absolute backstop: the Detector is advisory and must never break
+        # triage, so any unexpected failure becomes an empty fail-open verdict.
+        res = {'verdict': 'error', 'error': f'{type(e).__name__}: {e}',
+               'candidates': [], 'cwe': args.cwe.strip()}
     res['issue'] = args.issue
     res['generated_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     payload = json.dumps(res, indent=2)
