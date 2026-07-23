@@ -84,7 +84,28 @@ for f in "$REPO_DIR"/config/launchd/*.plist; do
         if [ "$RESTART" = true ]; then
             label="${name%.plist}"
             sudo launchctl bootout "system/$label" 2>/dev/null || true
-            sudo launchctl bootstrap system "$target"
+            # bootout returns before launchd finishes tearing the job
+            # down; an immediate bootstrap of the same label races the
+            # teardown and fails with "Bootstrap failed: 5: Input/output
+            # error" — which under set -e killed the whole deploy and
+            # left the service unloaded (2026-07-22 tunnel outage).
+            # Wait for the label to disappear, then retry bootstrap.
+            for _ in $(seq 1 20); do
+                sudo launchctl print "system/$label" >/dev/null 2>&1 || break
+                sleep 0.5
+            done
+            bootstrapped=false
+            for _ in $(seq 1 5); do
+                if sudo launchctl bootstrap system "$target"; then
+                    bootstrapped=true
+                    break
+                fi
+                sleep 2
+            done
+            if [ "$bootstrapped" != true ]; then
+                echo "ERROR: bootstrap failed for $label after 5 attempts" >&2
+                exit 1
+            fi
             echo "   reloaded $label"
         fi
     fi
