@@ -14,8 +14,10 @@ hourly fallback timer). Each cycle:
 3. Posts analysis, requests missing info, or transitions to implementation
 4. Implements fixes in a clean git worktree, runs validation, creates a PR
 5. Reviews incoming community PRs for convention compliance
-6. Auto-closes zero-effort submissions
-7. Logs every run to Galileo and scores its own triage/implement/review
+6. Localizes candidate vulnerabilities with a local Cisco Foundation AI model
+   (Antares-1B) and confirms them under sanitizers before feeding the fixer
+7. Auto-closes zero-effort submissions
+8. Logs every run to Galileo and scores its own triage/implement/review
    quality against curated datasets (the "is the agent any good?" layer)
 
 ## Security architecture
@@ -36,6 +38,38 @@ Every agent run is wrapped in multiple enforcement layers:
 - **Tetragon** (eBPF observability) — records every tool invocation
 - **Token scrubbing** — session JSONL files are scanned on every run for
   `ghs_`, `ghp_`, `github_pat_`, `sk-ant-`, and Galileo key leaks
+
+## Vulnerability detection (Antares · Cisco Cyber AI Foundry pipeline)
+
+Beyond containing the agent, AetherClaude hunts for vulnerabilities in the
+*target* code, mirroring Cisco's Cyber AI Foundry evaluation pipeline
+(Cartographer → Detector → Validator → Patcher). Everything runs locally on the
+Mini — the model never leaves the box.
+
+- **Cartographer** — `bin/codegraph-cartographer.py` turns the clangd/libclang
+  code graph into a repo-context pack and a per-CWE **security overlay** (tagged
+  buffer/alloc/deserialize/cmd-exec sites). It seeds the Detector and grounds
+  `implement-fix`; browse it at `/cartographer`.
+- **Detector — Antares-1B** — Cisco Foundation AI's
+  [Antares-1B](https://huggingface.co/fdtn-ai/antares-1b) (IBM Granite 4.0,
+  Apache 2.0) served locally via Ollama on loopback. On **every issue and PR**
+  it explores the repo in a **read-only allowlist-jail sandbox** (`grep`/`find`/
+  `cat`/`ls`/`head`/… + pipes, no writes or exec — red-teamed), seeded by the
+  Cartographer overlay, and localizes candidate vulnerable files. It posts an
+  advisory comment only on a positive verdict, feeds candidates into the fixer,
+  and is fully fail-open (`bin/antares-detector.py`).
+- **Validator** — for files with a harness, `bin/validate-finding.sh` /
+  `bin/fuzz-finding.sh` build the localized code under **AddressSanitizer +
+  UndefinedBehaviorSanitizer** (and **libFuzzer**) against crafted/generated
+  input, turning a speculative finding into ground truth (`CONFIRMED` /
+  `UNCONFIRMED`) with a reproducer — it caught a real signed-overflow in the
+  ADIF parser this way. Wired into the orchestrator after the Detector.
+- **Nightly sweep** — `bin/antares-sweep.sh` (02:00 PT) runs the Detector across
+  ~20 CWE categories × 3 passes, unions the candidates by confidence, fuzz-
+  validates the ones with a harness, and writes a ranked report.
+
+Findings surface as GitHub advisory comments and on the dashboard's
+**Antares Detector** scanner panel (Ops view).
 
 ## Evaluation (Galileo)
 
@@ -60,8 +94,10 @@ history:
 ```
 bin/             Scripts executed by the agent
 skills/          Claude Code prompt templates (triage, implement, review, …)
+tools/validator/ Antares Validator harnesses + ADIF corpus (sanitizer testbed)
 config/
   launchd/       macOS service definitions
+  antares/       Antares-1B Ollama Modelfile + model-import doc
   pf/            firewall anchor
   cloudflared/   tunnel config (no credentials)
 scripts/
