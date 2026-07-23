@@ -1,0 +1,26 @@
+# Antares-1B Detector model for Ollama.
+#
+# Cisco Foundation AI's vulnerability-localization model (fdtn-ai/antares-1b,
+# IBM Granite 4.0 1B base, Apache 2.0). Served on loopback for
+# bin/antares-detector.py. Import once (see README.md):
+#
+#   ollama create antares-1b -f config/antares/Modelfile
+#
+# FROM points at a downloaded GGUF (Q8_0 — a 1B at Q8_0 is ~1.1 GB, runs on
+# Apple Silicon Metal). Adjust the path to wherever you placed the file.
+FROM /Users/Shared/aetherclaude/models/antares-1b-Q8_0.gguf
+
+# Sampling per the model card (temp 0.3 / top_p 1.0 / max_new_tokens 512).
+PARAMETER temperature 0.3
+PARAMETER top_p 1.0
+PARAMETER num_predict 512
+
+# Stop generation before the model hallucinates a tool response — the harness
+# supplies the real <tool_response> after executing each command. This keeps
+# the model's turn to: <think>…</think> <tool_call>…</tool_call>.
+PARAMETER stop "<tool_response>"
+
+# NOTE: the harness sends its own system prompt per request, so no SYSTEM line
+# here. If Ollama does not infer the Granite chat template from the GGUF
+# metadata (tool calls come out malformed), add an explicit TEMPLATE block —
+# see README.md.

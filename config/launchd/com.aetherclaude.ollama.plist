@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aetherclaude.ollama</string>
+
+    <!--
+      Local model server for the Antares Detector (bin/antares-detector.py).
+      Serves Cisco Foundation AI's Antares-1B over an OpenAI-compatible HTTP
+      API on loopback only. A 1B model on Apple Silicon Metal is a rounding
+      error next to the agent + dashboard workloads.
+
+      Bound to 127.0.0.1:11434 (OLLAMA_HOST) so it is never exposed off-box:
+      the detector reaches it over the pf loopback rule (config/pf — user 965
+      -> 127.0.0.1 is allowed) and bypasses tinyproxy via NO_PROXY. No
+      firewall/allowlist change is needed.
+
+      Model import is a one-time deploy step — see config/antares/README.md:
+          ollama create antares-1b -f /Users/Shared/aetherclaude/config/antares/Modelfile
+      The detector fail-opens if the model/server is absent, so this service
+      being down never blocks triage.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/ollama</string>
+        <string>serve</string>
+    </array>
+
+    <key>UserName</key>
+    <string>aetherclaude</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/aetherclaude</string>
+        <!-- Loopback-only bind — do not expose the model server off-box. -->
+        <key>OLLAMA_HOST</key>
+        <string>127.0.0.1:11434</string>
+        <!-- Unload the model after 5 min idle to free memory between the
+             bursty per-issue detector runs. -->
+        <key>OLLAMA_KEEP_ALIVE</key>
+        <string>5m</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/aetherclaude/logs/ollama.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/aetherclaude/logs/ollama.log</string>
+</dict>
+</plist>
