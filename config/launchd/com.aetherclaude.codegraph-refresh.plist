@@ -7,15 +7,24 @@
 
   <!--
     Nightly rebuild of the codegraph SQLite database read by the
-    dashboard's /codegraph route. Three steps, all inside a Linux
-    container (Colima or Docker Desktop on the Mac Mini):
+    dashboard's /codegraph route. Steps 1-3 inside a Linux container
+    (Colima or Docker Desktop on the Mac Mini); step 4 on the host:
 
       1. cmake configure        — produces compile_commands.json
                                   (~10 s — no actual build)
       2. codegraph-extract-clangd.py — libclang-driven AST extraction
+                                  incl. the security-overlay call_tags
                                   (~2-4 min on 10 perf cores)
       3. codegraph-analyze.py   — Louvain community detection
                                   (~0.5 s)
+      4. codegraph-cartographer.py — repo-context pack (repo-context.md
+                                  /.json) from the fresh DB + aibom CVEs.
+                                  Runs on the HOST (not the container):
+                                  aibom-latest.json lives outside the
+                                  container's mounts. Stdlib-only, <1 s.
+                                  Degrades gracefully if the aibom file
+                                  isn't jeremy-readable (CVE section
+                                  omitted, pack still emitted).
 
     Why containerized: AetherSDR is Linux-native and its ccdb references
     Linux include paths (Qt6 from apt, PipeWire/ALSA dev headers). The
@@ -37,7 +46,7 @@
   <array>
     <string>/bin/bash</string>
     <string>-c</string>
-    <string>/opt/homebrew/bin/docker run --rm --name codegraph-refresh -v /Users/aetherclaude/workspace/AetherSDR:/src:ro -v /Users/Shared/aetherclaude/bin:/tools:ro -v /Users/Shared/aetherclaude/data:/out aetherclaude-codegraph:latest /codegraph-run.sh</string>
+    <string>/opt/homebrew/bin/docker run --rm --name codegraph-refresh -v /Users/aetherclaude/workspace/AetherSDR:/src:ro -v /Users/Shared/aetherclaude/bin:/tools:ro -v /Users/Shared/aetherclaude/data:/out aetherclaude-codegraph:latest /codegraph-run.sh && /usr/bin/python3 /Users/Shared/aetherclaude/bin/codegraph-cartographer.py</string>
   </array>
 
   <!--
