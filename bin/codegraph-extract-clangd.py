@@ -62,6 +62,8 @@ _LIBCLANG_CANDIDATES = [
     '/usr/lib64/libclang.so',
     '/opt/homebrew/opt/llvm/lib/libclang.dylib',
     '/usr/local/opt/llvm/lib/libclang.dylib',
+    # macOS Command Line Tools (no brew llvm needed)
+    '/Library/Developer/CommandLineTools/usr/lib/libclang.dylib',
 ]
 for _p in _LIBCLANG_CANDIDATES:
     if os.path.exists(_p):
@@ -131,6 +133,23 @@ CREATE TABLE file_to_symbols (
     symbol_id  INTEGER NOT NULL REFERENCES symbols(id),
     UNIQUE(file_path, symbol_id)
 );
+
+-- Security overlay (Cartographer): call sites of attack-relevant APIs,
+-- tagged during the same AST walk that extracts call edges. symbol_id is
+-- the ENCLOSING function. category is the site class the Cartographer's
+-- CWE mapping filters on (buffer_ops / format / cmd_exec / path_ops /
+-- alloc_free / deserial / input_read). Consumers must tolerate this
+-- table being absent (older DBs).
+CREATE TABLE call_tags (
+    id          INTEGER PRIMARY KEY,
+    symbol_id   INTEGER REFERENCES symbols(id),
+    file_path   TEXT NOT NULL,
+    line_number INTEGER,
+    api_name    TEXT NOT NULL,
+    category    TEXT NOT NULL
+);
+CREATE INDEX idx_call_tags_cat  ON call_tags(category);
+CREATE INDEX idx_call_tags_file ON call_tags(file_path);
 CREATE INDEX idx_f2s_file ON file_to_symbols(file_path);
 
 CREATE TABLE metadata (
@@ -251,9 +270,74 @@ def _detect_resource_dir():
 _RESOURCE_DIR_CACHE = None
 
 
+# --------------------------------------------------------------------------
+# Security-overlay tagger (Cartographer). Two lookup maps because libclang
+# gives only the bare method spelling for C++ methods — 'start' alone would
+# tag every start() in the codebase, so Qt/class methods match on
+# 'Class::method' via ref.semantic_parent, while C library functions match
+# on the plain spelling. v1 is lexical callee-name classification only;
+# taint / non-literal-format analysis is deliberately deferred.
+DANGEROUS_C_FUNCS = {
+    # buffer_ops — memory/string writes with overflow classes (CWE-120/121/122/787)
+    'strcpy': 'buffer_ops', 'strcat': 'buffer_ops', 'sprintf': 'buffer_ops',
+    'vsprintf': 'buffer_ops', 'memcpy': 'buffer_ops', 'memmove': 'buffer_ops',
+    'memset': 'buffer_ops', 'strncpy': 'buffer_ops', 'strncat': 'buffer_ops',
+    'snprintf': 'buffer_ops', 'gets': 'buffer_ops',
+    # format — printf-family (CWE-134; v1 tags all, literal-fmt refinement later)
+    'printf': 'format', 'fprintf': 'format', 'vprintf': 'format',
+    'vfprintf': 'format', 'syslog': 'format',
+    # cmd_exec — process/command execution (CWE-78)
+    'system': 'cmd_exec', 'popen': 'cmd_exec', 'execl': 'cmd_exec',
+    'execlp': 'cmd_exec', 'execle': 'cmd_exec', 'execv': 'cmd_exec',
+    'execvp': 'cmd_exec', 'execve': 'cmd_exec',
+    # path_ops — filesystem paths (CWE-22)
+    'fopen': 'path_ops', 'open': 'path_ops', 'remove': 'path_ops',
+    'rename': 'path_ops', 'mkdir': 'path_ops', 'unlink': 'path_ops',
+    # alloc_free — heap lifecycle geography (CWE-415/416)
+    'malloc': 'alloc_free', 'calloc': 'alloc_free', 'realloc': 'alloc_free',
+    'free': 'alloc_free',
+    # input_read — external-input entry points (boundary set derived at
+    # pack time from the enclosing functions of these sites)
+    'recv': 'input_read', 'recvfrom': 'input_read', 'recvmsg': 'input_read',
+    'read': 'input_read', 'fread': 'input_read',
+}
+DANGEROUS_QT_METHODS = {
+    'QProcess::start': 'cmd_exec', 'QProcess::execute': 'cmd_exec',
+    'QProcess::startDetached': 'cmd_exec',
+    'QFile::open': 'path_ops', 'QFile::remove': 'path_ops',
+    'QFile::rename': 'path_ops', 'QDir::mkdir': 'path_ops',
+    'QDataStream::readBytes': 'deserial', 'QDataStream::readRawData': 'deserial',
+    'QJsonDocument::fromJson': 'deserial', 'QCborValue::fromCbor': 'deserial',
+    'QIODevice::read': 'input_read', 'QIODevice::readAll': 'input_read',
+    'QIODevice::readLine': 'input_read',
+    'QSerialPort::read': 'input_read', 'QSerialPort::readAll': 'input_read',
+    'QUdpSocket::readDatagram': 'input_read',
+    'QTcpSocket::read': 'input_read', 'QTcpSocket::readAll': 'input_read',
+    'QNetworkReply::readAll': 'input_read',
+}
+
+def _tag_category(ref):
+    """Classify a resolved callee cursor against the dangerous-API maps.
+    Returns (display_name, category) or (None, None)."""
+    try:
+        sp = ref.spelling
+        if not sp:
+            return None, None
+        if _safe_kind(ref) == CursorKind.CXX_METHOD:
+            parent = ref.semantic_parent
+            cls = parent.spelling if parent is not None else ''
+            qual = f'{cls}::{sp}'
+            cat = DANGEROUS_QT_METHODS.get(qual)
+            return (qual, cat) if cat else (None, None)
+        cat = DANGEROUS_C_FUNCS.get(sp)
+        return (sp, cat) if cat else (None, None)
+    except Exception:
+        return None, None
+
+
 def _process_tu(args_tuple):
     """Worker entry point. Parses one TU, returns (symbols, edges,
-    qt_connect_sites). symbols and edges keyed by USR strings."""
+    qt_connect_sites, call_tags). symbols and edges keyed by USR strings."""
     tu_file, compile_args, src_root, work_dir, resource_dir = args_tuple
 
     # With fork(), the parent's libclang Config state is inherited
@@ -296,6 +380,7 @@ def _process_tu(args_tuple):
     symbols = {}     # usr -> dict
     edges = []       # (src_usr, dst_usr, kind)
     qt_connects = []
+    call_tags = []   # (enclosing_usr, rel_path, line, api_name, category)
 
     src_root_str = str(src_root)
 
@@ -391,6 +476,17 @@ def _process_tu(args_tuple):
         elif cur_kind == CursorKind.CALL_EXPR and in_src and enc_func_usr:
             ref = c.referenced
             if ref is not None:
+                # Security-overlay tag — independent of callee-USR edge
+                # resolution (C library functions from system headers tag
+                # fine even when we don't graph them as symbols).
+                tag_name, tag_cat = _tag_category(ref)
+                if tag_cat:
+                    try:
+                        rel = os.path.relpath(fpath, src_root.parent)
+                    except ValueError:
+                        rel = fpath
+                    call_tags.append((enc_func_usr, rel, c.location.line,
+                                      tag_name, tag_cat))
                 callee_usr = ref.get_usr()
                 if callee_usr and callee_usr != enc_func_usr:
                     if ref.spelling == 'connect':
@@ -413,7 +509,8 @@ def _process_tu(args_tuple):
     # fail the TU — incomplete parses still yield useful partial data.
     fatal = sum(1 for d in tu.diagnostics if d.severity >= 4)
 
-    return (symbols, edges, qt_connects, None if fatal == 0 else f'{fatal} fatal diags')
+    return (symbols, edges, qt_connects, call_tags,
+            None if fatal == 0 else f'{fatal} fatal diags')
 
 
 # --------------------------------------------------------------------------
@@ -518,12 +615,15 @@ def main():
     # Aggregate
     all_symbols = {}             # usr -> dict
     edge_set = set()             # (src_usr, dst_usr, kind) deduped
+    tag_set = set()              # (enc_usr, rel, line, api, category) deduped
+                                 # (same site appears in every TU that includes
+                                 # the header defining an inline function)
     n_parsed = 0
     parse_errors = []
     t_parse_start = time.time()
 
     with mp_ctx.Pool(processes=jobs) as pool:
-        for syms, edges, _qt, err in pool.imap_unordered(_process_tu, tus, chunksize=4):
+        for syms, edges, _qt, ctags_rows, err in pool.imap_unordered(_process_tu, tus, chunksize=4):
             n_parsed += 1
             if err and args.verbose:
                 parse_errors.append(err)
@@ -532,6 +632,8 @@ def main():
                     all_symbols[usr] = info
             for tup in edges:
                 edge_set.add(tup)
+            for tup in ctags_rows:
+                tag_set.add(tup)
             if n_parsed % 50 == 0:
                 print(f'    {n_parsed}/{len(tus)} TUs '
                       f'({time.time()-t_parse_start:.1f}s, '
@@ -600,6 +702,20 @@ def main():
         edge_rows,
     )
 
+    # call_tags (security overlay) — enclosing function resolved to its
+    # symbol id when possible; site kept with NULL symbol_id otherwise
+    # (the file:line is still useful geography).
+    tag_rows = []
+    tag_count_by_cat = defaultdict(int)
+    for enc_usr, rel, line, api, cat in sorted(tag_set):
+        tag_rows.append((usr_to_id.get(enc_usr), rel, line, api, cat))
+        tag_count_by_cat[cat] += 1
+    conn.executemany(
+        'INSERT INTO call_tags (symbol_id, file_path, line_number, api_name, category) '
+        'VALUES (?,?,?,?,?)',
+        tag_rows,
+    )
+
     # file_to_symbols
     file_to_syms = defaultdict(set)
     for usr, s in all_symbols.items():
@@ -646,6 +762,8 @@ def main():
         'edges_signal_slot': str(edge_count_by_kind.get('signal-slot', 0)),
         'tu_count': str(len(tus)),
         'extraction_seconds': f'{elapsed:.2f}',
+        'call_tag_count': str(len(tag_rows)),
+        'overlay_version': '1.0',
     }
     conn.executemany(
         'INSERT INTO metadata (key, value) VALUES (?,?)',
