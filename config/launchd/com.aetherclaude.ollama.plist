@@ -43,11 +43,6 @@
              bursty per-issue detector runs. -->
         <key>OLLAMA_KEEP_ALIVE</key>
         <string>5m</string>
-        <!-- Serve several requests concurrently so the nightly Antares sweep
-             (and parallel issue processing) actually parallelizes. A 1B model's
-             per-slot KV cache is tiny, so 4 slots is cheap on the M4. -->
-        <key>OLLAMA_NUM_PARALLEL</key>
-        <string>4</string>
     </dict>
 
     <key>KeepAlive</key>

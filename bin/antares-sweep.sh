@@ -1,7 +1,12 @@
 #!/opt/homebrew/bin/bash
 # Antares full-repo sweep — run the Detector across a CWE list, N passes each,
-# in parallel, union the candidates (with a confidence tally), optionally
-# fuzz-validate the ones that have a harness, and write a report.
+# union the candidates (with a confidence tally), optionally fuzz-validate the
+# ones that have a harness, and write a report.
+#
+# Runs SERIAL by default: the M4's single GPU is the throughput bottleneck, so
+# concurrent 1B inferences finish only ~10% faster than serial while reserving
+# 4x the KV cache — not worth it for an overnight batch. (ANTARES_SWEEP_CONCURRENCY
+# can still raise it.)
 #
 # The Detector explores the WHOLE repo per run, so the natural sweep unit is a
 # CWE category (not a file). Because exploration is stochastic, each CWE is run
@@ -22,7 +27,7 @@ FUZZER="/Users/aetherclaude/bin/fuzz-finding.sh"
 OUTDIR="/Users/aetherclaude/data/antares/sweeps"
 LOG="/Users/Shared/aetherclaude/logs/antares-sweep.log"
 PASSES="${ANTARES_SWEEP_PASSES:-3}"
-CONCURRENCY="${ANTARES_SWEEP_CONCURRENCY:-4}"
+CONCURRENCY="${ANTARES_SWEEP_CONCURRENCY:-1}"
 MAX_COMMANDS="${ANTARES_SWEEP_MAX_COMMANDS:-15}"
 VALIDATE="${ANTARES_SWEEP_VALIDATE:-1}"
 FUZZ_SECONDS="${ANTARES_SWEEP_FUZZ_SECONDS:-40}"
