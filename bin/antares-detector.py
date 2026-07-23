@@ -341,6 +341,7 @@ def localize(repo, cwe, context, max_commands):
     messages = [{'role': 'system', 'content': SYSTEM_PROMPT},
                 {'role': 'user', 'content': user}]
 
+    no_call = 0   # consecutive turns with no parseable tool call
     for step in range(max_commands):
         if time.time() - started > OVERALL_TIMEOUT:
             result['verdict'] = 'timeout'
@@ -363,6 +364,7 @@ def localize(repo, cwe, context, max_commands):
             result['verdict'] = 'clean'
             break
         if name == 'terminal':
+            no_call = 0
             cmd = (args.get('command') or '').strip()
             resp = run_command(cmd, repo)
             result['commands_used'] += 1
@@ -377,11 +379,21 @@ def localize(repo, cwe, context, max_commands):
                              'found, call submit_no_vulnerability_found.]')
             messages.append({'role': 'user', 'content': tool_msg})
             continue
-        # No parseable tool call — nudge once, then give up on repeats.
+        # No parseable tool call. The 1B model sometimes rambles instead of
+        # terminating (esp. generic mode on a non-security issue) — after a few
+        # consecutive non-calls, stop and treat it as no finding rather than
+        # burning the whole budget (was the #4414 'budget_exhausted' noise).
+        no_call += 1
+        if no_call >= 3:
+            result['verdict'] = 'clean'
+            result['note'] = f'no tool call after {no_call} nudges — no finding'
+            break
         messages.append({'role': 'user', 'content':
-                         'Emit exactly one <tool_call> with a terminal command, '
-                         'or call submit_vulnerable_files / '
-                         'submit_no_vulnerability_found.'})
+                         'You did not emit a valid tool call. If you found the '
+                         'vulnerable file(s), call submit_vulnerable_files now; if you '
+                         'found nothing relevant, call submit_no_vulnerability_found. '
+                         'Otherwise emit exactly one <tool_call> with a grep/find/cat/ls '
+                         'command.'})
     else:
         result['verdict'] = result['verdict'] if result['verdict'] != 'error' else 'budget_exhausted'
 

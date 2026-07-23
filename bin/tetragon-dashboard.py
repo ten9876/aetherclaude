@@ -1825,7 +1825,12 @@ def scan_rings():
                     issue_titles = {}
                     with open(ORCHESTRATOR_LOG) as of:
                         for oline in of:
+                            # Legacy format ("Processing issue #N: <title>").
                             m = re.search(r'Processing issue #(\d+): (.+)', oline)
+                            if m:
+                                issue_titles[m.group(1)] = m.group(2)
+                            # Current format ("Issue #N (<title>) — state: …").
+                            m = re.search(r'Issue #(\d+) \(([^)]+)\)', oline)
                             if m:
                                 issue_titles[m.group(1)] = m.group(2)
                             m = re.search(r'Responding to discussion #(\d+): (.+)', oline)
