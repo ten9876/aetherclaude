@@ -3749,7 +3749,7 @@ function renderExec(d){
     return `<div class="x-ctl" onclick="${esc(fn)}" title="${esc(stt.reason||nm)}"><span class="dot" style="background:${st.col}"></span><span class="nm">${nm}</span><span class="ct">${ct}</span></div>`;
   }).join('');
   // KPI tiles
-  const tr=lastTrends||{},ev=tr.eval||{},ac=tr.actions||{};
+  const tr=lastTrends||{},ev=tr.eval||{},ac=tr.actions||{},an=tr.antares||{};
   const runsArr=(tr.daily_runs||[]).map(x=>x.runs);
   const runsToday=runsArr.length?runsArr[runsArr.length-1]:null;
   const runsYest=runsArr.length>1?runsArr[runsArr.length-2]:null;
@@ -3768,9 +3768,9 @@ function renderExec(d){
     {lbl:'Issues &amp; PRs handled · 24h',val:ac.handled_24h==null?'—':ac.handled_24h,
      sub:deltaHtml(ac.handled_24h,ac.handled_prev_24h,true)+' vs prior day',
      spark:svgSparkline((ac.handled_7d||[]).map(x=>x.handled),110,30,7.3),click:'showRing9()'},
-    {lbl:'Blocked events · 24h',val:blocked24==null?'—':blocked24,
-     sub:deltaHtml(blocked24,tr.blocked_prev_24h,false)+' vs prior day',
-     spark:svgSparkline(blockedArr,110,30,5.6),click:"gotoOps({types:'BLOCK,PROXY'})"},
+    {lbl:'Antares vulns · 24h',val:(an.candidates_24h==null)?'—':an.candidates_24h,
+     sub:deltaHtml(an.candidates_24h,an.candidates_prev_24h,false)+` · ${an.runs_24h||0} scan${an.runs_24h===1?'':'s'}`,
+     spark:svgSparkline((an.cand_7d||[]).map(x=>x.n),110,30,5.6),click:'showAntares()'},
     {lbl:'Run success · 24h',val:evalPct,
      sub:deltaHtml(ev.pass_rate_24h,ev.pass_rate_prev_24h,true)+` · ${ev.runs_24h||0} runs`,
      spark:svgSparkline((ev.success_7d||[]).filter(x=>x.pass_rate!=null).map(x=>x.pass_rate),110,30,8.1),
@@ -8790,6 +8790,39 @@ a{{color:#0a6aba}}
                     for i in range(6, -1, -1):
                         d = time.strftime('%Y-%m-%d', time.gmtime(nowt - i * 86400))
                         payload['daily_runs'].append({'d': d, 'runs': got_d.get(d, 0)})
+                    # Antares KPI: candidate vulnerable files localized (rows with
+                    # a file_path from a 'vulnerable' verdict), 24h + 7-day series.
+                    try:
+                        def _acount(where):
+                            return conn.execute(
+                                "SELECT COUNT(*) FROM detector_findings WHERE "
+                                "verdict='vulnerable' AND file_path IS NOT NULL AND "
+                                + where).fetchone()[0]
+                        got_a = {r[0]: r[1] for r in conn.execute(
+                            "SELECT date(scan_time), COUNT(*) FROM detector_findings "
+                            "WHERE verdict='vulnerable' AND file_path IS NOT NULL "
+                            "AND scan_time>=datetime('now','-7 days') GROUP BY 1")}
+                        a7 = [{'d': time.strftime('%Y-%m-%d', time.gmtime(nowt - i * 86400)),
+                               'n': 0} for i in range(6, -1, -1)]
+                        for e in a7:
+                            e['n'] = got_a.get(e['d'], 0)
+                        last_row = conn.execute(
+                            "SELECT issue_number FROM detector_findings "
+                            "WHERE verdict='vulnerable' AND file_path IS NOT NULL "
+                            "ORDER BY id DESC LIMIT 1").fetchone()
+                        payload['antares'] = {
+                            'candidates_24h': _acount("scan_time>=datetime('now','-24 hours')"),
+                            'candidates_prev_24h': _acount(
+                                "scan_time>=datetime('now','-48 hours') "
+                                "AND scan_time<datetime('now','-24 hours')"),
+                            'runs_24h': conn.execute(
+                                "SELECT COUNT(DISTINCT scan_time) FROM detector_findings "
+                                "WHERE scan_time>=datetime('now','-24 hours')").fetchone()[0],
+                            'last_issue': (last_row[0] if last_row else ''),
+                            'cand_7d': a7,
+                        }
+                    except Exception:
+                        payload['antares'] = {}
                     # posture history (≤96 points ≈ 24h at 300s cadence)
                     payload['posture'] = [{'t': r[0], 'score': r[1]} for r in conn.execute(
                         "SELECT ts, score FROM posture_snapshots "
