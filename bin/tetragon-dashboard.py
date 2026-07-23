@@ -3397,6 +3397,7 @@ body.view-ops #view-exec{display:none}
     <div class="hmenu-list">
       <a href="/agent-walk" target="_blank">Agent Walk &#x2197;</a>
       <a href="/codegraph" target="_blank">Codegraph &#x2197;</a>
+      <a href="/cartographer" target="_blank">Cartographer &#x2197;</a>
       <a href="#" onclick="openOperatorTui();document.getElementById('hmenu').removeAttribute('open');return false">Operator TUI &#x2197;</a>
       <a href="#" onclick="showConstitution();document.getElementById('hmenu').removeAttribute('open');return false">Constitution &harr; Rings</a>
       <a href="#" onclick="showWhitepaper();document.getElementById('hmenu').removeAttribute('open');return false">Defense-in-Depth Whitepaper</a>
