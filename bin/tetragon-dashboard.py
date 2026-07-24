@@ -3439,8 +3439,8 @@ body.view-ops #view-exec{display:none}
 <div class="x-kpis" id="x-kpis"></div>
 
 <div class="x-panel">
-  <div class="x-ph"><span>Activity &middot; last 24 hours</span><span id="x-trend-total" style="text-transform:none;letter-spacing:0"></span></div>
-  <div id="x-trend"></div>
+  <div class="x-ph"><span><span id="x-act-label">Activity &middot; last 24 hours</span><button id="x-zoom-back" onclick="drawActivity(null,null)" style="display:none;margin-left:10px;background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:6px;padding:1px 8px;font-size:10px;cursor:pointer;vertical-align:middle">&#8592; back to 24h</button></span><span id="x-trend-total" style="text-transform:none;letter-spacing:0"></span></div>
+  <div id="x-trend" title="Drag to zoom in" style="cursor:crosshair"></div>
 </div>
 
 <!-- Alerts + activity share a row — each holds narrow rows, so stacking
@@ -3665,6 +3665,7 @@ function svgAreaChart(buckets,w,h,opts){
     `<polyline points="${line}" fill="none" stroke="#2f96ea" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`+
     adot+
     `<line id="${cid}-cross" y1="${padT}" y2="${(padT+ih).toFixed(1)}" x1="0" x2="0" stroke="rgba(120,190,230,.28)" stroke-width="1" visibility="hidden"/>`+
+    (opts.brush?`<rect id="${cid}-brush" x="0" y="${padT}" width="0" height="${ih.toFixed(1)}" fill="rgba(93,227,255,.14)" stroke="rgba(93,227,255,.5)" stroke-width="1" visibility="hidden" pointer-events="none"/>`:'')+
     labels+hits+marks+markHits+`</svg>`;
 }
 // Edge-aware tooltip placement: default to the right of the cursor, but flip
@@ -3691,6 +3692,7 @@ function wireTrendHover(buckets,opts){
   if(!svg)return;
   const cross=svg.querySelector('#'+cid+'-cross');
   svg.addEventListener('mousemove',ev=>{
+    if(_brushing){tt.style.display='none';cross.setAttribute('visibility','hidden');return;}
     const r=ev.target;
     // Marker hover wins: rich data card, no crosshair.
     if(r.dataset&&r.dataset.m!==undefined&&opts.markers&&opts.mtip){
@@ -3708,6 +3710,57 @@ function wireTrendHover(buckets,opts){
     placeTip(tt,ev);
   });
   svg.addEventListener('mouseleave',()=>{tt.style.display='none';cross.setAttribute('visibility','hidden')});
+}
+
+// ── Activity chart drag-to-zoom ────────────────────────────────────────────
+// _act holds the full activity render inputs (set on each trends refresh);
+// drawActivity(i0,i1) renders a bucket sub-range; a brush selection or the
+// back button drives i0/i1. Zoom persists across refreshes by time range.
+let _act=null, _actZoomT=null, _brushing=false;
+function drawActivity(i0,i1){
+  if(!_act)return;
+  const tw=document.getElementById('x-trend');if(!tw)return;
+  const all=_act.buckets;if(!all||all.length<2)return;
+  if(i0==null||i1==null){i0=0;i1=all.length-1;}
+  i0=Math.max(0,Math.min(i0,all.length-2));
+  i1=Math.max(i0+1,Math.min(i1,all.length-1));
+  const buckets=all.slice(i0,i1+1);
+  const zoomed=(i0>0||i1<all.length-1);
+  _actZoomT=zoomed?{t0:buckets[0].t,t1:buckets[buckets.length-1].t}:null;
+  const t0=new Date(buckets[0].t).getTime(),t1=new Date(buckets[buckets.length-1].t).getTime();
+  const marks=(_act.marks||[]).filter(m=>{const t=new Date(m.t).getTime();return !isNaN(t)&&t>=t0&&t<=t1;});
+  tw.innerHTML=svgAreaChart(buckets,_act.w,160,{dur:10.7,markers:marks,mtip:_act.card,brush:true});
+  wireTrendHover(buckets,{markers:marks,mtip:_act.card});
+  wireBrush(buckets,i0);
+  const bb=document.getElementById('x-zoom-back');if(bb)bb.style.display=zoomed?'inline-block':'none';
+  const fT=s=>{const d=new Date(s);return isNaN(d)?'':d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})};
+  const lbl=document.getElementById('x-act-label');
+  if(lbl)lbl.innerHTML=zoomed?('Activity &middot; '+fT(buckets[0].t)+'&ndash;'+fT(buckets[buckets.length-1].t)):'Activity &middot; last 24 hours';
+  const WF=_act.WF||{},kc={};
+  marks.forEach(m=>{if(m.kind&&m.kind!=='codeguard')kc[m.kind]=(kc[m.kind]||0)+1;});
+  const cgn=marks.filter(m=>m.kind==='codeguard').length;
+  let leg=Object.keys(WF).filter(k=>kc[k]).map(k=>`<span style="color:${WF[k].c}">&#9679;</span> ${kc[k]} ${WF[k].l.toLowerCase()}`).join(' &nbsp; ');
+  if(cgn)leg+=`${leg?' &nbsp; ':''}<span style="color:#d94fd4">&#9679;</span> ${cgn} CodeGuard`;
+  const tot=buckets.reduce((a,b)=>a+(b.events||0),0);
+  const el=document.getElementById('x-trend-total');
+  if(el)el.innerHTML=`${leg?leg+' &nbsp;&middot;&nbsp; ':''}${fmtCompact(tot)} events`;
+}
+function zoomActToTime(zt){
+  if(!_act||!zt)return;const all=_act.buckets;
+  const near=t=>{const tt=new Date(t).getTime();let bi=0,bd=Infinity;for(let i=0;i<all.length;i++){const d=Math.abs(new Date(all[i].t).getTime()-tt);if(d<bd){bd=d;bi=i;}}return bi;};
+  drawActivity(near(zt.t0),near(zt.t1));
+}
+function wireBrush(buckets,baseI0){
+  const svg=document.getElementById('x-trend-svg');if(!svg)return;
+  const brush=svg.querySelector('#x-trend-svg-brush');if(!brush)return;
+  const W=(svg.viewBox&&svg.viewBox.baseVal&&svg.viewBox.baseVal.width)||880;
+  const padL=8,iw=W-16;let sx=null;
+  const toX=ev=>{const r=svg.getBoundingClientRect();return (ev.clientX-r.left)/r.width*W;};
+  svg.addEventListener('mousedown',ev=>{if(ev.button!==0)return;sx=toX(ev);_brushing=true;brush.setAttribute('x',sx);brush.setAttribute('width',0);brush.setAttribute('visibility','visible');ev.preventDefault();});
+  svg.addEventListener('mousemove',ev=>{if(!_brushing||sx==null)return;const x=toX(ev);brush.setAttribute('x',Math.min(sx,x));brush.setAttribute('width',Math.abs(x-sx));});
+  const done=ev=>{if(!_brushing||sx==null)return;_brushing=false;brush.setAttribute('visibility','hidden');const x=toX(ev);const x0=Math.min(sx,x),x1=Math.max(sx,x);sx=null;if(x1-x0<6)return;const n=buckets.length-1;const f0=Math.max(0,Math.min(1,(x0-padL)/iw)),f1=Math.max(0,Math.min(1,(x1-padL)/iw));const a=Math.round(f0*n),b=Math.round(f1*n);if(b<=a)return;drawActivity(baseI0+a,baseI0+b);};
+  svg.addEventListener('mouseup',done);
+  svg.addEventListener('mouseleave',ev=>{if(_brushing)done(ev);});
 }
 
 // ── Executive view render ─────────────────────────────────────────────────
@@ -3851,15 +3904,10 @@ function renderExec(d){
         s+=`<div style="color:#8598b4;font-size:10px;margin-top:3px">no sweep findings</div>`;
       return s+'</div>';
     };
-    tw.innerHTML=svgAreaChart(tr.activity,w,160,{dur:10.7,markers:marks,mtip:card});
-    wireTrendHover(tr.activity,{markers:marks,mtip:card});
-    const tot=tr.activity.reduce((a,b)=>a+b.events,0);
-    // Legend — count by kind, then total events.
-    const kc={};wf.forEach(m=>{kc[m.kind]=(kc[m.kind]||0)+1});
-    let leg=Object.keys(WF).filter(k=>kc[k]).map(k=>`<span style="color:${WF[k].c}">&#9679;</span> ${kc[k]} ${WF[k].l.toLowerCase()}`).join(' &nbsp; ');
-    if(cg.length)leg+=`${leg?' &nbsp; ':''}<span style="color:#d94fd4">&#9679;</span> ${cg.length} CodeGuard`;
-    document.getElementById('x-trend-total').innerHTML=
-      `${leg?leg+' &nbsp;&middot;&nbsp; ':''}${fmtCompact(tot)} events`;
+    // Stash the full render inputs; drawActivity() renders full or a zoomed
+    // sub-range and wires the drag-brush. Zoom (if any) persists by time range.
+    _act={buckets:tr.activity,marks,card,w,WF};
+    if(_actZoomT)zoomActToTime(_actZoomT);else drawActivity(null,null);
   }
   // Alerts — section hidden entirely when quiet
   const alerts=s.alerts||[];
