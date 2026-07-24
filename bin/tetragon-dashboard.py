@@ -1758,13 +1758,25 @@ def scan_rings():
                             _last_antares_mtime = ant_mtime
                             try:
                                 dbc = sqlite3.connect(EVENTS_DB)
+                                issue = str(ant.get('issue', ''))
+                                # The detector re-runs on EVERY issue/PR event, so
+                                # the same issue's identical candidates would stack
+                                # up in the panel. Keep only the LATEST scan per
+                                # issue: drop this issue's prior rows before
+                                # inserting. (issue_number is always set — a real #
+                                # or 'sweep'.)
+                                if issue:
+                                    dbc.execute('DELETE FROM detector_findings WHERE issue_number=?', (issue,))
                                 if cands:
-                                    for i, fp in enumerate(cands):
+                                    seen, rank = set(), 0
+                                    for fp in cands:
+                                        if not fp or fp in seen:
+                                            continue  # collapse within-scan dupes
+                                        seen.add(fp); rank += 1
                                         dbc.execute(
                                             'INSERT INTO detector_findings (issue_number, cwe, verdict, file_path, rank, rationale, commands_used, trace_id) '
                                             'VALUES (?,?,?,?,?,?,?,?)',
-                                            (str(ant.get('issue', '')), ant.get('cwe', ''),
-                                             ant.get('verdict', ''), fp, i + 1,
+                                            (issue, ant.get('cwe', ''), ant.get('verdict', ''), fp, rank,
                                              ant.get('rationale', ''), ant.get('commands_used', 0),
                                              ant.get('trace_id', '')))
                                 else:
@@ -1772,9 +1784,8 @@ def scan_rings():
                                     dbc.execute(
                                         'INSERT INTO detector_findings (issue_number, cwe, verdict, commands_used, trace_id) '
                                         'VALUES (?,?,?,?,?)',
-                                        (str(ant.get('issue', '')), ant.get('cwe', ''),
-                                         ant.get('verdict', ''), ant.get('commands_used', 0),
-                                         ant.get('trace_id', '')))
+                                        (issue, ant.get('cwe', ''), ant.get('verdict', ''),
+                                         ant.get('commands_used', 0), ant.get('trace_id', '')))
                                 dbc.commit(); dbc.close()
                             except: pass
                 except: pass
