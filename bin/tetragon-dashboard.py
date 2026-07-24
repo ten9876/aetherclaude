@@ -769,6 +769,29 @@ def _parse_claude_trace(path, max_chars=4000, max_spans=60):
     return {'input': first_user, 'output': last_assistant, 'spans': spans,
             'in_tokens': in_tokens, 'out_tokens': out_tokens}
 
+_galileo_url_cache = None
+def _galileo_console_url():
+    """Build a valid Galileo console URL for the agent-runs log stream.
+
+    Galileo's app expects the project + log-stream UUIDs in the path — passing
+    the project NAME 404s the SPA with 'Input should be a valid UUID'. Resolve
+    the names to UUIDs once (cached) and return the log-stream landing URL, or
+    None on any failure (fail-open)."""
+    global _galileo_url_cache
+    if _galileo_url_cache is not None:
+        return _galileo_url_cache or None
+    try:
+        from galileo.projects import get_project
+        from galileo.log_streams import get_log_stream
+        p = get_project(name=GALILEO_PROJECT)
+        ls = get_log_stream(name=GALILEO_LOG_STREAM, project_id=str(p.id))
+        _galileo_url_cache = f'https://app.galileo.ai/project/{p.id}/log-streams/{ls.id}'
+    except Exception as e:
+        print(f'galileo url resolve failed ({e})', file=sys.stderr)
+        _galileo_url_cache = ''
+    return _galileo_url_cache or None
+
+
 def galileo_forward(entry):
     """Log one agent run to Galileo as a multi-span trace. Returns a console URL
     or None. Swallows all errors (missing key, SDK not installed, network) so
@@ -812,10 +835,10 @@ def galileo_forward(entry):
                                 model='claude-opus', num_input_tokens=0, num_output_tokens=0)
         logger.conclude(output=(t['output'] or f'[{status}]'))
         logger.flush()
-        # Best-effort console deep-link to the project/log-stream. The exact
-        # per-trace URL isn't reliably returned by flush(); the log stream is
-        # a stable, useful landing spot for the demo.
-        return f'https://app.galileo.ai/project/{GALILEO_PROJECT}?logStream={GALILEO_LOG_STREAM}'
+        # Console deep-link to the log stream (a stable landing spot — the exact
+        # per-trace URL isn't reliably returned by flush()). Built from the
+        # project + log-stream UUIDs so the app doesn't reject the project name.
+        return _galileo_console_url() or 'https://app.galileo.ai/'
     except Exception as e:
         print(f'galileo_forward: log failed ({e})', file=sys.stderr)
         return None
@@ -8615,6 +8638,11 @@ a{{color:#0a6aba}}
                         except Exception:
                             pass
                     if len(recent) < 50:
+                        # Repair legacy Galileo URLs that used the project NAME
+                        # (the app rejects it as 'not a valid UUID') — rebuild
+                        # from UUIDs. Cached; falls back to the stored URL.
+                        if url and '/project/' in url and '/log-streams/' not in url:
+                            url = _galileo_console_url() or url
                         recent.append({'ts': ts, 'trace_id': trace_id, 'flow': flow, 'ref': ref,
                                        'status': status, 'kind': kind, 'galileo_trace_url': url,
                                        'scores': json.loads(scores_json) if (kind == 'experiment' and scores_json) else None})
