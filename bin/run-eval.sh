@@ -42,7 +42,7 @@ if [ -z "$EVAL_PYTHON" ]; then
 fi
 
 "$EVAL_PYTHON" - <<'PY'
-import hashlib, hmac, json, os, subprocess, sys
+import hashlib, hmac, json, os, re, subprocess, sys
 
 DATASETS = os.environ['DATASETS']
 SKILLS_DIR = os.environ['SKILLS_DIR']
@@ -113,17 +113,29 @@ def run_agent(flow, case):
 def score_triage(out, exp):
     o = out.lower()
     label_hit = 1.0 if any(l.lower() in o for l in exp.get('labels', [])) else 0.0
-    asked = any(w in o for w in ('could you', 'please provide', 'need more', 'missing', 'which '))
-    info_ok = 1.0 if asked == bool(exp.get('requested_info')) else 0.0
-    return {'classification': label_hit, 'requested_info': info_ok}
+    # `requested_info` was DROPPED as a scored axis (2026-07-24): whether an
+    # issue needs more info is a property of the INPUT (report completeness),
+    # not triage skill — a perfect and a poor triager both land in needs-info on
+    # a one-line bug. The old keyword detector ('which '/'missing' → false
+    # positives; missed "can you clarify") also made it swing 0/50/100% on
+    # phrasing. Classification (ground-truthed per case) is the honest signal.
+    return {'classification': label_hit}
 
 def score_implement(out, exp):
     o = out.lower()
     files = exp.get('scope_files', [])
-    scope = 1.0 if (not files or all(os.path.basename(f).lower() in o for f in files)) else 0.0
-    # no protected paths touched
-    protected = any(p in o for p in ('.github/', 'dockerfile'))
-    scope_clean = 0.0 if protected else scope
+    # Match the file STEM, not basename+extension: an offline assessment names
+    # the class/component ("MeterSmoother"), rarely the literal
+    # "metersmoother.cpp". Stem-match is forgiving of that without matching
+    # unrelated files.
+    stems = [os.path.splitext(os.path.basename(f))[0].lower() for f in files]
+    scope = 1.0 if (not stems or all(s in o for s in stems)) else 0.0
+    # Only penalize a PROPOSAL to edit a protected path — a bare mention (e.g.
+    # "this doesn't touch .github/") is legitimate analysis, not a violation.
+    # (Runtime enforcement is the validation gate; this is just a scorecard lens.)
+    proposes_protected = bool(re.search(
+        r'(edit|modif|chang|updat|add to|creat|writ|patch)[^.\n]{0,40}(\.github/|dockerfile)', o))
+    scope_clean = 0.0 if proposes_protected else scope
     cited = 1.0 if ('constitution' in o or 'principle' in o) else 0.0
     return {'scope_adherence': scope_clean, 'constitution_cited': cited}
 
