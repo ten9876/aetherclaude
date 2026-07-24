@@ -4606,9 +4606,9 @@ document.getElementById('modal-title').textContent='Eval Quality — Agent Decis
 document.getElementById('modal-body').innerHTML=h;
 document.getElementById('modal').classList.add('show');
 fetch('/api/eval').then(r=>r.json()).then(d=>{
-const scored=(d.flows||[]).filter(f=>f.scores);
-if(!scored.length){document.getElementById('evq-list').innerHTML='<p style="color:#8598b4">No scored experiments yet — the daily eval job hasn&#8217;t produced results. Run <code style="background:var(--bg-2);padding:1px 4px;border-radius:3px">run-eval.sh</code> or wait for the 05:00 cycle.</p>';return}
 let fh='';
+const scored=(d.flows||[]).filter(f=>f.scores);
+if(scored.length){
 for(const f of scored){
 const vals=Object.values(f.scores).filter(v=>typeof v==='number');
 const mean=vals.length?Math.round(100*vals.reduce((a,b)=>a+b,0)/vals.length):null;
@@ -4625,7 +4625,26 @@ fh+=`<div style="display:flex;align-items:center;gap:8px;margin-top:6px">`+
 }
 fh+=`</div>`;
 }
-document.getElementById('evq-list').innerHTML=fh;
+}else{
+fh+='<p style="color:#8598b4">No scored experiments yet — the daily eval job hasn&#8217;t produced results. Run <code style="background:var(--bg-2);padding:1px 4px;border-radius:3px">run-eval.sh</code> or wait for the 05:00 cycle.</p>';
+}
+// Recent runs — each links to its own Galileo trace + the Agent Walk swimlane.
+const runs=(d.recent||[]).filter(e=>e.kind==='run').slice(0,12);
+if(runs.length){
+fh+='<div style="border-top:1px solid var(--line);margin-top:12px;padding-top:10px">';
+fh+='<div style="font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:6px">RECENT RUNS &middot; Galileo traces</div>';
+for(const e of runs){
+const ok=e.status==='ok';
+const walk=e.trace_id?` onclick="window.open('/agent-walk?trace='+encodeURIComponent('${e.trace_id}'),'_blank')" style="cursor:pointer"`:'';
+fh+=`<div class="modal-finding ${ok?'SAFE':'HIGH'}"${walk} title="${e.trace_id?'Open in Agent Walk':''}" >`+
+`<span class="sev ${ok?'SAFE':'HIGH'}">${ok?'&#9679; OK':'&#10008; FAIL'}</span> `+
+`<span class="tool-name">${flabel[e.flow]||esc(e.flow||'')}</span>${e.ref?' #'+esc(String(e.ref)):''} `+
+`<span style="color:#5f708a;font-size:10px">${fmtTime(e.ts)}</span>`+
+`${e.galileo_trace_url?` <a href="${e.galileo_trace_url}" target="_blank" onclick="event.stopPropagation()" style="color:#5de3ff;text-decoration:none;font-size:10px">Galileo &#x2197;</a>`:''}</div>`;
+}
+fh+='</div>';
+}
+document.getElementById('evq-list').innerHTML=fh||'<p style="color:#8598b4">No eval data yet.</p>';
 }).catch(()=>{document.getElementById('evq-list').innerHTML='<p style="color:#604040">Failed to load eval data.</p>'})}
 // Run Success modal — execution health of agent runs (did each claude
 // invocation complete), with per-flow rates and the recent run list.
@@ -4688,21 +4707,8 @@ fh+=`<div style="display:flex;align-items:center;gap:8px;margin-top:6px">`+
 }
 fh+='<div style="font-size:10px;color:#5f708a;margin-top:6px">per-flow rates &middot; recent run history (last ~200 runs, spans multiple days) — intentionally wider than the 24h headline above</div></div>';
 }
-const runs=(d.recent||[]).filter(e=>e.kind==='run').slice(0,12);
-if(!runs.length&&!withRuns.length){fh='<p style="color:#8598b4">No agent runs recorded yet.</p>'}
-else{
-fh+='<div style="border-top:1px solid var(--line);padding-top:8px">';
-for(const e of runs){
-const ok=e.status==='ok';
-const walk=e.trace_id?` onclick="window.open('/agent-walk?trace='+encodeURIComponent('${e.trace_id}'),'_blank')" style="cursor:pointer"`:'';
-fh+=`<div class="modal-finding ${ok?'SAFE':'HIGH'}"${walk} title="${e.trace_id?'Open in Agent Walk':''}" >`+
-`<span class="sev ${ok?'SAFE':'HIGH'}">${ok?'&#9679; OK':'&#10008; FAIL'}</span> `+
-`<span class="tool-name">${flabel[e.flow]||esc(e.flow||'')}</span>${e.ref?' #'+esc(String(e.ref)):''} `+
-`<span style="color:#5f708a;font-size:10px">${fmtTime(e.ts)}</span>`+
-`${e.galileo_trace_url?` <a href="${e.galileo_trace_url}" target="_blank" onclick="event.stopPropagation()" style="color:#5de3ff;text-decoration:none;font-size:10px">Galileo &#x2197;</a>`:''}</div>`;
-}
-fh+='</div>';
-}
+// The per-run list (with Galileo trace links) lives in the Eval Quality modal.
+if(!withRuns.length){fh='<p style="color:#8598b4">No agent runs recorded yet.</p>'}
 document.getElementById('rs-list').innerHTML=fh;
 }).catch(()=>{document.getElementById('rs-list').innerHTML='<p style="color:#604040">Failed to load run data.</p>'})}
 // API Cost modal — the tokenomics story: the agent runs on a flat Claude MAX
