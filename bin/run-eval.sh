@@ -146,11 +146,14 @@ def try_galileo(flow, cases):
         return
     try:
         from galileo.experiments import run_experiment
-        run_experiment(f'aetherclaude-{flow}', project=GALILEO_PROJECT,
+        # Prefix the experiment name with the (jefielde-prefixed) project so
+        # everything created on the shared multitenant instance stays namespaced.
+        exp_name = f'{GALILEO_PROJECT}-{flow}'
+        run_experiment(exp_name, project=GALILEO_PROJECT,
                        dataset=[{'input': json.dumps(c['input'])} for c in cases],
                        function=lambda inp: run_agent(flow, {'input': json.loads(inp['input']) if isinstance(inp, dict) else inp}),
                        metrics=[])
-        print(f'  logged experiment aetherclaude-{flow} → Galileo')
+        print(f'  logged experiment {exp_name} → Galileo')
     except Exception as e:
         print(f'  galileo experiment skipped: {e}', file=sys.stderr)
 

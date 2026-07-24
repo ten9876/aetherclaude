@@ -51,15 +51,15 @@ pass out quick proto tcp from any to { 216.239.32.0/19 34.54.88.0/24 } port 443 
 # model we already grant to VirusTotal and Anthropic telemetry (all Google Cloud).
 pass out quick proto tcp from any to 142.250.0.0/15 port 443 user 965
 
-# Galileo eval/observability (api.galileo.ai / app.galileo.ai — Google Cloud
-# global LB, 34.54.24.45). Pinned /24 like the VirusTotal (34.54.88.0/24) and
-# OSV precedents in the same 34.54.x Google Cloud block. NOTE: the agent and the
-# dashboard share this uid, so this rule permits the IP to both at the pf layer.
-# Only the dashboard actually forwards traces (it holds GALILEO_API_KEY and does
-# not use the proxy). The sandboxed `claude` child is forced through tinyproxy,
-# whose allowlist deliberately OMITS galileo.ai — so the agent is denied Galileo
-# at the proxy layer despite the shared-uid firewall allowance (defense in depth).
-pass out quick proto tcp from any to 34.54.24.0/24 port 443 user 965
+# Galileo eval/observability — the current instance
+# (api/console.multitenant.galileocloud.io) is an AWS ELB with rotating IPs, so
+# it is NOT pinned at the pf layer. The trusted dashboard and the eval job forward
+# traces through tinyproxy (they set HTTPS_PROXY); tinyproxy (uid nobody) resolves
+# the ELB fresh per connection, so no /etc/hosts or pf IP pin is needed. The
+# sandboxed `claude` child shares that tinyproxy allowlist and can therefore now
+# REACH Galileo — but it holds no GALILEO_API_KEY, so reachability alone grants it
+# nothing (the credential, not the network path, is the boundary here). The former
+# direct-IP pin (34.54.24.0/24, Google-hosted app.galileo.ai) is retired.
 
 # Claude OAuth login (AWS Cognito — dynamic IPs)
 pass out quick proto tcp from any to <anthropic_auth> port 443 user 965

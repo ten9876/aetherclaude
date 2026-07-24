@@ -79,8 +79,10 @@ history:
 
 - **Trace path** — the sandboxed agent never touches Galileo. `run_claude` POSTs
   a compact record to the dashboard over localhost (`/api/eval-ingest`); only the
-  trusted dashboard holds `GALILEO_API_KEY` and forwards the trace. The agent is
-  additionally denied `galileo.ai` at the tinyproxy layer (defense in depth).
+  trusted dashboard holds `GALILEO_API_KEY` and forwards the trace (through
+  tinyproxy). The agent shares that proxy allowlist, so the boundary is the
+  credential it lacks, not the network path — without `GALILEO_API_KEY` a reachable
+  Galileo host grants it nothing.
 - **Scorecard** — `bin/build-eval-datasets.py` curates triage / implement / review
   cases (incl. a known stale-code regression); `bin/run-eval.sh` scores the flows
   and publishes per-flow results to Galileo and the dashboard's **Eval panel**,

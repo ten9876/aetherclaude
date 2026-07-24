@@ -20,3 +20,11 @@
 # VirusTotal API — added 2026-05-07 for mcp-scanner virustotal subcommand
 ^www\.virustotal\.com$
 ^virustotal\.com$
+
+# Galileo eval (new multitenant instance) — the trusted dashboard forwards
+# agent-run traces here (it holds GALILEO_API_KEY); the eval job logs
+# experiments. Routed through the proxy so the ELB's rotating IPs resolve fresh.
+# The interactive `claude` child has no Galileo key, so reachability alone
+# grants it nothing.
+^api\.multitenant\.galileocloud\.io$
+^console\.multitenant\.galileocloud\.io$

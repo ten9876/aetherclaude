@@ -701,6 +701,11 @@ def init_db():
 # /api/eval-ingest over localhost and we forward it here as a Galileo trace.
 GALILEO_PROJECT = os.environ.get('GALILEO_PROJECT', 'aetherclaude')
 GALILEO_LOG_STREAM = os.environ.get('GALILEO_LOG_STREAM', 'agent-runs')
+# Human-facing console base. The Galileo SDK reads GALILEO_CONSOLE_URL to pick
+# the instance (and derives the api.* host from it); we reuse the same value to
+# build the trace deep-links so console links always match the instance the SDK
+# forwarded to. Defaults to the legacy app.galileo.ai for back-compat.
+GALILEO_CONSOLE = os.environ.get('GALILEO_CONSOLE_URL', 'https://app.galileo.ai').rstrip('/')
 
 def _parse_claude_trace(path, max_chars=4000, max_spans=60):
     """Parse a Claude Code session transcript into an ordered agent trace.
@@ -793,7 +798,7 @@ def _galileo_console_url():
         from galileo.log_streams import get_log_stream
         p = get_project(name=GALILEO_PROJECT)
         ls = get_log_stream(name=GALILEO_LOG_STREAM, project_id=str(p.id))
-        _galileo_url_cache = f'https://app.galileo.ai/project/{p.id}/log-streams/{ls.id}'
+        _galileo_url_cache = f'{GALILEO_CONSOLE}/project/{p.id}/log-streams/{ls.id}'
     except Exception as e:
         print(f'galileo url resolve failed ({e})', file=sys.stderr)
         _galileo_url_cache = ''
@@ -870,7 +875,7 @@ def galileo_forward(entry):
         tid = getattr(logged_trace, 'id', None)
         if base and tid:
             return f'{base}?traceId={tid}'
-        return base or 'https://app.galileo.ai/'
+        return base or f'{GALILEO_CONSOLE}/'
     except Exception as e:
         print(f'galileo_forward: log failed ({e})', file=sys.stderr)
         return None
@@ -7855,7 +7860,9 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path=='/':
             self.send_response(200);self.send_header('Content-Type','text/html');self.end_headers()
-            self.wfile.write(HTML.encode())
+            # Point the static "Galileo console" links at the configured instance
+            # (the per-trace deep-links already resolve via GALILEO_CONSOLE).
+            self.wfile.write(HTML.replace('https://app.galileo.ai/', GALILEO_CONSOLE + '/').encode())
         elif self.path == '/agent-walk' or self.path.startswith('/agent-walk?'):
             self.send_response(200); self.send_header('Content-Type', 'text/html'); self.end_headers()
             self.wfile.write(AGENT_WALK_HTML.encode())

@@ -24,6 +24,18 @@
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <!-- The dashboard runs sandboxed (uid 965) so its direct egress is
+             pf-blocked. Route its Galileo + GitHub calls through tinyproxy,
+             whose allowlist covers api.multitenant.galileocloud.io and github.
+             tinyproxy (uid nobody) resolves the instance fresh each connection,
+             so the ELB's rotating IPs need no /etc/hosts or pf IP pinning.
+             Localhost stays direct (self, MCP/codegraph, Ollama). -->
+        <key>HTTPS_PROXY</key>
+        <string>http://127.0.0.1:8888</string>
+        <key>HTTP_PROXY</key>
+        <string>http://127.0.0.1:8888</string>
+        <key>NO_PROXY</key>
+        <string>127.0.0.1,localhost,::1</string>
     </dict>
     <key>KeepAlive</key>
     <true/>

@@ -2,11 +2,12 @@
 """galileo-log-run.py — post-run eval-trace emitter (agent side).
 
 Called by run-agent.sh's run_claude() after every Claude Code invocation.
-It does NOT talk to Galileo directly — the sandboxed agent shares uid 965 with
-the firewall and is denied galileo.ai at the tinyproxy layer by design. Instead
-it POSTs a compact eval record to the trusted dashboard over localhost (already
-allowed by pf), and the dashboard forwards the trace to Galileo (it alone holds
-GALILEO_API_KEY and bypasses the proxy). See config/pf/com.aetherclaude and the
+It does NOT talk to Galileo directly — only the trusted dashboard holds
+GALILEO_API_KEY. Instead it POSTs a compact eval record to the dashboard over
+localhost (allowed by pf), and the dashboard forwards the trace to Galileo
+through tinyproxy. The agent shares that proxy allowlist so it *could* reach the
+Galileo host, but without the key it can do nothing there — the credential, not
+the network path, is the boundary. See config/pf/com.aetherclaude and the
 /api/eval-ingest handler in tetragon-dashboard.py.
 
 Failures are swallowed: eval logging must never block or fail an agent run.

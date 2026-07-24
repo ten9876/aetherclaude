@@ -18,6 +18,14 @@
         <string>/Users/aetherclaude</string>
         <key>AETHER_EVAL_DATASETS</key>
         <string>/Users/aetherclaude/.galileo/datasets</string>
+        <!-- Sandboxed (uid 965): route Galileo (run_experiment) + Anthropic
+             (per-case claude scoring) through tinyproxy; localhost direct. -->
+        <key>HTTPS_PROXY</key>
+        <string>http://127.0.0.1:8888</string>
+        <key>HTTP_PROXY</key>
+        <string>http://127.0.0.1:8888</string>
+        <key>NO_PROXY</key>
+        <string>127.0.0.1,localhost,::1</string>
     </dict>
     <key>RunAtLoad</key>
     <false/>
