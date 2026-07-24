@@ -817,7 +817,7 @@ def galileo_forward(entry):
         meta = {'flow': flow, 'ref': str(ref), 'status': status, 'aether_trace_id': trace_id or '',
                 'total_input_tokens': t['in_tokens'], 'total_output_tokens': t['out_tokens']}
         logger = GalileoLogger(project=GALILEO_PROJECT, log_stream=GALILEO_LOG_STREAM)
-        logger.start_trace(input=(t['input'] or name), name=name, tags=tags, metadata=meta)
+        logged_trace = logger.start_trace(input=(t['input'] or name), name=name, tags=tags, metadata=meta)
         step = 0
         for s in t['spans']:
             step += 1
@@ -835,10 +835,15 @@ def galileo_forward(entry):
                                 model='claude-opus', num_input_tokens=0, num_output_tokens=0)
         logger.conclude(output=(t['output'] or f'[{status}]'))
         logger.flush()
-        # Console deep-link to the log stream (a stable landing spot — the exact
-        # per-trace URL isn't reliably returned by flush()). Built from the
-        # project + log-stream UUIDs so the app doesn't reject the project name.
-        return _galileo_console_url() or 'https://app.galileo.ai/'
+        # Deep-link straight to THIS trace. start_trace() returns a LoggedTrace
+        # whose client-generated .id is the trace UUID Galileo stores, so
+        # ?traceId=<id> selects it in the log-stream view (falls back to the
+        # log-stream landing if the id/base is unavailable).
+        base = _galileo_console_url()
+        tid = getattr(logged_trace, 'id', None)
+        if base and tid:
+            return f'{base}?traceId={tid}'
+        return base or 'https://app.galileo.ai/'
     except Exception as e:
         print(f'galileo_forward: log failed ({e})', file=sys.stderr)
         return None
