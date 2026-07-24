@@ -672,6 +672,14 @@ def init_db():
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_eval_trace_id ON eval_results(trace_id)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_eval_ts ON eval_results(ts)')
+    # One Galileo session per issue/PR — so every Claude run for #N (triage,
+    # implement, review, …) lands in a single session and Galileo can score the
+    # whole lifecycle (agentic_session_success). ref -> Galileo session_id.
+    conn.execute('''CREATE TABLE IF NOT EXISTS galileo_sessions (
+        ref TEXT PRIMARY KEY,
+        session_id TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )''')
     # Defense Posture history — one snapshot every ~300s from scan_rings
     # (288 rows/day, pruned >30d by db_pruner). Powers the exec view's
     # delta-vs-24h and the /api/trends posture series. ts uses the same
@@ -817,6 +825,25 @@ def galileo_forward(entry):
         meta = {'flow': flow, 'ref': str(ref), 'status': status, 'aether_trace_id': trace_id or '',
                 'total_input_tokens': t['in_tokens'], 'total_output_tokens': t['out_tokens']}
         logger = GalileoLogger(project=GALILEO_PROJECT, log_stream=GALILEO_LOG_STREAM)
+        # Group every run for this issue/PR into one Galileo session (created on
+        # the first run for #ref, reused thereafter) so the whole lifecycle —
+        # triage -> implement -> review — is one session in Galileo.
+        if str(ref).strip():
+            try:
+                sc = sqlite3.connect(EVENTS_DB, timeout=10)
+                srow = sc.execute('SELECT session_id FROM galileo_sessions WHERE ref=?',
+                                  (str(ref),)).fetchone()
+                if srow and srow[0]:
+                    logger.set_session(srow[0])
+                else:
+                    sid = logger.start_session(name=f'issue-{ref}', external_id=str(ref),
+                                               metadata={'issue': str(ref)})
+                    sc.execute('INSERT OR REPLACE INTO galileo_sessions (ref, session_id) VALUES (?,?)',
+                               (str(ref), sid))
+                    sc.commit()
+                sc.close()
+            except Exception as _se:
+                print(f'galileo session: {_se}', file=sys.stderr)
         logged_trace = logger.start_trace(input=(t['input'] or name), name=name, tags=tags, metadata=meta)
         step = 0
         for s in t['spans']:
