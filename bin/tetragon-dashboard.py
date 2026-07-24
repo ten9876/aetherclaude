@@ -1289,6 +1289,7 @@ _posture_cache = {'ts': 0.0, 'data': {}}
 _posture_last_snapshot = [0.0]
 _trends_cache = {'ts': 0.0, 'data': None}  # /api/trends 60s server cache
 _ci_last_fetch = [0.0]  # GitHub Actions runs fetch throttle (60s)
+_pr_last_fetch = [0.0]  # Ring 9 agent-PR Search API throttle (60s; 30/min limit)
 
 _POSTURE_WEIGHTS = {'r1': 1, 'r2': 1, 'r3': 1, 'r4': 1, 'r5': 1,
                     'r6': 3, 'r7': 2, 'r8': 3, 'r9': 2}
@@ -1848,42 +1849,46 @@ def scan_rings():
                     import urllib.request
                     token = sh('HTTPS_PROXY=http://127.0.0.1:8888 /Users/aetherclaude/bin/github-app-token.sh')
                     bot_logins = os.environ.get('BOT_USERNAME', 'aethersdr-agent[bot]')
-                    agent_logins = ('AetherClaude', bot_logins)
                     if token:
                         opener = urllib.request.build_opener(urllib.request.ProxyHandler({'https': 'http://127.0.0.1:8888'}))
                         hdrs = {'Authorization': f'token {token}', 'Accept': 'application/vnd.github+json', 'User-Agent': 'AetherClaude-Dashboard'}
-                        # Fetch open PRs separately to ensure we get them all
-                        open_prs = []
-                        try:
-                            req_open = urllib.request.Request(
-                                'https://api.github.com/repos/aethersdr/AetherSDR/pulls?state=open&per_page=100', headers=hdrs)
-                            open_prs = json.loads(opener.open(req_open, timeout=10).read().decode())
-                        except: pass
-                        # Fetch closed/merged PRs
-                        closed_prs = []
-                        try:
-                            req_closed = urllib.request.Request(
-                                'https://api.github.com/repos/aethersdr/AetherSDR/pulls?state=closed&sort=updated&direction=desc&per_page=100', headers=hdrs)
-                            closed_prs = json.loads(opener.open(req_closed, timeout=10).read().decode())
-                        except: pass
-                        ac_open = [p for p in open_prs if p.get('user', {}).get('login') in agent_logins]
-                        ac_closed = [p for p in closed_prs if p.get('user', {}).get('login') in agent_logins]
-                        ac_merged = [p for p in ac_closed if p.get('merged_at')]
-                        ac_rejected = [p for p in ac_closed if not p.get('merged_at')]
-                        ring_stats['r9_prs_total'] = len(ac_open) + len(ac_closed)
-                        ring_stats['r9_prs_merged'] = len(ac_merged)
-                        ring_stats['r9_prs_rejected'] = len(ac_rejected)
-                        ring_stats['r9_prs_open'] = len(ac_open)
-                        ring_stats['r9_pr_details'] = {
-                            'open': [{'number': p['number'], 'title': p['title'], 'draft': p.get('draft', False)} for p in ac_open],
-                            'merged': [{'number': p['number'], 'title': p['title']} for p in ac_merged][:20],
-                            'rejected': [{'number': p['number'], 'title': p['title']} for p in ac_rejected][:20],
-                        }
+                        # Agent PR stats via the Search API (throttled 60s — 30/min
+                        # limit). Exact total_counts by author, so the agent's older
+                        # merged PRs never fall off a fetched page: the previous
+                        # `state=closed&sort=updated&per_page=100` + local-login
+                        # filter silently decayed to 0 as community PR traffic pushed
+                        # the agent's PRs past page 1. Values persist in ring_stats
+                        # between throttled fetches; a failed search keeps the prior.
+                        if time.time() - _pr_last_fetch[0] >= 60:
+                            _pr_last_fetch[0] = time.time()
+                            import urllib.parse
+                            app_slug = os.environ.get('AGENT_APP_SLUG') or bot_logins.replace('[bot]', '')
+                            def _pr_search(scope, want):
+                                q = f'repo:aethersdr/AetherSDR type:pr {scope} author:app/{app_slug}'
+                                url = ('https://api.github.com/search/issues?q=' + urllib.parse.quote(q) +
+                                       f'&per_page={want}&sort=updated&order=desc')
+                                try:
+                                    d = json.loads(opener.open(urllib.request.Request(url, headers=hdrs), timeout=10).read().decode())
+                                    return int(d.get('total_count', 0) or 0), (d.get('items') or [])
+                                except Exception:
+                                    return None, []
+                            n_merged, merged_items = _pr_search('is:merged', 20)
+                            n_rejected, rej_items = _pr_search('is:closed is:unmerged', 20)
+                            n_open, open_items = _pr_search('is:open', 100)
+                            if None not in (n_merged, n_rejected, n_open):
+                                ring_stats['r9_prs_open'] = n_open
+                                ring_stats['r9_prs_merged'] = n_merged
+                                ring_stats['r9_prs_rejected'] = n_rejected
+                                ring_stats['r9_prs_total'] = n_open + n_merged + n_rejected
+                                ring_stats['r9_pr_details'] = {
+                                    'open': [{'number': p['number'], 'title': p['title'], 'draft': p.get('draft', False)} for p in open_items],
+                                    'merged': [{'number': p['number'], 'title': p['title']} for p in merged_items],
+                                    'rejected': [{'number': p['number'], 'title': p['title']} for p in rej_items],
+                                }
                         # GitHub Actions CI runs (Run Success modal). Throttled
-                        # to every ~60s — the r9 PR fetch above already rides
-                        # each 15s cycle; CI results don't change faster than
-                        # this. Compact fields only; rides /api/events via
-                        # ring_stats like r9_pr_details.
+                        # to every ~60s (like the r9 PR search above) — CI results
+                        # don't change faster than this. Compact fields only; rides
+                        # /api/events via ring_stats like r9_pr_details.
                         if time.time() - _ci_last_fetch[0] >= 60:
                             try:
                                 req_ci = urllib.request.Request(
