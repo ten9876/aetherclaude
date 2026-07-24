@@ -805,6 +805,87 @@ def _galileo_console_url():
     return _galileo_url_cache or None
 
 
+# --- Live scorer read-back (#4: surface Galileo's continuous scoring) ---
+# bin/galileo-enable-scorers.py turns preset scorers on for the agent-runs log
+# stream; Galileo scores every forwarded trace server-side. Here we read the
+# aggregate means back for the dashboard's Eval panel. Metrics.query keys each
+# metric by scorer UUID, so we map UUID->name once. Cached (network round-trip
+# via the proxy) and fail-open.
+_scorer_name_cache = None
+def _scorer_id_name_map():
+    global _scorer_name_cache
+    if _scorer_name_cache is not None:
+        return _scorer_name_cache
+    m = {}
+    try:
+        from galileo.scorers import Scorers
+        for s in Scorers().list():
+            sid = str(getattr(s, 'id', '') or '')
+            nm = getattr(s, 'name', None)
+            if sid and nm:
+                m[sid] = nm
+    except Exception as e:
+        print(f'scorer id/name map failed ({e})', file=sys.stderr)
+    _scorer_name_cache = m
+    return m
+
+_GUARDRAIL_RE = _re.compile(r'inject|pii|toxic', _re.I)
+_UUID_METRIC_RE = _re.compile(
+    r'^average_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(_multijudge_average)?$')
+_live_scores_cache = {'t': 0.0, 'data': None}
+def _galileo_live_scores(max_age=300):
+    """Return the log stream's live scorer means, grouped quality vs guardrail:
+      {requests, quality:[{name,label,pct}], guardrail:[...], updated, console}
+    Only scorers that actually produced a value in the window appear (NA/errored
+    scorers are naturally excluded). Cached for max_age seconds; fail-open."""
+    now = time.time()
+    c = _live_scores_cache
+    if c['data'] is not None and now - c['t'] < max_age:
+        return c['data']
+    out = {'requests': 0, 'quality': [], 'guardrail': [], 'updated': None, 'console': None}
+    if os.environ.get('GALILEO_API_KEY'):
+        try:
+            from datetime import datetime, timedelta, timezone
+            from galileo.metrics import Metrics
+            from galileo.projects import get_project
+            from galileo.log_streams import get_log_stream
+            p = get_project(name=GALILEO_PROJECT)
+            ls = get_log_stream(name=GALILEO_LOG_STREAM, project_id=str(p.id))
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=14)
+            resp = Metrics().query(project_id=str(p.id), log_stream_id=str(ls.id),
+                                   start_time=start, end_time=end, interval=20160)
+            agg = (resp.to_dict() if hasattr(resp, 'to_dict') else resp).get('aggregate_metrics', {}) or {}
+            out['requests'] = int(agg.get('requests_count', 0) or 0)
+            names = _scorer_id_name_map()
+            picked = {}  # sid -> (name, value) — prefer the multijudge mean
+            for k, v in agg.items():
+                mm = _UUID_METRIC_RE.match(k)
+                if not mm or not isinstance(v, (int, float)):
+                    continue
+                sid = mm.group(1)
+                nm = names.get(sid)
+                if not nm:
+                    continue
+                is_mj = bool(mm.group(2))
+                if sid not in picked or is_mj:
+                    picked[sid] = (nm, float(v))
+            for nm, val in picked.values():
+                pct = max(0, min(100, round(val * 100)))
+                label = nm.replace('_luna', '').replace('_', ' ')
+                grp = 'guardrail' if _GUARDRAIL_RE.search(nm) else 'quality'
+                out[grp].append({'name': nm, 'label': label, 'pct': pct})
+            out['quality'].sort(key=lambda x: x['label'])
+            out['guardrail'].sort(key=lambda x: x['label'])
+            out['updated'] = end.strftime('%Y-%m-%dT%H:%M:%SZ')
+            out['console'] = _galileo_console_url()
+        except Exception as e:
+            print(f'live scores query failed ({e})', file=sys.stderr)
+    c['t'] = now
+    c['data'] = out
+    return out
+
+
 def galileo_forward(entry):
     """Log one agent run to Galileo as a multi-span trace. Returns a console URL
     or None. Swallows all errors (missing key, SDK not installed, network) so
@@ -4632,11 +4713,34 @@ const sev=sm==null?'SAFE':(sm>=80?'SAFE':(sm>=50?'MEDIUM':'HIGH'));
 const glyph=sm==null?'—':(sm>=80?'&#9679;':(sm>=50?'&#9650;':'&#10008;'));
 h+=`<div class="modal-finding ${sev}"><span class="sev ${sev}">${glyph} ${sm==null?'UNSCORED':sm+'%'}</span> overall decision quality — mean of the newest experiment per flow${ev.score_flows?` (${ev.score_flows} flow${ev.score_flows===1?'':'s'})`:''}</div>`;
 h+=`<div class="modal-finding SAFE"><span class="sev SAFE">${ev.pass_rate_24h!=null?ev.pass_rate_24h+'%':'—'}</span> run success &middot; 24h (${ev.runs_24h||0} runs) — separate metric: did the agent process complete, not whether its output was good</div>`;
+h+=`<div id="evq-live" style="margin-top:14px"></div>`;
 h+=`<div id="evq-list" style="margin-top:12px"><p style="color:#8598b4">Loading per-flow scores...</p></div>`;
 h+=`<div class="detail" style="margin-top:12px;color:#8598b4">Scored daily at 05:00 by run-eval &middot; datasets in .galileo/datasets &middot; <a href="https://app.galileo.ai/" target="_blank" style="color:#5de3ff;text-decoration:none">Galileo console &#x2197;</a></div>`;
 document.getElementById('modal-title').textContent='Eval Quality — Agent Decision Scoring';
 document.getElementById('modal-body').innerHTML=h;
 document.getElementById('modal').classList.add('show');
+// Live Galileo scoring — continuous per-trace scores (Luna judges), distinct
+// from the daily experiment scorecard below. Quality (higher better) +
+// a security guardrail lens (lower = less risk).
+fetch('/api/live-scores').then(r=>r.json()).then(s=>{
+const el=document.getElementById('evq-live'); if(!el)return;
+const q=(s.quality||[]),g=(s.guardrail||[]);
+if(!q.length&&!g.length){el.innerHTML=`<div style="font-size:12px;color:#8598b4">Live Galileo scoring is enabled on <span style="color:#c4d4e8">agent-runs</span> — no scored traces in the window yet.</div>`;return;}
+const bar=(pct,col)=>`<span style="flex:1;max-width:220px;height:6px;background:var(--bg-3);border-radius:3px;overflow:hidden;display:inline-block"><span style="display:block;height:100%;width:${pct}%;background:${col};border-radius:3px"></span></span>`;
+let lh=`<div style="font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:8px">LIVE GALILEO SCORING &middot; agent-runs${s.requests?` &middot; ${s.requests} run${s.requests===1?'':'s'} scored`:''}</div>`;
+if(q.length){
+lh+=`<div style="font-size:11px;color:#5f708a;margin:2px 0 4px">Quality &middot; higher is better</div>`;
+for(const m of q){const col=m.pct>=80?'var(--good)':(m.pct>=50?'var(--warn)':'var(--crit)');
+lh+=`<div style="display:flex;align-items:center;gap:8px;margin-top:6px"><span style="width:170px;font-size:11px;color:#c4d4e8">${esc(m.label)}</span>${bar(m.pct,col)}<span style="font-size:11px;color:#c4d4e8;width:36px;text-align:right">${m.pct}%</span></div>`;}
+}
+if(g.length){
+lh+=`<div style="font-size:11px;color:#5f708a;margin:10px 0 4px">Security guardrail &middot; lower is safer</div>`;
+for(const m of g){const col=m.pct<=20?'var(--good)':(m.pct<=50?'var(--warn)':'var(--crit)');
+lh+=`<div style="display:flex;align-items:center;gap:8px;margin-top:6px"><span style="width:170px;font-size:11px;color:#c4d4e8">${esc(m.label)}</span>${bar(m.pct,col)}<span style="font-size:11px;color:#c4d4e8;width:36px;text-align:right">${m.pct}%</span></div>`;}
+}
+lh+=`<div class="detail" style="margin-top:8px;color:#5f708a">Preset Luna scorers, 14-day mean${s.console?` &middot; <a href="${s.console}" target="_blank" style="color:#5de3ff;text-decoration:none">authoritative view in Galileo &#x2197;</a>`:''}</div>`;
+el.innerHTML=lh;
+}).catch(()=>{const el=document.getElementById('evq-live');if(el)el.innerHTML='';});
 fetch('/api/eval').then(r=>r.json()).then(d=>{
 let fh='';
 const scored=(d.flows||[]).filter(f=>f.scores);
@@ -8657,6 +8761,19 @@ a{{color:#0a6aba}}
             except Exception as ex:
                 self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
                 self._send_json({'runs': [], 'total': 0, 'failed': 0, 'error': str(ex)})
+        elif self.path == '/api/live-scores':
+            # #4: Galileo's continuous per-trace scoring for the agent-runs log
+            # stream — quality + guardrail scorer means, read back for the Eval
+            # panel. Cached + fail-open in the helper.
+            try:
+                data = _galileo_live_scores()
+            except Exception as ex:
+                _log_exc('live-scores', ex)
+                data = {'requests': 0, 'quality': [], 'guardrail': [], 'updated': None, 'console': None}
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self._send_json(data)
         elif self.path.startswith('/api/eval'):
             # Galileo eval panel: per-flow aggregate (live-run pass rate +
             # latest experiment scores) plus recent run rows for deep-linking.

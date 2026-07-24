@@ -114,6 +114,17 @@ done
 if [ "$RESTART" = true ]; then
     echo "==> Kicking dashboard to pick up script changes"
     sudo launchctl kickstart -k system/com.aetherclaude.dashboard 2>/dev/null || true
+
+    # Ensure Galileo's live scorers are enabled on the agent-runs log stream.
+    # Idempotent + fail-open — server-side config that persists, but re-asserting
+    # it here means a fresh box (or a recreated log stream) is self-healing.
+    # Runs as the sandboxed user through tinyproxy, like the dashboard forward.
+    echo "==> Ensuring Galileo live scorers are enabled (best-effort)"
+    sudo -u aetherclaude env HOME=/Users/aetherclaude \
+        HTTPS_PROXY=http://127.0.0.1:8888 HTTP_PROXY=http://127.0.0.1:8888 NO_PROXY=127.0.0.1,localhost \
+        bash -c 'set -a; [ -f /Users/aetherclaude/.env ] && . /Users/aetherclaude/.env; set +a; \
+            /Users/Shared/aetherclaude/.venv/bin/python3 /Users/aetherclaude/bin/galileo-enable-scorers.py' \
+        2>&1 | sed "s/^/   /" || true
     # NOTE: Do NOT kickstart com.aetherclaude.agent here. That plist
     # runs the same /Users/aetherclaude/bin/run-agent.sh that the
     # dashboard's /webhook handler also spawns directly via
