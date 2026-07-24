@@ -3579,6 +3579,10 @@ function gotoOps(opts){
 // ── Exec-view chart components (vanilla SVG strings, dataviz mark specs:
 // 2px lines, hairline solid grid, ~10-18% area wash, no number-on-every-point)
 function fmtCompact(n){if(n==null)return '—';if(n>=1e6)return (n/1e6).toFixed(1)+'M';if(n>=1e4)return Math.round(n/1e3)+'K';if(n>=1e3)return (n/1e3).toFixed(1)+'K';return String(n)}
+// Friendly label for an Antares verdict — the raw states (clean, budget_
+// exhausted, timeout) all mean "no candidate files reported"; only the model
+// being down/erroring is 'skipped'.
+function antVerdictLabel(v){v=(v||'').toString().toLowerCase();if(v==='vulnerable')return 'CANDIDATES';if(v==='server_unreachable'||v==='error')return 'SKIPPED';return 'NO FINDINGS';}
 function deltaHtml(cur,prev,upIsGood){
   if(cur==null||prev==null)return '<span class="x-delta" style="color:var(--muted-dim)">—</span>';
   const d=cur-prev;
@@ -3833,7 +3837,7 @@ function renderExec(d){
            `<span style="color:#e85578;font-weight:600;flex:0 0 auto">Antares</span>`+
            `<span style="color:#d7e2f2">${esc(m.antares)}</span></div>`;
       }else if(m.antares_verdict){
-        s+=`<div style="font-size:11px;margin-top:3px"><span style="color:#e85578;font-weight:600">Antares</span> <span style="color:#8598b4">${esc(m.antares_verdict)}</span></div>`;
+        s+=`<div style="font-size:11px;margin-top:3px"><span style="color:#e85578;font-weight:600">Antares</span> <span style="color:#8598b4">${antVerdictLabel(m.antares_verdict).toLowerCase()}</span></div>`;
       }else if(m.kind==='detect'&&m.detail){
         s+=`<div style="font-size:11px;margin-top:3px"><span style="color:#e85578;font-weight:600">Antares</span> <span style="color:#d7e2f2">${esc(m.detail)}</span></div>`;
       }
@@ -4262,7 +4266,7 @@ const verdict=lastData.rings?.r6_antares_verdict||'';
 const lastIssue=lastData.rings?.r6_antares_last_issue||'';
 let h='<p style="color:#8598b4;margin-bottom:12px">Cisco Foundation AI <strong>Antares-1B</strong> — a local 1B vulnerability-localization model. On every issue/PR it explores the repo via a sandboxed terminal loop (grep/find/cat/ls only, ≤15 commands), seeded by the Cartographer security overlay, and reports candidate vulnerable files. Advisory (the Foundry Detector stage).</p>';
 const sev=cands>0?'HIGH':'SAFE';
-h+=`<div class="modal-finding ${sev}"><span class="sev ${sev}">${cands>0?'CANDIDATES':'CLEAN'}</span> latest run${lastIssue?` (#${esc(String(lastIssue))})`:''}: ${cands} candidate file${cands===1?'':'s'}${verdict?` · verdict ${esc(verdict)}`:''}</div>`;
+h+=`<div class="modal-finding ${sev}"><span class="sev ${sev}">${cands>0?'CANDIDATES':antVerdictLabel(verdict)}</span> latest run${lastIssue?` (#${esc(String(lastIssue))})`:''}: ${cands} candidate file${cands===1?'':'s'}</div>`;
 h+=`<div id="antares-list" style="margin-top:12px"><p style="color:#8598b4">Loading detector findings…</p></div>`;
 h+=`<div class="detail" style="margin-top:12px;color:#8598b4">Model served locally via Ollama (loopback) · sandboxed allowlist-jail loop (bin/antares-detector.py) · seeded by the <a href="/cartographer" target="_blank" style="color:#5de3ff;text-decoration:none">Cartographer</a> --cwe overlay</div>`;
 document.getElementById('modal-title').textContent='Antares Detector — Vulnerability Localization';
@@ -4279,7 +4283,7 @@ for(const [ts,rows] of Object.entries(byRun).slice(0,20)){
 const r0=rows[0],hasCand=rows.some(x=>x.file);
 const sc=hasCand?'HIGH':'SAFE';
 fh+=`<div class="modal-finding ${sc}" style="margin-bottom:8px">`;
-fh+=`<span class="sev ${sc}">${hasCand?'CANDIDATES':esc((r0.verdict||'clean').toUpperCase())}</span> `;
+fh+=`<span class="sev ${sc}">${hasCand?'CANDIDATES':antVerdictLabel(r0.verdict)}</span> `;
 fh+=`<strong>${r0.issue?'#'+esc(String(r0.issue)):'(no issue)'}</strong>${r0.cwe?` · ${esc(r0.cwe)}`:''}`;
 fh+=`<span style="color:#5f708a;font-size:10px;margin-left:6px">${esc(ts)} · ${r0.commands_used||0} cmds</span>`;
 if(hasCand){fh+='<div style="margin-top:4px">';
