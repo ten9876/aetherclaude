@@ -1811,7 +1811,23 @@ def scan_rings():
                                         num = str(args_data.get('issue_number', args_data.get('pr_number', args_data.get('discussion_number', num or ''))))
                                 write_ops = ('comment_on_issue', 'create_pull_request', 'create_pr_review', 'comment_on_discussion')
                                 if (url or num) and op in write_ops:
-                                    recent.append({'op': label, 'url': url, 'num': str(num),
+                                    # Construct a GitHub link when the result has
+                                    # none (PR reviews return {id,state} — no
+                                    # html_url), picking the right path from the op.
+                                    if op in ('create_pr_review', 'create_pull_request'):
+                                        ghpath = 'pull'
+                                    elif op == 'comment_on_discussion':
+                                        ghpath = 'discussions'
+                                    else:
+                                        ghpath = 'issues'
+                                    link = url
+                                    if not link and num:
+                                        link = f'https://github.com/aethersdr/AetherSDR/{ghpath}/{num}'
+                                        rid = result.get('id') if isinstance(result, dict) else ''
+                                        if op == 'create_pr_review' and rid:
+                                            link += f'#pullrequestreview-{rid}'
+                                    recent.append({'op': label, 'url': url, 'link': link,
+                                                   'num': str(num), 'trace_id': ad.get('trace_id', ''),
                                                    'time': coerce_ms_iso(ts)})
                             except:
                                 pass
@@ -3923,10 +3939,15 @@ function renderExec(d){
   const titlesX=r.issue_titles||{};
   const acts=(r.recent_activity||[]).slice(-5).reverse();
   document.getElementById('x-activity').innerHTML=acts.length?acts.map(a=>{
-    let num='';
-    if(a.url){const m2=a.url.match(/\/(\d+)/g);if(m2)num=m2[m2.length-1].substring(1)}
-    const ttl=titlesX[num]||titlesX['d'+num]||titlesX['pr'+num]||'';
-    return `<div class="x-row"><span class="tm">${fmtTime(a.time)}</span><span>${esc(a.op||'')}</span>${a.url?`<a href="${a.url}" target="_blank">#${esc(num)}${ttl?' — '+esc(ttl.substring(0,40)):''}</a>`:''}</div>`;
+    // Use the server-extracted number (a.url ends in a review/comment id, not
+    // the PR/issue #). GitHub link is a.link (constructed when the result has
+    // no html_url, e.g. PR reviews); trace_id deep-links the Agent Walk.
+    const num=a.num||'';
+    const ttl=num?(titlesX[num]||titlesX['d'+num]||titlesX['pr'+num]||''):'';
+    const gh=a.link||a.url||'';
+    const ghLink=gh?`<a href="${gh}" target="_blank">${num?'#'+esc(num):'link'}${ttl?' — '+esc(ttl.substring(0,40)):''} &#8599;</a>`:'';
+    const walk=a.trace_id?`<a href="/agent-walk?trace=${encodeURIComponent(a.trace_id)}" target="_blank" title="Open in Agent Walk" style="color:#5de3ff;margin-left:8px">walk &#8599;</a>`:'';
+    return `<div class="x-row"><span class="tm">${fmtTime(a.time)}</span><span>${esc(a.op||'')}</span>${ghLink}${walk}</div>`;
   }).join(''):'<div class="x-row" style="color:var(--muted-dim)">No agent activity yet</div>';
 }
 // Trends poll — slow cadence (server caches 60s anyway). NOTE: identifier must
@@ -4139,15 +4160,13 @@ const opColors={'Commented on issue':'#5de3ff','Created PR':'#27a86f','Replied t
 for(const a of [...activity].reverse()){
 const col=opColors[a.op]||'#c8d8e8';
 const t=fmtTime(a.time);
-let link=a.url;
-let label=a.op;
-// Extract #number from URL for title lookup
-let num='';
-if(link){const m=link.match(/\/(\d+)/g);if(m)num=m[m.length-1].substring(1)}
-const title=titles[num]||titles['d'+num]||titles['pr'+num]||'';
+const num=a.num||'';
+const title=num?(titles[num]||titles['d'+num]||titles['pr'+num]||''):'';
 const titleStr=title?` — ${title.substring(0,40)}`:'';
-if(link)ph+=`<div class="si"><span class="n"><span style="color:#505060;font-size:10px">${t}</span> <span style="color:${col}">${label}</span> <a href="${link}" target="_blank" style="color:#c8d8e8;text-decoration:none">#${num}${titleStr}</a></span></div>`;
-else{const ghUrl=a.num?`https://github.com/aethersdr/AetherSDR/issues/${a.num}`:'';const numTitle=titles[a.num]||'';const numTitleStr=numTitle?` — ${numTitle.substring(0,40)}`:'';if(a.num)ph+=`<div class="si"><span class="n"><span style="color:#505060;font-size:10px">${t}</span> <span style="color:${col}">${label}</span> <a href="${ghUrl}" target="_blank" style="color:#c8d8e8;text-decoration:none">#${a.num}${numTitleStr}</a></span></div>`;else ph+=`<div class="si"><span class="n"><span style="color:#505060;font-size:10px">${t}</span> <span style="color:${col}">${label}</span></span></div>`;}
+const gh=a.link||a.url||'';
+const ghLink=gh?` <a href="${gh}" target="_blank" style="color:#c8d8e8;text-decoration:none">${num?'#'+num:'link'}${titleStr} &#8599;</a>`:'';
+const walk=a.trace_id?` <a href="/agent-walk?trace=${encodeURIComponent(a.trace_id)}" target="_blank" title="Open in Agent Walk" style="color:#5de3ff;text-decoration:none">walk &#8599;</a>`:'';
+ph+=`<div class="si"><span class="n"><span style="color:#505060;font-size:10px">${t}</span> <span style="color:${col}">${a.op}</span>${ghLink}${walk}</span></div>`;
 }
 document.getElementById('pols').innerHTML=ph||'<div class="si"><span class="n muted">Waiting for agent activity...</span></div>';
 
