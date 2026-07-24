@@ -832,49 +832,64 @@ def _scorer_id_name_map():
 _GUARDRAIL_RE = _re.compile(r'inject|pii|toxic', _re.I)
 _UUID_METRIC_RE = _re.compile(
     r'^average_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(_multijudge_average)?$')
+def _live_window(pid, lsid, start, end, names):
+    """Query one time window; return {'requests':int, 'by_name':{scorer_name:pct}}.
+    pct is 0..100; only scorers that produced a value appear (NA/errored excluded)."""
+    from galileo.metrics import Metrics
+    mins = max(1, int((end - start).total_seconds() // 60))
+    resp = Metrics().query(project_id=pid, log_stream_id=lsid,
+                           start_time=start, end_time=end, interval=mins)
+    agg = (resp.to_dict() if hasattr(resp, 'to_dict') else resp).get('aggregate_metrics', {}) or {}
+    picked = {}  # sid -> (name, value) — prefer the multijudge mean
+    for k, v in agg.items():
+        mm = _UUID_METRIC_RE.match(k)
+        if not mm or not isinstance(v, (int, float)):
+            continue
+        sid = mm.group(1)
+        nm = names.get(sid)
+        if not nm:
+            continue
+        if sid not in picked or bool(mm.group(2)):
+            picked[sid] = (nm, float(v))
+    by_name = {nm: max(0, min(100, round(val * 100))) for nm, val in picked.values()}
+    return {'requests': int(agg.get('requests_count', 0) or 0), 'by_name': by_name}
+
 _live_scores_cache = {'t': 0.0, 'data': None}
 def _galileo_live_scores(max_age=300):
-    """Return the log stream's live scorer means, grouped quality vs guardrail:
-      {requests, quality:[{name,label,pct}], guardrail:[...], updated, console}
-    Only scorers that actually produced a value in the window appear (NA/errored
-    scorers are naturally excluded). Cached for max_age seconds; fail-open."""
+    """Live scorer means for the agent-runs log stream as a ROLLING 24h headline
+    with a 14d baseline (the daily run-eval scorecard is a separate, ground-truth
+    layer). Returns:
+      {window_label:'24h', baseline_label:'14d', requests, baseline_requests,
+       quality:[{name,label,pct,base_pct}], guardrail:[...], updated, console}
+    pct = rolling-24h mean (None if no runs scored in 24h); base_pct = 14d mean.
+    A scorer appears if it produced a value in EITHER window. Cached; fail-open."""
     now = time.time()
     c = _live_scores_cache
     if c['data'] is not None and now - c['t'] < max_age:
         return c['data']
-    out = {'requests': 0, 'quality': [], 'guardrail': [], 'updated': None, 'console': None}
+    out = {'window_label': '24h', 'baseline_label': '14d', 'requests': 0,
+           'baseline_requests': 0, 'quality': [], 'guardrail': [],
+           'updated': None, 'console': None}
     if os.environ.get('GALILEO_API_KEY'):
         try:
             from datetime import datetime, timedelta, timezone
-            from galileo.metrics import Metrics
             from galileo.projects import get_project
             from galileo.log_streams import get_log_stream
             p = get_project(name=GALILEO_PROJECT)
             ls = get_log_stream(name=GALILEO_LOG_STREAM, project_id=str(p.id))
-            end = datetime.now(timezone.utc)
-            start = end - timedelta(days=14)
-            resp = Metrics().query(project_id=str(p.id), log_stream_id=str(ls.id),
-                                   start_time=start, end_time=end, interval=20160)
-            agg = (resp.to_dict() if hasattr(resp, 'to_dict') else resp).get('aggregate_metrics', {}) or {}
-            out['requests'] = int(agg.get('requests_count', 0) or 0)
+            pid, lsid = str(p.id), str(ls.id)
             names = _scorer_id_name_map()
-            picked = {}  # sid -> (name, value) — prefer the multijudge mean
-            for k, v in agg.items():
-                mm = _UUID_METRIC_RE.match(k)
-                if not mm or not isinstance(v, (int, float)):
-                    continue
-                sid = mm.group(1)
-                nm = names.get(sid)
-                if not nm:
-                    continue
-                is_mj = bool(mm.group(2))
-                if sid not in picked or is_mj:
-                    picked[sid] = (nm, float(v))
-            for nm, val in picked.values():
-                pct = max(0, min(100, round(val * 100)))
+            end = datetime.now(timezone.utc)
+            roll = _live_window(pid, lsid, end - timedelta(hours=24), end, names)
+            base = _live_window(pid, lsid, end - timedelta(days=14), end, names)
+            out['requests'] = roll['requests']
+            out['baseline_requests'] = base['requests']
+            for nm in sorted(set(roll['by_name']) | set(base['by_name'])):
                 label = nm.replace('_luna', '').replace('_', ' ')
                 grp = 'guardrail' if _GUARDRAIL_RE.search(nm) else 'quality'
-                out[grp].append({'name': nm, 'label': label, 'pct': pct})
+                out[grp].append({'name': nm, 'label': label,
+                                 'pct': roll['by_name'].get(nm),
+                                 'base_pct': base['by_name'].get(nm)})
             out['quality'].sort(key=lambda x: x['label'])
             out['guardrail'].sort(key=lambda x: x['label'])
             out['updated'] = end.strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -4725,20 +4740,30 @@ document.getElementById('modal').classList.add('show');
 fetch('/api/live-scores').then(r=>r.json()).then(s=>{
 const el=document.getElementById('evq-live'); if(!el)return;
 const q=(s.quality||[]),g=(s.guardrail||[]);
-if(!q.length&&!g.length){el.innerHTML=`<div style="font-size:12px;color:#8598b4">Live Galileo scoring is enabled on <span style="color:#c4d4e8">agent-runs</span> — no scored traces in the window yet.</div>`;return;}
-const bar=(pct,col)=>`<span style="flex:1;max-width:220px;height:6px;background:var(--bg-3);border-radius:3px;overflow:hidden;display:inline-block"><span style="display:block;height:100%;width:${pct}%;background:${col};border-radius:3px"></span></span>`;
-let lh=`<div style="font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:8px">LIVE GALILEO SCORING &middot; agent-runs${s.requests?` &middot; ${s.requests} run${s.requests===1?'':'s'} scored`:''}</div>`;
+if(!q.length&&!g.length){el.innerHTML=`<div style="font-size:12px;color:#8598b4">Live Galileo scoring is enabled on <span style="color:#c4d4e8">agent-runs</span> — no runs scored yet. Fills in as new agent runs come in.</div>`;return;}
+const wl=s.window_label||'24h',bl=s.baseline_label||'14d';
+// Each row: rolling-window bar + value, with the baseline as a faded annotation.
+// A metric with no data in the rolling window shows '—' but still carries its baseline.
+const row=(m,goodHi)=>{
+const cur=(m.pct==null?m.base_pct:m.pct);
+const col=cur==null?'var(--bg-3)':(goodHi?(cur>=80?'var(--good)':(cur>=50?'var(--warn)':'var(--crit)')):(cur<=20?'var(--good)':(cur<=50?'var(--warn)':'var(--crit)')));
+const fade=m.pct==null?'opacity:.4':'';
+const bar=`<span style="flex:1;max-width:200px;height:6px;background:var(--bg-3);border-radius:3px;overflow:hidden;display:inline-block;${fade}"><span style="display:block;height:100%;width:${cur==null?0:cur}%;background:${col};border-radius:3px"></span></span>`;
+const val=m.pct==null?'&mdash;':`${m.pct}%`;
+const base=m.base_pct==null?'':`<span style="font-size:10px;color:#5f708a;width:58px;text-align:right">${bl} ${m.base_pct}%</span>`;
+return `<div style="display:flex;align-items:center;gap:8px;margin-top:6px"><span style="width:160px;font-size:11px;color:#c4d4e8">${esc(m.label)}</span>${bar}<span style="font-size:11px;color:#c4d4e8;width:32px;text-align:right">${val}</span>${base}</div>`;
+};
+let lh=`<div style="font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:2px">LIVE GALILEO SCORING &middot; agent-runs</div>`;
+lh+=`<div style="font-size:11px;color:#5f708a;margin-bottom:8px">Rolling ${esc(wl)} &middot; ${s.requests?`${s.requests} run${s.requests===1?'':'s'} scored`:'no runs in the last '+esc(wl)}${s.baseline_requests?` &middot; ${esc(bl)} baseline (${s.baseline_requests} run${s.baseline_requests===1?'':'s'})`:''}</div>`;
 if(q.length){
 lh+=`<div style="font-size:11px;color:#5f708a;margin:2px 0 4px">Quality &middot; higher is better</div>`;
-for(const m of q){const col=m.pct>=80?'var(--good)':(m.pct>=50?'var(--warn)':'var(--crit)');
-lh+=`<div style="display:flex;align-items:center;gap:8px;margin-top:6px"><span style="width:170px;font-size:11px;color:#c4d4e8">${esc(m.label)}</span>${bar(m.pct,col)}<span style="font-size:11px;color:#c4d4e8;width:36px;text-align:right">${m.pct}%</span></div>`;}
+for(const m of q)lh+=row(m,true);
 }
 if(g.length){
 lh+=`<div style="font-size:11px;color:#5f708a;margin:10px 0 4px">Security guardrail &middot; lower is safer</div>`;
-for(const m of g){const col=m.pct<=20?'var(--good)':(m.pct<=50?'var(--warn)':'var(--crit)');
-lh+=`<div style="display:flex;align-items:center;gap:8px;margin-top:6px"><span style="width:170px;font-size:11px;color:#c4d4e8">${esc(m.label)}</span>${bar(m.pct,col)}<span style="font-size:11px;color:#c4d4e8;width:36px;text-align:right">${m.pct}%</span></div>`;}
+for(const m of g)lh+=row(m,false);
 }
-lh+=`<div class="detail" style="margin-top:8px;color:#5f708a">Preset Luna scorers, 14-day mean${s.console?` &middot; <a href="${s.console}" target="_blank" style="color:#5de3ff;text-decoration:none">authoritative view in Galileo &#x2197;</a>`:''}</div>`;
+lh+=`<div class="detail" style="margin-top:8px;color:#5f708a">Preset Luna scorers, scored per run as it lands &middot; rolling ${esc(wl)} vs ${esc(bl)} baseline${s.console?` &middot; <a href="${s.console}" target="_blank" style="color:#5de3ff;text-decoration:none">authoritative view in Galileo &#x2197;</a>`:''}</div>`;
 el.innerHTML=lh;
 }).catch(()=>{const el=document.getElementById('evq-live');if(el)el.innerHTML='';});
 fetch('/api/eval').then(r=>r.json()).then(d=>{
