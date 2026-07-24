@@ -9989,18 +9989,34 @@ a{{color:#0a6aba}}
                 kind = entry.get('kind', 'run')
                 ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
                 galileo_url = entry.get('galileo_trace_url')
-                if kind == 'run':
-                    galileo_url = galileo_forward(entry)
                 scores_json = json.dumps(entry.get('scores')) if entry.get('scores') is not None else None
                 conn = sqlite3.connect(EVENTS_DB, timeout=30)
-                conn.execute(
+                cur = conn.execute(
                     'INSERT INTO eval_results (ts, trace_id, flow, ref, status, kind, galileo_trace_url, scores_json) '
                     'VALUES (?,?,?,?,?,?,?,?)',
                     (ts, entry.get('trace_id', ''), entry.get('flow', 'other'), str(entry.get('ref', '')),
                      entry.get('status', 'ok'), kind, galileo_url, scores_json))
+                row_id = cur.lastrowid
                 conn.commit(); conn.close()
+                if kind == 'run':
+                    # Forward to Galileo OFF the request path: via-proxy latency to
+                    # the remote instance can exceed the caller's short client
+                    # timeout (galileo-log-run.py = 5s), and holding the handler
+                    # open risks a BrokenPipe. Ack immediately and backfill the
+                    # console URL onto the row when the trace lands. The caller
+                    # fire-and-forgets the response, so nothing needs the URL inline.
+                    def _bg_forward(e, rid):
+                        try:
+                            url = galileo_forward(e)
+                            if url:
+                                c = sqlite3.connect(EVENTS_DB, timeout=30)
+                                c.execute('UPDATE eval_results SET galileo_trace_url=? WHERE id=?', (url, rid))
+                                c.commit(); c.close()
+                        except Exception as _be:
+                            print(f'eval-ingest bg forward: {_be}', file=sys.stderr)
+                    threading.Thread(target=_bg_forward, args=(entry, row_id), daemon=True).start()
                 self.send_response(200); self.end_headers()
-                self.wfile.write(json.dumps({'accepted': 1, 'galileo_trace_url': galileo_url}).encode())
+                self.wfile.write(json.dumps({'accepted': 1, 'queued': kind == 'run'}).encode())
             except Exception as e:
                 # Persisting/forwarding failed — log and ack so the agent is
                 # never blocked by eval plumbing.
