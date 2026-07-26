@@ -2079,10 +2079,11 @@ def scan_rings():
 # (ephemeral_1h_input_tokens populated, 5m always 0).
 # Per-model API rates -- ($/MTok: input, output, cache_read, cache_create),
 # mirroring bot-cost.py PRICING. Used to price each agent-walk turn at the
-# model it actually ran on (the corpus spans fable-5 / opus-4-7 / opus-4-8).
-# Unknown or synthetic models fall back to Fable 5 (the current default).
+# model it actually ran on (the corpus spans fable-5 / opus-4-7 / opus-4-8 /
+# opus-5). Unknown or synthetic models fall back to Fable 5.
 _MODEL_RATES = {
     'claude-fable-5':    (10.0, 50.0, 1.00, 20.00),
+    'claude-opus-5':     ( 5.0, 25.0, 0.50, 10.00),
     'claude-opus-4-8':   ( 5.0, 25.0, 0.50, 10.00),
     'claude-opus-4-7':   ( 5.0, 25.0, 0.50, 10.00),
     'claude-sonnet-4-6': ( 3.0, 15.0, 0.30,  6.00),

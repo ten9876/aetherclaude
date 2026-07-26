@@ -45,3 +45,7 @@ Thumbs.db
 *.bak
 *.bak-*
 *.pre-db-bak
+
+# Python bytecode
+__pycache__/
+*.pyc

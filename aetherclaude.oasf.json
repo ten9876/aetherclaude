@@ -2,7 +2,7 @@
   "name": "github.com/ten9876/aetherclaude",
   "version": "v1.0.0",
   "schema_version": "0.8.0",
-  "description": "AetherClaude is an autonomous, security-first GitHub agent for the AetherSDR project. It triages incoming issues, reviews pull requests, explains CI failures, detects duplicates, welcomes first-time contributors, and drafts fixes for maintainer-authorized issues. It runs Claude (claude-opus-4-8) via Claude Code inside a defense-in-depth sandbox: dedicated unprivileged user, pf egress firewall, Cisco Isovalent Tetragon eBPF runtime observability, MCP token-isolation gateway, AI-output scanners, and mandatory human review on every merge. All runs emit traces consumable in the AGNTCY observability schema via the dashboard's /api/agent-walk-otel endpoint.",
+  "description": "AetherClaude is an autonomous, security-first GitHub agent for the AetherSDR project. It triages incoming issues, reviews pull requests, explains CI failures, detects duplicates, welcomes first-time contributors, and drafts fixes for maintainer-authorized issues. It runs Claude (claude-opus-5) via Claude Code inside a defense-in-depth sandbox: dedicated unprivileged user, pf egress firewall, Cisco Isovalent Tetragon eBPF runtime observability, MCP token-isolation gateway, AI-output scanners, and mandatory human review on every merge. All runs emit traces consumable in the AGNTCY observability schema via the dashboard's /api/agent-walk-otel endpoint.",
   "authors": [
     "Jeremy Fielder (KK7GWY)"
   ],
@@ -69,7 +69,7 @@
         "models": [
           {
             "provider": "anthropic",
-            "model": "claude-opus-4-8"
+            "model": "claude-opus-5"
           }
         ]
       }

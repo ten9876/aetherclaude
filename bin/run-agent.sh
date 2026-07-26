@@ -657,7 +657,8 @@ run_claude() {
             HOME="$HOME" PATH="$PATH" \
             HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" NO_PROXY="$NO_PROXY" \
             claude -p "$prompt" \
-                --model claude-opus-4-8 \
+                --model claude-opus-5 \
+                --effort medium \
                 --session-id "$claude_session_id" \
                 --setting-sources user \
                 --strict-mcp-config \
