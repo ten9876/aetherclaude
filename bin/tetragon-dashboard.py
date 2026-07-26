@@ -1017,6 +1017,13 @@ def db_query_events(limit=1000, source=None, event_type=None):
         if source:
             conditions.append('source = ?')
             params.append(source)
+            if source == 'mcp':
+                # Match the /api/events endpoint: suppress legacy transport-layer
+                # "GET /repos/..." rows so the MCP feed is the tool ledger, not raw HTTP.
+                conditions.append(
+                    "args NOT LIKE 'GET %' AND args NOT LIKE 'POST %' "
+                    "AND args NOT LIKE 'PUT %' AND args NOT LIKE 'PATCH %' "
+                    "AND args NOT LIKE 'DELETE %'")
         if event_type:
             conditions.append('type = ?')
             params.append(event_type)
@@ -9476,6 +9483,16 @@ a{{color:#0a6aba}}
                 try:
                     where_parts = ['source = ?']
                     sql_args = [source]
+                    if source == 'mcp':
+                        # Hide legacy transport-layer polling rows (pre-aggregation
+                        # "GET /repos/..." events) so the panel shows the MCP tool
+                        # ledger + guardrails, not a wall of REST fetches. These old
+                        # rows age out of events.db via the pruner; this filters them
+                        # from the view immediately (retroactive, non-destructive).
+                        where_parts.append(
+                            "args NOT LIKE 'GET %' AND args NOT LIKE 'POST %' "
+                            "AND args NOT LIKE 'PUT %' AND args NOT LIKE 'PATCH %' "
+                            "AND args NOT LIKE 'DELETE %'")
                     if policy_filter:
                         where_parts.append('policy = ?')
                         sql_args.append(policy_filter)
