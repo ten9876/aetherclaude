@@ -2494,26 +2494,82 @@ def tail_validation_log(logfile):
                          'trace_id': trace_for_entry}
                 append_event(entry)
 
+# An MCP audit row whose `operation` is shaped like "GET /repos/..." is a
+# transport-layer HTTP poll, not a tool call. Real tool rows carry the tool
+# NAME (create_pr_review, read_issue, get_check_runs, …) plus args_data. We
+# render the tool rows semantically and AGGREGATE the HTTP polling, so the
+# panel reads as an MCP tool ledger + guardrail log instead of a wall of REST
+# fetches (which is all the raw transport layer looks like).
+_MCP_HTTP_RE = re.compile(r'^(GET|POST|PUT|PATCH|DELETE)\s')
+
+def _fmt_mcp_call(op, args_data, result):
+    """Render one MCP tool invocation as a demo-legible line → (text, blocked)."""
+    parts = []
+    if isinstance(args_data, dict):
+        for k, v in args_data.items():
+            if k in ('pr_number', 'issue_number', 'number', 'run_id'):
+                parts.append(f"#{v}")
+            elif k == 'sha':
+                parts.append(f"sha {str(v)[:8]}")
+            else:
+                parts.append(f"{k}={v}")
+    call = f"{op}({', '.join(parts)})"
+    res = result or ''
+    if 'RATE LIMITED' in res:
+        return f"BLOCKED  {call} — rate limit exceeded", True
+    if 'BLOCKED' in res:
+        why = res.split('BLOCKED:', 1)[-1].strip()[:56] if 'BLOCKED:' in res else 'guardrail'
+        return f"BLOCKED  {call} — {why}", True
+    if res.startswith('ERROR'):
+        return f"{call} — error", False
+    return call, False
+
 def tail_mcp_audit(logfile):
     while not os.path.exists(logfile): time.sleep(5)
+    # Background-read heartbeat: collapse transport-layer GET polling into one
+    # periodic aggregate event (>=50 reads or every 20s) rather than flooding
+    # the feed with one row per HTTP request.
+    reads = {'n': 0, 'last': 0.0}
+    def flush_reads():
+        if reads['n']:
+            with lock:
+                append_event({'time': now_utc_iso(), 'type': 'MCP', 'uid': 965,
+                    'binary': 'mcp-server',
+                    'args': f"{reads['n']} background GitHub reads (PR/issue/CI polling · token stays in-process)",
+                    'policy': '', 'is_agent': True, 'source': 'mcp'})
+            reads['n'] = 0
+        reads['last'] = time.time()
     with open(logfile) as f:
         f.seek(0, 2)
         while True:
             line = f.readline()
-            if not line: time.sleep(1); continue
+            if not line:
+                if reads['n'] and time.time() - reads['last'] >= 20:
+                    flush_reads()
+                time.sleep(1); continue
             try:
                 d = json.loads(line.strip())
-                with lock:
-                    op = d.get('operation', '?')
-                    result_preview = d.get('result', '')[:80]
-                    result_preview = re.sub(r"Authorization: (token|Bearer) [A-Za-z0-9_-]+", "Authorization: \\1 ***", result_preview)
-                    mcp_ts = coerce_ms_iso(d.get('timestamp', ''))
-                    entry = {'time': mcp_ts, 'type': 'MCP', 'uid': 965, 'binary': 'mcp-server', 'args': f"{op} → {result_preview}", 'policy': '', 'is_agent': True, 'source': 'mcp', 'trace_id': d.get('trace_id')}
-                    if 'BLOCKED' in result_preview or 'RATE LIMITED' in result_preview:
-                        entry['policy'] = 'mcp-blocked'
-                        stats['alerts'].append({'time': mcp_ts, 'msg': f"MCP: {op} — {result_preview}", 'severity': 'high'})
-                    append_event(entry)
-            except: continue
+            except:
+                continue
+            op = d.get('operation', '?')
+            # Transport-layer poll → aggregate, don't flood.
+            if _MCP_HTTP_RE.match(op):
+                reads['n'] += 1
+                if reads['n'] >= 50 or time.time() - reads['last'] >= 20:
+                    flush_reads()
+                continue
+            # Real MCP tool invocation → render semantically.
+            result_preview = re.sub(r"Authorization: (token|Bearer) [A-Za-z0-9_-]+",
+                                    r"Authorization: \1 ***", d.get('result', '')[:120])
+            text, blocked = _fmt_mcp_call(op, d.get('args_data'), result_preview)
+            mcp_ts = coerce_ms_iso(d.get('timestamp', ''))
+            with lock:
+                entry = {'time': mcp_ts, 'type': 'MCP', 'uid': 965, 'binary': 'mcp-server',
+                         'args': text, 'policy': 'mcp-blocked' if blocked else '',
+                         'is_agent': True, 'source': 'mcp', 'trace_id': d.get('trace_id')}
+                if blocked:
+                    stats['alerts'].append({'time': mcp_ts, 'msg': f"MCP guardrail: {text}", 'severity': 'high'})
+                append_event(entry)
 
 def tail_tinyproxy_log():
     """Watch tinyproxy log for proxy connections and denials."""
@@ -3669,8 +3725,8 @@ body.view-ops #view-exec{display:none}
 <div class="ring ok clickable" id="ring6" onclick="showRingEvents('codeguard','Ring 6: Cisco AI Defense','CodeGuard static analysis, MCP Scanner, Skill Scanner events')"><span class="num">6 &gt;</span><span class="status green"></span>
 <div class="name">CodeGuard</div><div class="value" id="r6v">0</div><div class="detail" id="r6d">files scanned</div></div>
 
-<div class="ring ok clickable" id="ring7" onclick="showRingEvents('mcp','Ring 7: MCP Token Isolation','GitHub API operations, content validation, rate limiting')"><span class="num">7 &gt;</span><span class="status green"></span>
-<div class="name">MCP Isolation</div><div class="value" id="r7v">0</div><div class="detail" id="r7d">ops · 0 blocked</div></div>
+<div class="ring ok clickable" id="ring7" onclick="showRingEvents('mcp','Ring 7: MCP Token Isolation','Named MCP tools · in-process token the agent never sees · content validation · rate limiting')"><span class="num">7 &gt;</span><span class="status green"></span>
+<div class="name">MCP Isolation</div><div class="value" id="r7v">0</div><div class="detail" id="r7d">tool writes · 0 blocked</div></div>
 
 <div class="ring ok clickable" id="ring8" onclick="showValidation()"><span class="num">8 &gt;</span><span class="status green"></span>
 <div class="name">Validation Gate</div><div class="value" id="r8v">0</div><div class="detail" id="r8d">checks · 0 failed</div></div>
@@ -3985,7 +4041,7 @@ function renderExec(d){
     ['r4','Agent Sandbox',(r.r4_sandboxed_runs||0)+' runs','showRing4()'],
     ['r5','Claude Code',fmtCompact(tools.total||0)+' tool calls',"showRingEvents('claude-code','Claude Code Permissions','Tool calls tracked — per-tool breakdown')"],
     ['r6','CodeGuard',fmtCompact((r.r6_files_scanned||0)+(r.r6_mcp_tools_scanned||0))+' scanned',"showRingEvents('codeguard','Cisco AI Defense','CodeGuard, MCP Scanner, Skill Scanner events')"],
-    ['r7','MCP Isolation',fmtCompact(r.r7_mcp_ops||0)+' ops',"showRingEvents('mcp','MCP Token Isolation','GitHub API operations, validation, rate limiting')"],
+    ['r7','MCP Isolation',fmtCompact(r.r7_mcp_ops||0)+' ops',"showRingEvents('mcp','MCP Token Isolation','Named MCP tools · in-process token the agent never sees · validation · rate limiting')"],
     ['r8','Validation Gate',(r.r8_validation_failed||0)+' failed','showValidation()'],
     ['r9','Human Review',(r.r9_prs_open||0)+' open PRs','showRing9()']];
   document.getElementById('x-controls').innerHTML=ctls.map(([k,nm,ct,fn])=>{
@@ -4218,7 +4274,7 @@ document.getElementById('r5d').textContent=`tool calls · top: ${tb||'none'}`;
 document.getElementById('r6v').textContent=(r.r6_files_scanned||0)+(r.r6_mcp_tools_scanned||0);
 document.getElementById('r6d').textContent=`items scanned · ${r.r6_findings||0} findings · ${r.r6_blocked||0} blocked`;
 document.getElementById('r7v').textContent=r.r7_mcp_ops||0;
-document.getElementById('r7d').textContent=`ops · ${r.r7_blocked||0} blocked`;
+document.getElementById('r7d').textContent=`${r.r7_writes||0} tool writes · ${r.r7_blocked||0} blocked · 0 tokens to agent`;
 document.getElementById('r8v').textContent=r.r8_validation_failed||0;
 document.getElementById('r8d').textContent=`failed · ${r.r8_validation_passed||0} passed`;
 document.getElementById('r9v').textContent=r.r9_prs_open||0;
