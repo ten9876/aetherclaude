@@ -1446,7 +1446,19 @@ def scan_rings():
                     ring_stats['agent_running'] = agent_status.strip() == 'active'
                 except: ring_stats['agent_running'] = False
 
-                # Ring 2: tinyproxy — r2_allowed and r2_denied are updated by tail_tinyproxy_log
+                # Ring 2: tinyproxy — r2_allowed climbs live via tail_tinyproxy_log.
+                # r2_denied is DB-backed (rolling 24h) so the card reflects real
+                # blocked probes after a dashboard restart instead of resetting to
+                # 0 (the in-memory tail counter starts fresh each restart; allowed
+                # connections aren't persisted, so only denials are recoverable).
+                try:
+                    _c2 = sqlite3.connect(EVENTS_DB, timeout=5)
+                    ring_stats['r2_denied'] = _c2.execute(
+                        "SELECT COUNT(*) FROM events WHERE source='tinyproxy' "
+                        "AND policy='domain-filter' AND created_at>=datetime('now','-1 day')"
+                    ).fetchone()[0]
+                    _c2.close()
+                except: pass
 
                 # Ring 3: OS isolation — count agent processes + eslogger events
                 try:
