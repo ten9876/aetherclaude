@@ -3974,13 +3974,37 @@ function wireTrendHover(buckets,opts){
     placeTip(tt,ev);
   });
   svg.addEventListener('mouseleave',()=>{tt.style.display='none';cross.setAttribute('visibility','hidden')});
+  // Click a marker dot -> open the Agent Walk for that run's trace. Skip if the
+  // pointer moved (a drag = zoom, not a click). Workflow dots resolve their
+  // trace by issue+time; CodeGuard dots open the CodeGuard modal.
+  svg.addEventListener('click',ev=>{
+    if(_actDownX!=null&&Math.abs(ev.clientX-_actDownX)>5)return;   // was a drag/zoom
+    const r=ev.target;
+    if(!r.dataset||r.dataset.m===undefined||!opts.markers)return;
+    const m=opts.markers[+r.dataset.m];if(!m)return;
+    openWalkForMarker(m);
+  });
+}
+// Open Agent Walk for one activity-timeline dot. Opens the tab synchronously
+// (dodges popup blockers), resolves the trace for the run, then navigates.
+function openWalkForMarker(m){
+  if(!m)return;
+  if(m.kind==='codeguard'){if(typeof showCodeGuard==='function')showCodeGuard();return;}
+  const num=m.num;if(!num)return;
+  const w=window.open('','_blank');
+  try{if(w)w.document.write('<title>Agent Walk</title><p style="font:14px system-ui,sans-serif;color:#8598b4;padding:24px">Opening Agent Walk…</p>');}catch(e){}
+  fetch(`/api/trace-for-run?num=${encodeURIComponent(num)}&t=${encodeURIComponent(m.t||'')}`)
+    .then(r=>r.json()).then(d=>{
+      const u=d.trace_id?`/agent-walk?trace=${encodeURIComponent(d.trace_id)}`:'/agent-walk';
+      if(w)w.location=u;else window.open(u,'_blank');
+    }).catch(()=>{if(w)w.location='/agent-walk';});
 }
 
 // ── Activity chart drag-to-zoom ────────────────────────────────────────────
 // _act holds the full activity render inputs (set on each trends refresh);
 // drawActivity(i0,i1) renders a bucket sub-range; a brush selection or the
 // back button drives i0/i1. Zoom persists across refreshes by time range.
-let _act=null, _actZoomT=null, _brushing=false;
+let _act=null, _actZoomT=null, _brushing=false, _actDownX=null;
 function drawActivity(i0,i1){
   if(!_act)return;
   const tw=document.getElementById('x-trend');if(!tw)return;
@@ -4020,7 +4044,7 @@ function wireBrush(buckets,baseI0){
   const W=(svg.viewBox&&svg.viewBox.baseVal&&svg.viewBox.baseVal.width)||880;
   const padL=8,iw=W-16;let sx=null;
   const toX=ev=>{const r=svg.getBoundingClientRect();return (ev.clientX-r.left)/r.width*W;};
-  svg.addEventListener('mousedown',ev=>{if(ev.button!==0)return;sx=toX(ev);_brushing=true;brush.setAttribute('x',sx);brush.setAttribute('width',0);brush.setAttribute('visibility','visible');ev.preventDefault();});
+  svg.addEventListener('mousedown',ev=>{if(ev.button!==0)return;_actDownX=ev.clientX;sx=toX(ev);_brushing=true;brush.setAttribute('x',sx);brush.setAttribute('width',0);brush.setAttribute('visibility','visible');ev.preventDefault();});
   svg.addEventListener('mousemove',ev=>{if(!_brushing||sx==null)return;const x=toX(ev);brush.setAttribute('x',Math.min(sx,x));brush.setAttribute('width',Math.abs(x-sx));});
   const done=ev=>{if(!_brushing||sx==null)return;_brushing=false;brush.setAttribute('visibility','hidden');const x=toX(ev);const x0=Math.min(sx,x),x1=Math.max(sx,x);sx=null;if(x1-x0<6)return;const n=buckets.length-1;const f0=Math.max(0,Math.min(1,(x0-padL)/iw)),f1=Math.max(0,Math.min(1,(x1-padL)/iw));const a=Math.round(f0*n),b=Math.round(f1*n);if(b<=a)return;drawActivity(baseI0+a,baseI0+b);};
   svg.addEventListener('mouseup',done);
@@ -9654,6 +9678,58 @@ a{{color:#0a6aba}}
                     'spans': spans,
                 }],
             }]})
+        elif self.path.startswith('/api/trace-for-run'):
+            # Resolve the Agent Walk trace for one activity-timeline dot. A dot is
+            # an issue/PR agent run (num + time); find the trace whose events
+            # reference that #number closest in time to the marker. Fuzzy but
+            # reliable — the trace running at the dot's time for that issue wins.
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            num = (q.get('num', [''])[0] or '').strip()
+            t = (q.get('t', [''])[0] or '').strip()
+            trace = ''
+            try:
+                if num.isdigit():
+                    pat = _re.compile(r'#' + _re.escape(num) + r'(?!\d)')
+                    def _ms(x):
+                        x = coerce_ms_iso(x)
+                        try:
+                            return datetime.fromisoformat(x.replace('Z', '+00:00')).timestamp()
+                        except Exception:
+                            return None
+                    target = _ms(t) if t else None
+                    conn = sqlite3.connect(EVENTS_DB)
+                    # Restrict to WALKABLE traces (have claude-code activity) —
+                    # same filter the /api/agent-walk-traces picker uses — so a
+                    # dot never opens an empty, skip-only dispatcher trace.
+                    rows = conn.execute(
+                        "SELECT trace_id, timestamp, args FROM events "
+                        "WHERE trace_id IS NOT NULL AND trace_id!='' AND args LIKE ? "
+                        "AND trace_id IN (SELECT DISTINCT trace_id FROM events "
+                        "WHERE source='claude-code' AND trace_id IS NOT NULL "
+                        "AND LENGTH(trace_id) > 8) "
+                        "ORDER BY id DESC LIMIT 500", ('%#' + num + '%',)).fetchall()
+                    conn.close()
+                    best = None
+                    for tid, ts, args in rows:
+                        if not tid or not pat.search(args or ''):
+                            continue
+                        if target is None:
+                            best = (0, tid); break
+                        ems = _ms(ts)
+                        if ems is None:
+                            continue
+                        d = abs(ems - target)
+                        if best is None or d < best[0]:
+                            best = (d, tid)
+                    if best:
+                        trace = best[1]
+            except Exception as ex:
+                _log_exc('trace-for-run', ex)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self._send_json({'trace_id': trace})
         elif self.path.startswith('/api/agent-walk-traces'):
             # List recent traces for the picker dropdown. One row per
             # distinct trace_id, with summary (event count, time bounds,
