@@ -901,6 +901,59 @@ def _galileo_live_scores(max_age=300):
     return out
 
 
+# --- Galileo Signals (log-stream Insights) ---
+# AI-generated observations over the whole agent-runs stream (a Galileo
+# `logstream_insights` job). Fetched via the aggregated-trace-view endpoint,
+# which returns InsightSummary objects on its graph nodes. Job-generated (not
+# real-time), so cached ~30 min. Fail-open.
+_signals_cache = {'t': 0.0, 'data': None}
+def _galileo_signals(max_age=1800):
+    """Return the log stream's Galileo Signals, priority-sorted:
+      {signals:[{id,title,observation,details,suggested_action,priority,category}],
+       updated, console}   category in error|warning|info."""
+    now = time.time()
+    c = _signals_cache
+    if c['data'] is not None and now - c['t'] < max_age:
+        return c['data']
+    out = {'signals': [], 'updated': None, 'console': None}
+    if os.environ.get('GALILEO_API_KEY'):
+        try:
+            from galileo.metrics import Metrics
+            from galileo.projects import get_project
+            from galileo.log_streams import get_log_stream
+            from galileo.resources.api.trace import get_aggregated_trace_view_projects_project_id_traces_aggregated_post as agg
+            from galileo.resources.models.aggregated_trace_view_request import AggregatedTraceViewRequest
+            client = Metrics().config.api_client
+            p = get_project(name=GALILEO_PROJECT)
+            ls = get_log_stream(name=GALILEO_LOG_STREAM, project_id=str(p.id))
+            resp = agg.sync(str(p.id), client=client,
+                            body=AggregatedTraceViewRequest(log_stream_id=str(ls.id)))
+            d = (resp.to_dict() if hasattr(resp, 'to_dict') else resp) or {}
+            nodes = (d.get('graph', {}) or {}).get('nodes', []) or []
+            seen = {}
+            for n in nodes:
+                for ins in (n.get('insights') or []):
+                    key = ins.get('id') or ins.get('title')
+                    if not key or key in seen:
+                        continue
+                    seen[key] = {
+                        'id': ins.get('id', ''), 'title': ins.get('title', ''),
+                        'observation': ins.get('observation', ''),
+                        'details': ins.get('details', ''),
+                        'suggested_action': ins.get('suggested_action', ''),
+                        'priority': ins.get('priority', 0) or 0,
+                        'category': str(ins.get('priority_category') or 'info'),
+                    }
+            out['signals'] = sorted(seen.values(), key=lambda s: -(s['priority'] or 0))
+            out['updated'] = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            out['console'] = _galileo_console_url()
+        except Exception as e:
+            print(f'galileo signals query failed ({e})', file=sys.stderr)
+    c['t'] = now
+    c['data'] = out
+    return out
+
+
 def galileo_forward(entry):
     """Log one agent run to Galileo as a multi-span trace. Returns a console URL
     or None. Swallows all errors (missing key, SDK not installed, network) so
@@ -4845,6 +4898,7 @@ const glyph=sm==null?'—':(sm>=80?'&#9679;':(sm>=50?'&#9650;':'&#10008;'));
 h+=`<div class="modal-finding ${sev}"><span class="sev ${sev}">${glyph} ${sm==null?'UNSCORED':sm+'%'}</span> overall decision quality — mean of the newest experiment per flow${ev.score_flows?` (${ev.score_flows} flow${ev.score_flows===1?'':'s'})`:''}</div>`;
 h+=`<div class="modal-finding SAFE"><span class="sev SAFE">${ev.pass_rate_24h!=null?ev.pass_rate_24h+'%':'—'}</span> run success &middot; 24h (${ev.runs_24h||0} runs) — separate metric: did the agent process complete, not whether its output was good</div>`;
 h+=`<div id="evq-live" style="margin-top:14px"></div>`;
+h+=`<div id="evq-signals" style="margin-top:14px"></div>`;
 h+=`<div id="evq-list" style="margin-top:12px"><p style="color:#8598b4">Loading per-flow scores...</p></div>`;
 h+=`<div class="detail" style="margin-top:12px;color:#8598b4">Scored daily at 05:00 by run-eval &middot; datasets in .galileo/datasets &middot; <a href="https://app.galileo.ai/" target="_blank" style="color:#5de3ff;text-decoration:none">Galileo console &#x2197;</a></div>`;
 document.getElementById('modal-title').textContent='Eval Quality — Agent Decision Scoring';
@@ -4882,6 +4936,27 @@ for(const m of g)lh+=row(m,false);
 lh+=`<div class="detail" style="margin-top:8px;color:#5f708a">Preset Luna scorers, scored per run as it lands &middot; rolling ${esc(wl)} vs ${esc(bl)} baseline${s.console?` &middot; <a href="${s.console}" target="_blank" style="color:#5de3ff;text-decoration:none">authoritative view in Galileo &#x2197;</a>`:''}</div>`;
 el.innerHTML=lh;
 }).catch(()=>{const el=document.getElementById('evq-live');if(el)el.innerHTML='';});
+// Galileo Signals — AI-generated insights over the whole agent-runs stream.
+// Severity maps to the finding styles: error->HIGH, warning->MEDIUM, info->SAFE.
+fetch('/api/signals').then(r=>r.json()).then(s=>{
+const el=document.getElementById('evq-signals'); if(!el)return;
+const sig=(s.signals||[]);
+if(!sig.length){el.innerHTML='';return;}
+const sevOf=c=>c==='error'?'HIGH':(c==='warning'?'MEDIUM':'SAFE');
+const glyphOf=c=>c==='error'?'&#10008;':(c==='warning'?'&#9888;':'&#9432;');
+const warns=sig.filter(x=>x.category==='warning'||x.category==='error').length,infos=sig.length-warns;
+let h=`<div style="font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:8px">SIGNALS &middot; Galileo insights${warns?` &middot; ${warns} warning${warns===1?'':'s'}`:''}${infos?` &middot; ${infos} info`:''}</div>`;
+for(const g of sig){
+const sev=sevOf(g.category);
+h+=`<div class="modal-finding ${sev}" style="margin-bottom:8px">`+
+   `<div style="font-weight:600;color:#eaf2fb"><span class="sev ${sev}">${glyphOf(g.category)}</span> ${esc(g.title)}</div>`+
+   `<div style="color:#c4d4e8;font-size:12px;margin-top:4px">${esc(g.observation)}</div>`+
+   (g.suggested_action?`<div style="color:#8598b4;font-size:11px;margin-top:4px">&rarr; ${esc(g.suggested_action)}</div>`:'')+
+   `</div>`;
+}
+h+=`<div class="detail" style="margin-top:6px;color:#5f708a">AI-generated over the agent-runs log stream${s.console?` &middot; <a href="${s.console}" target="_blank" style="color:#5de3ff;text-decoration:none">view in Galileo &#x2197;</a>`:''}</div>`;
+el.innerHTML=h;
+}).catch(()=>{const el=document.getElementById('evq-signals');if(el)el.innerHTML='';});
 fetch('/api/eval').then(r=>r.json()).then(d=>{
 let fh='';
 const scored=(d.flows||[]).filter(f=>f.scores);
@@ -8911,6 +8986,17 @@ a{{color:#0a6aba}}
             except Exception as ex:
                 _log_exc('live-scores', ex)
                 data = {'requests': 0, 'quality': [], 'guardrail': [], 'updated': None, 'console': None}
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self._send_json(data)
+        elif self.path == '/api/signals':
+            # Galileo Signals (log-stream Insights) for the Eval panel.
+            try:
+                data = _galileo_signals()
+            except Exception as ex:
+                _log_exc('signals', ex)
+                data = {'signals': [], 'updated': None, 'console': None}
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
