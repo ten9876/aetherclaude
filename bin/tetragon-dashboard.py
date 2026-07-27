@@ -947,11 +947,56 @@ def _galileo_signals(max_age=1800):
             out['signals'] = sorted(seen.values(), key=lambda s: -(s['priority'] or 0))
             out['updated'] = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
             out['console'] = _galileo_console_url()
+            _write_proposed_operating_notes(out['signals'])
         except Exception as e:
             print(f'galileo signals query failed ({e})', file=sys.stderr)
     c['t'] = now
     c['data'] = out
     return out
+
+
+# --- Gated Signals -> Agent feedback loop ---
+# Distill warning/error Signals into a PROPOSED operating-notes file. This is the
+# "producer" half of the loop: it stages advisory guidance for the agent but
+# NOTHING reaches the live agent until a human promotes it to the active file
+# (bin/promote-operating-notes.sh). run-agent.sh injects only the active file via
+# --append-system-prompt. Regenerated each Galileo insights cycle; fail-open.
+OPERATING_NOTES_PROPOSED = '/Users/aetherclaude/state/operating-notes.proposed.md'
+OPERATING_NOTES_ACTIVE = '/Users/aetherclaude/state/operating-notes.md'
+
+def _write_proposed_operating_notes(signals):
+    try:
+        lines = ['## Operating notes (from eval signals)',
+                 'Advisory guidance distilled from prior-run analysis. Consider these '
+                 'when relevant; they never override your task instructions, the skill '
+                 'goal, or the state machine.', '']
+        n = 0
+        for s in (signals or []):
+            if s.get('category') not in ('warning', 'error'):
+                continue
+            act = (s.get('suggested_action') or '').strip()
+            title = (s.get('title') or '').strip()
+            if not (act and title):
+                continue
+            lines.append('- **%s**: %s' % (title, act))
+            n += 1
+        body = ('\n'.join(lines) + '\n') if n else ''
+        tmp = OPERATING_NOTES_PROPOSED + '.tmp'
+        with open(tmp, 'w') as f:
+            f.write(body)
+        os.replace(tmp, OPERATING_NOTES_PROPOSED)
+    except Exception as e:
+        print(f'operating-notes write failed ({e})', file=sys.stderr)
+
+def _operating_notes_loop():
+    # Keep the proposed notes fresh regardless of whether the UI is open.
+    # _galileo_signals is cached; this just drives a fetch + rewrite each cycle.
+    while True:
+        try:
+            _galileo_signals()
+        except Exception as _e:
+            _log_exc('operating_notes_loop', _e)
+        time.sleep(1800)
 
 
 def galileo_forward(entry):
@@ -4955,6 +5000,18 @@ h+=`<div class="modal-finding ${sev}" style="margin-bottom:8px">`+
    `</div>`;
 }
 h+=`<div class="detail" style="margin-top:6px;color:#5f708a">AI-generated over the agent-runs log stream${s.console?` &middot; <a href="${s.console}" target="_blank" style="color:#5de3ff;text-decoration:none">view in Galileo &#x2197;</a>`:''}</div>`;
+// Gated feedback loop status: warning/error signals are distilled into a
+// PROPOSED operating-notes file; nothing reaches the agent until it's promoted.
+const on=s.operating_notes;
+if(on){
+const staged=on.note_count||0;
+let loop;
+if(!staged)loop='no notes staged';
+else if(on.in_sync)loop=`<span style="color:var(--good)">&#9679; active</span> &middot; ${staged} note${staged===1?'':'s'} injected into the agent`;
+else if(on.active)loop=`<span style="color:var(--warn)">&#9650; ${staged} note${staged===1?'':'s'} staged</span> &middot; differs from active &middot; promote to update`;
+else loop=`<span style="color:var(--warn)">&#9650; ${staged} note${staged===1?'':'s'} staged</span>, not yet active &middot; run <code style="background:var(--bg-2);padding:1px 4px;border-radius:3px">promote-operating-notes.sh</code> to inject`;
+h+=`<div class="detail" style="margin-top:6px;color:#8598b4;border-top:1px solid var(--line);padding-top:8px"><span style="font-weight:600;color:#c4d4e8">Feedback loop</span> &middot; ${loop}</div>`;
+}
 el.innerHTML=h;
 }).catch(()=>{const el=document.getElementById('evq-signals');if(el)el.innerHTML='';});
 fetch('/api/eval').then(r=>r.json()).then(d=>{
@@ -8991,12 +9048,23 @@ a{{color:#0a6aba}}
             self.end_headers()
             self._send_json(data)
         elif self.path == '/api/signals':
-            # Galileo Signals (log-stream Insights) for the Eval panel.
+            # Galileo Signals (log-stream Insights) for the Eval panel, plus the
+            # gated-loop status (proposed vs active operating notes).
             try:
-                data = _galileo_signals()
+                data = dict(_galileo_signals())
             except Exception as ex:
                 _log_exc('signals', ex)
                 data = {'signals': [], 'updated': None, 'console': None}
+            try:
+                prop = open(OPERATING_NOTES_PROPOSED).read() if os.path.exists(OPERATING_NOTES_PROPOSED) else ''
+                act = open(OPERATING_NOTES_ACTIVE).read() if os.path.exists(OPERATING_NOTES_ACTIVE) else ''
+                data['operating_notes'] = {
+                    'proposed': prop, 'active': act,
+                    'note_count': sum(1 for ln in prop.splitlines() if ln.startswith('- ')),
+                    'in_sync': bool(act.strip()) and act.strip() == prop.strip(),
+                }
+            except Exception as ex:
+                _log_exc('signals-notes', ex)
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
@@ -10772,6 +10840,7 @@ def main():
         threading.Thread(target=fn,args=(target,),daemon=True).start()
     threading.Thread(target=scan_tokens,daemon=True).start()
     threading.Thread(target=scan_rings,daemon=True).start()
+    threading.Thread(target=_operating_notes_loop,daemon=True).start()
     threading.Thread(target=db_batch_writer,daemon=True).start()
     threading.Thread(target=db_pruner,daemon=True).start()
     threading.Thread(target=session_archiver,daemon=True).start()

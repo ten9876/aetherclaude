@@ -638,6 +638,19 @@ run_claude() {
     local max_attempts=3
     local attempt=1
 
+    # Gated Signals->agent feedback loop: inject ratified operating notes into
+    # the system prompt. The dashboard STAGES candidates (distilled from Galileo
+    # Signals) in operating-notes.proposed.md; only the human-promoted ACTIVE
+    # file here reaches the live agent (bin/promote-operating-notes.sh). Inert
+    # until that file exists, so shipping the loop never changes agent behavior
+    # on its own.
+    local -a op_notes_args=()
+    local op_notes_file="/Users/aetherclaude/state/operating-notes.md"
+    if [ -s "$op_notes_file" ]; then
+        op_notes_args=(--append-system-prompt "$(cat "$op_notes_file")")
+        log "operating-notes: injecting $(grep -c '^- ' "$op_notes_file" 2>/dev/null || echo 0) ratified note(s)"
+    fi
+
     while [ "$attempt" -le "$max_attempts" ]; do
         if [ "$attempt" -gt 1 ]; then
             local backoff=$((attempt * 5))
@@ -665,6 +678,7 @@ run_claude() {
                 --permission-mode bypassPermissions \
                 --allowedTools "$allowed_tools" \
                 --disallowedTools "Bash(sudo *),Bash(curl *),Bash(wget *),Bash(rm -rf *),Bash(ssh *),Bash(scp *),Bash(nc *),Bash(ncat *),Bash(dd *),Bash(mount *),Bash(chmod *),Bash(chown *),Bash(chsh *),Bash(passwd *),Bash(brew *),Bash(npm *),Bash(pip *),Bash(nft *),Bash(systemctl *),Bash(cat /Users/aetherclaude/.env),Bash(cat /Users/aetherclaude/.git-credentials),Bash(cat /Users/aetherclaude/.github-app-key.pem),Bash(echo \$*),Bash(env),Bash(printenv),Bash(set),WebFetch,WebSearch,Agent" \
+                ${op_notes_args[@]+"${op_notes_args[@]}"} \
                 --mcp-config /Users/aetherclaude/.claude/mcp-servers.json \
             >> "$logfile" 2>&1 &
         claude_pid=$!
