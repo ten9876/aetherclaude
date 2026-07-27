@@ -4089,7 +4089,7 @@ function renderExec(d){
     {lbl:'Issues &amp; PRs handled · 24h',val:ac.handled_24h==null?'—':ac.handled_24h,
      sub:deltaHtml(ac.handled_24h,ac.handled_prev_24h,true)+' vs prior day',
      spark:svgSparkline((ac.handled_7d||[]).map(x=>x.handled),110,30,7.3),click:'showRing9()'},
-    {lbl:'Antares vulns · 24h',val:(an.candidates_24h==null)?'—':an.candidates_24h,
+    {lbl:'Antares scans · 24h',val:(an.candidates_24h==null)?'—':an.candidates_24h,
      sub:deltaHtml(an.candidates_24h,an.candidates_prev_24h,false)+` · ${an.runs_24h||0} scan${an.runs_24h===1?'':'s'}`,
      spark:svgSparkline((an.cand_7d||[]).map(x=>x.n),110,30,5.6),click:'showAntares()'},
     {lbl:'Run success · 24h',val:evalPct,
