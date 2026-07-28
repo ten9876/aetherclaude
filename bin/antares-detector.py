@@ -61,8 +61,22 @@ DANGEROUS_ARGS = {
 
 SYSTEM_PROMPT = (
     "You are a security vulnerability localization agent. The repository is "
-    "mounted at the current directory. Explore it and identify the file(s) "
-    "that contain the reported vulnerability. Think step by step. Emit exactly "
+    "mounted at the current directory. Your job is to determine whether the "
+    "code involved in the context below contains an actual SECURITY "
+    "vulnerability — a memory-safety violation (overflow, out-of-bounds, "
+    "use-after-free, double-free), injection, path traversal, format-string "
+    "bug, unsafe deserialization, or unvalidated external input reaching a "
+    "dangerous operation.\n"
+    "\n"
+    "IMPORTANT: the context is usually a plain functional bug report with no "
+    "security relevance. You are NOT a bug localizer — do not submit the "
+    "files responsible for a functional bug unless the flaw is attacker-"
+    "relevant. A crash, glitch, or wrong output is only a vulnerability if "
+    "untrusted input can trigger it to corrupt memory, execute commands, "
+    "escape a path, or leak data. For most issues the correct and expected "
+    "answer is submit_no_vulnerability_found.\n"
+    "\n"
+    "Think step by step. Emit exactly "
     "one tool call per turn as <tool_call>{\"name\": \"terminal\", "
     "\"arguments\": {\"command\": \"...\"}}</tool_call>.\n"
     "\n"
@@ -81,12 +95,16 @@ SYSTEM_PROMPT = (
     "    * view code AROUND a match: grep -n -B5 -A20 \"pattern\" path/to/file\n"
     "    * read a file:              cat path/to/file  (or: nl path | head -n 60)\n"
     "\n"
-    "You have a limited command budget. Once you have located the vulnerable "
-    "file(s) — a grep hit at the suspect line is usually enough, you do not "
-    "need to read the whole file — call submit_vulnerable_files with their "
-    "paths and a short rationale. If, after exploring, there is no such "
-    "vulnerability, call submit_no_vulnerability_found. Do not exhaust the "
-    "budget re-reading files; submit as soon as you are reasonably confident."
+    "You have a limited command budget. Once you have located genuinely "
+    "vulnerable file(s) — a grep hit at the suspect line is usually enough, "
+    "you do not need to read the whole file — call submit_vulnerable_files "
+    "with their paths and a short rationale that NAMES the vulnerability "
+    "class (ideally the CWE, e.g. \"CWE-787 out-of-bounds write in the ADIF "
+    "parser\"). A rationale that only describes a functional bug is not "
+    "acceptable. If, after exploring, the code is merely buggy or you find "
+    "nothing attacker-relevant, call submit_no_vulnerability_found — that is "
+    "a successful outcome, not a failure. Do not exhaust the budget "
+    "re-reading files; submit as soon as you are reasonably confident."
 )
 
 _TOOLCALL_OPEN = '<tool_call>'
@@ -334,8 +352,18 @@ def localize(repo, cwe, context, max_commands):
     if cwe:
         user += f'Vulnerability class to locate: {cwe}\n'
     if context:
-        user += f'Reported issue:\n{context.strip()[:4000]}\n'
-    if not user:
+        user += ('Context (a user-filed issue/PR — often a plain functional '
+                 'bug with no security relevance; treat it as a hint about '
+                 'which subsystem to inspect, NOT as evidence that a '
+                 'vulnerability exists):\n' + context.strip()[:4000] + '\n')
+    if not cwe:
+        user += ('\nNo specific vulnerability class was reported. Use the '
+                 'security map above as your primary target list: inspect '
+                 'the dangerous-API sites in the subsystem the context '
+                 'touches. Submit files only for a genuine vulnerability; '
+                 'if the code is merely buggy, call '
+                 'submit_no_vulnerability_found.\n')
+    if not user.strip():
         user = 'Locate any security vulnerability in this repository.'
 
     messages = [{'role': 'system', 'content': SYSTEM_PROMPT},

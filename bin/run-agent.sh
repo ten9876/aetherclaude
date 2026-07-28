@@ -345,6 +345,20 @@ run_antares_detector() {
         local files_md rationale comment_body payload
         files_md=$(jq -r '(.candidates // [])[] | "- `" + . + "`"' "$out_issue" 2>/dev/null || echo "")
         rationale=$(jq -r '.rationale // ""' "$out_issue" 2>/dev/null || echo "")
+
+        # Structural gate: the public advisory comment only posts when the
+        # rationale names an actual vulnerability class. The model's system
+        # prompt requires this, but a 1B can drift — and "the flicker is
+        # caused by waterfall.cpp" must never go out labeled as a candidate
+        # vulnerability. Gated findings still land in the per-issue cache,
+        # the dashboard feed, and the action log — only the comment is held.
+        if ! printf '%s' "${cwe} ${rationale}" | grep -qiE \
+            'CWE-[0-9]+|overflow|out.of.bounds|use.after.free|double.free|injection|traversal|format.string|deserial|unvalidated|untrusted|memory.safety|race.condition'; then
+            record_action "$number" "detect" "gated" "success" "rationale names no vuln class: ${rationale:0:120}"
+            log "ANTARES: ${kind} #${number} gated — rationale names no vulnerability class (no comment)"
+            return 0
+        fi
+
         comment_body=$(printf '**Antares Detector — candidate vulnerable file(s)**%s\n\n%s\n\n%s\n\n<sub>Localized by Cisco Foundation AI **Antares-1B** running locally in the AetherClaude sandbox, seeded by the Cartographer security map. Advisory only — please verify before acting.</sub>' \
             "${cwe:+ (${cwe})}" "$files_md" "$rationale")
         payload=$(jq -n --arg b "$comment_body" '{body:$b}')
@@ -1223,9 +1237,10 @@ skill_explain_ci_failures() {
     prs=$(github_api GET "/repos/${REPO}/pulls?state=open&sort=updated&direction=desc&per_page=10" "$token")
 
     echo "$prs" | jq -c '.[]' | while read -r pr; do
-        local pr_number pr_author head_sha
+        local pr_number pr_author pr_title head_sha
         pr_number=$(echo "$pr" | jq -r '.number')
         pr_author=$(echo "$pr" | jq -r '.user.login')
+        pr_title=$(echo "$pr" | jq -r '.title')
         head_sha=$(echo "$pr" | jq -r '.head.sha')
 
         # Skip self bot PRs; maintainer PRs get CI-failure explanations
@@ -1287,6 +1302,35 @@ print('yes' if row else '')
         }
         record_action "$pr_number" "ci_explain" "N/A" "success" "Explained CI failure"
         log "Explained CI failure on PR #${pr_number}"
+
+        # Antares Detector on the failing PR head (advisory + fail-open) —
+        # a CI failure is sometimes the first visible symptom of a memory-
+        # safety bug, so the failing head is worth a localization pass.
+        # Skip when the PR-review flow already ran a detect for this PR
+        # (same cache key) to avoid duplicate advisory comments.
+        local already_detected
+        already_detected=$(ACTIONS_DB="$ACTIONS_DB" python3 -c "
+import sqlite3, os
+db=os.environ.get('ACTIONS_DB','/Users/aetherclaude/data/issue-actions.db')
+conn=sqlite3.connect(db)
+row=conn.execute('SELECT id FROM issue_actions WHERE issue_number=? AND action=?',(int('$pr_number'),'detect')).fetchone()
+conn.close()
+print('yes' if row else '')
+" 2>/dev/null)
+        if [ -z "$already_detected" ]; then
+            local ci_worktree="/tmp/aetherclaude/ci-${pr_number}"
+            rm -rf "$ci_worktree" 2>/dev/null
+            git -C "$WORKSPACE" worktree prune 2>/dev/null || true
+            if git -C "$WORKSPACE" fetch -q origin "pull/${pr_number}/head" 2>/dev/null \
+               && git -C "$WORKSPACE" worktree add -q --detach "$ci_worktree" FETCH_HEAD 2>/dev/null; then
+                run_antares_detector "$pr_number" "$pr_title" \
+                    "$(printf 'CI failure on this PR:\n%s' "$ci_context")" \
+                    "$token" "$ci_worktree" ci || true
+                git -C "$WORKSPACE" worktree remove "$ci_worktree" --force 2>/dev/null || true
+            else
+                log "PR #${pr_number}: could not check out head — Antares skipped"
+            fi
+        fi
     done
 }
 
