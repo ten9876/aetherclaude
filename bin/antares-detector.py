@@ -52,6 +52,7 @@ MAX_STAGES = 6                 # cap pipeline length
 MAX_OUTPUT_BYTES = 6000        # per-command stdout cap fed back to the model
 PER_CMD_TIMEOUT = 15           # seconds
 OVERALL_TIMEOUT = 240          # seconds — hard ceiling for the whole loop
+MIN_CLEAN_COMMANDS = 3         # clean verdict below this = 'clean_unverified'
 
 # Verbs whose own flags can hang — reject those specific args even though the
 # verb reads by default.
@@ -61,20 +62,32 @@ DANGEROUS_ARGS = {
 
 SYSTEM_PROMPT = (
     "You are a security vulnerability localization agent. The repository is "
-    "mounted at the current directory. Your job is to determine whether the "
-    "code involved in the context below contains an actual SECURITY "
-    "vulnerability — a memory-safety violation (overflow, out-of-bounds, "
-    "use-after-free, double-free), injection, path traversal, format-string "
-    "bug, unsafe deserialization, or unvalidated external input reaching a "
-    "dangerous operation.\n"
+    "mounted at the current directory. Determine whether the code involved "
+    "in the context below contains an actual SECURITY vulnerability — a "
+    "memory-safety violation (overflow, out-of-bounds, use-after-free, "
+    "double-free), injection, path traversal, format-string bug, unsafe "
+    "deserialization, or unvalidated external input reaching a dangerous "
+    "operation. Neither verdict is preferred: the evidence decides.\n"
     "\n"
-    "IMPORTANT: the context is usually a plain functional bug report with no "
-    "security relevance. You are NOT a bug localizer — do not submit the "
-    "files responsible for a functional bug unless the flaw is attacker-"
-    "relevant. A crash, glitch, or wrong output is only a vulnerability if "
-    "untrusted input can trigger it to corrupt memory, execute commands, "
-    "escape a path, or leak data. For most issues the correct and expected "
-    "answer is submit_no_vulnerability_found.\n"
+    "What counts: a crash, glitch, or wrong output is a vulnerability only "
+    "if untrusted input can trigger it to corrupt memory, execute commands, "
+    "escape a path, or leak data. A functional bug with no attacker-"
+    "relevant consequence is NOT a vulnerability, even if the context "
+    "describes it as serious. You are not a bug localizer.\n"
+    "\n"
+    "Procedure:\n"
+    "1. Identify from the context which subsystem/files are involved.\n"
+    "2. Inspect the dangerous-API sites the security map lists for that "
+    "area — actually read the code around them; do not judge from file or "
+    "function names alone.\n"
+    "3. Submit the verdict the evidence supports:\n"
+    "   - submit_vulnerable_files when untrusted input can reach the flaw. "
+    "The rationale MUST name the vulnerability class, ideally the CWE "
+    "(e.g. \"CWE-787 out-of-bounds write in the ADIF parser\"). A rationale "
+    "that only describes a functional bug is not acceptable.\n"
+    "   - submit_no_vulnerability_found when you have inspected the "
+    "relevant sites and found them sound.\n"
+    "Never submit either verdict without having examined code first.\n"
     "\n"
     "Think step by step. Emit exactly "
     "one tool call per turn as <tool_call>{\"name\": \"terminal\", "
@@ -95,16 +108,10 @@ SYSTEM_PROMPT = (
     "    * view code AROUND a match: grep -n -B5 -A20 \"pattern\" path/to/file\n"
     "    * read a file:              cat path/to/file  (or: nl path | head -n 60)\n"
     "\n"
-    "You have a limited command budget. Once you have located genuinely "
-    "vulnerable file(s) — a grep hit at the suspect line is usually enough, "
-    "you do not need to read the whole file — call submit_vulnerable_files "
-    "with their paths and a short rationale that NAMES the vulnerability "
-    "class (ideally the CWE, e.g. \"CWE-787 out-of-bounds write in the ADIF "
-    "parser\"). A rationale that only describes a functional bug is not "
-    "acceptable. If, after exploring, the code is merely buggy or you find "
-    "nothing attacker-relevant, call submit_no_vulnerability_found — that is "
-    "a successful outcome, not a failure. Do not exhaust the budget "
-    "re-reading files; submit as soon as you are reasonably confident."
+    "You have a limited command budget. A grep hit plus reading the lines "
+    "around it is usually enough evidence — you do not need to read whole "
+    "files. Do not exhaust the budget re-reading the same files; submit as "
+    "soon as the evidence supports a verdict."
 )
 
 _TOOLCALL_OPEN = '<tool_call>'
@@ -352,17 +359,15 @@ def localize(repo, cwe, context, max_commands):
     if cwe:
         user += f'Vulnerability class to locate: {cwe}\n'
     if context:
-        user += ('Context (a user-filed issue/PR — often a plain functional '
-                 'bug with no security relevance; treat it as a hint about '
-                 'which subsystem to inspect, NOT as evidence that a '
-                 'vulnerability exists):\n' + context.strip()[:4000] + '\n')
+        user += ('Context (a user-filed issue/PR — it may or may not have '
+                 'security relevance; treat it as a pointer to the subsystem '
+                 'to inspect, not as a claim in either direction):\n'
+                 + context.strip()[:4000] + '\n')
     if not cwe:
         user += ('\nNo specific vulnerability class was reported. Use the '
                  'security map above as your primary target list: inspect '
                  'the dangerous-API sites in the subsystem the context '
-                 'touches. Submit files only for a genuine vulnerability; '
-                 'if the code is merely buggy, call '
-                 'submit_no_vulnerability_found.\n')
+                 'touches, then submit the verdict the evidence supports.\n')
     if not user.strip():
         user = 'Locate any security vulnerability in this repository.'
 
@@ -389,7 +394,16 @@ def localize(repo, cwe, context, max_commands):
             result['rationale'] = args.get('rationale') or args.get('reason') or ''
             break
         if name == 'submit_no_vulnerability_found':
-            result['verdict'] = 'clean'
+            # A clean verdict must be earned. Fewer than MIN_CLEAN_COMMANDS
+            # executed commands means the model judged without actually
+            # inspecting code — record it distinctly so the action log /
+            # dashboard can track lazy-cleans the same way detect/gated
+            # tracks over-eager submits. Consumers treat both as clean
+            # (advisory either way); this is a quality signal, not a gate.
+            if result['commands_used'] < MIN_CLEAN_COMMANDS:
+                result['verdict'] = 'clean_unverified'
+            else:
+                result['verdict'] = 'clean'
             break
         if name == 'terminal':
             no_call = 0
