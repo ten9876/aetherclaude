@@ -1886,6 +1886,10 @@ def scan_rings():
                                 if issue:
                                     dbc.execute('DELETE FROM detector_findings WHERE issue_number=?', (issue,))
                                 if cands:
+                                    # Per-file reasons (detector >= 2026-07-29)
+                                    # win over the run-level rationale so each
+                                    # row explains ITS file, not the run.
+                                    reasons = ant.get('candidate_reasons') or {}
                                     seen, rank = set(), 0
                                     for fp in cands:
                                         if not fp or fp in seen:
@@ -1895,7 +1899,8 @@ def scan_rings():
                                             'INSERT INTO detector_findings (issue_number, cwe, verdict, file_path, rank, rationale, commands_used, trace_id) '
                                             'VALUES (?,?,?,?,?,?,?,?)',
                                             (issue, ant.get('cwe', ''), ant.get('verdict', ''), fp, rank,
-                                             ant.get('rationale', ''), ant.get('commands_used', 0),
+                                             reasons.get(fp) or ant.get('rationale', ''),
+                                             ant.get('commands_used', 0),
                                              ant.get('trace_id', '')))
                                 else:
                                     # record clean/no-candidate runs too (file_path NULL)
@@ -4723,11 +4728,20 @@ fh+=`<div class="modal-finding ${sc}" style="margin-bottom:8px">`;
 fh+=`<span class="sev ${sc}">${hasCand?'CANDIDATES':antVerdictLabel(r0.verdict)}</span> `;
 fh+=`<strong>${r0.issue?'#'+esc(String(r0.issue)):'(no issue)'}</strong>${r0.cwe?` · ${esc(r0.cwe)}`:''}`;
 fh+=`<span style="color:#5f708a;font-size:10px;margin-left:6px">${esc(ts)} · ${r0.commands_used||0} cmds</span>`;
-if(hasCand){fh+='<div style="margin-top:4px">';
-for(const f of rows){if(!f.file)continue;
-fh+=`<div class="detail" style="margin-top:2px"><span style="color:#e85578;font-weight:600">${f.rank}.</span> <code>${esc(f.file)}</code></div>`;}
+if(hasCand){
+// One shared rationale (old rows duplicated the run-level text onto every
+// file) renders once below the list; distinct per-file reasons render
+// under their own file.
+const fr=rows.filter(x=>x.file);
+const uniq=[...new Set(fr.map(x=>x.rationale||''))];
+const shared=(uniq.length===1)?uniq[0]:null;
+fh+='<div style="margin-top:4px">';
+for(const f of fr){
+fh+=`<div class="detail" style="margin-top:2px"><span style="color:#e85578;font-weight:600">${f.rank}.</span> <code>${esc(f.file)}</code></div>`;
+if(!shared&&f.rationale)fh+=`<div class="detail" style="margin:1px 0 4px 18px;color:#c4d4e8">${esc(f.rationale)}</div>`;}
 fh+='</div>';
-if(r0.rationale)fh+=`<div class="detail" style="margin-top:4px;color:#c4d4e8">${esc(r0.rationale)}</div>`;}
+if(shared)fh+=`<div class="detail" style="margin-top:4px;color:#c4d4e8">${esc(shared)}</div>`;
+else if(!fr.some(x=>x.rationale)&&r0.rationale)fh+=`<div class="detail" style="margin-top:4px;color:#c4d4e8">${esc(r0.rationale)}</div>`;}
 fh+='</div>';}
 document.getElementById('antares-list').innerHTML=fh;
 }).catch(()=>{document.getElementById('antares-list').innerHTML='<p style="color:#604040">Failed to load detector findings.</p>'})}

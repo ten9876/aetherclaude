@@ -84,7 +84,12 @@ SYSTEM_PROMPT = (
     "   - submit_vulnerable_files when untrusted input can reach the flaw. "
     "The rationale MUST name the vulnerability class, ideally the CWE "
     "(e.g. \"CWE-787 out-of-bounds write in the ADIF parser\"). A rationale "
-    "that only describes a functional bug is not acceptable.\n"
+    "that only describes a functional bug is not acceptable. Give a reason "
+    "PER FILE, citing what you saw: "
+    "{\"name\": \"submit_vulnerable_files\", \"arguments\": {\"files\": "
+    "[{\"path\": \"src/x.cpp\", \"reason\": \"CWE-787: memcpy at line 214 "
+    "writes len bytes from the network packet into a 64-byte buffer with "
+    "no bounds check\"}]}}\n"
     "   - submit_no_vulnerability_found when you have inspected the "
     "relevant sites and found them sound.\n"
     "Never submit either verdict without having examined code first.\n"
@@ -307,28 +312,74 @@ def parse_tool_call(content):
     return obj.get('name'), args
 
 
-def _candidate_files(args):
-    """Collect candidate file paths from submit_vulnerable_files arguments.
-    The model is inconsistent about the key name — 'files', 'file_paths',
-    'paths', and even 'vulnerable_files[]' (a literal '[]' suffix) all show up —
-    so we accept any key that mentions 'file' or 'path', normalizing the '[]'
-    suffix, and dedupe. Values may be a string or a list of strings."""
-    out, seen = [], set()
+_REASON_KEY_HINTS = ('rational', 'reason', 'why', 'explan', 'justif', 'desc')
 
-    def add(v):
-        vals = [v] if isinstance(v, str) else (
-            [str(x) for x in v] if isinstance(v, list) else [])
-        for x in vals:
-            x = x.strip()
-            if x and x not in seen:
-                seen.add(x)
-                out.append(x)
+
+def _candidate_files(args):
+    """Collect candidate file paths (and per-file reasons, when given) from
+    submit_vulnerable_files arguments. The model is inconsistent about the
+    key name — 'files', 'file_paths', 'paths', and even 'vulnerable_files[]'
+    (a literal '[]' suffix) all show up — so we accept any key that mentions
+    'file' or 'path', normalizing the '[]' suffix, and dedupe. Values may be
+    a string, a list of strings, or a list of {path, reason} dicts (the
+    shape the prompt now asks for).
+
+    Returns (paths, reasons) — paths is the ordered dedup list; reasons maps
+    path -> per-file reason for entries that carried one."""
+    out, seen, reasons = [], set(), {}
+
+    def add(x, reason=''):
+        x = x.strip()
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+            if reason:
+                reasons[x] = reason.strip()
+
+    def add_value(v):
+        if isinstance(v, str):
+            add(v)
+        elif isinstance(v, dict):
+            path = ''
+            reason = ''
+            for dk, dv in v.items():
+                dkl = dk.rstrip('[]').lower()
+                if ('file' in dkl or 'path' in dkl) and isinstance(dv, str):
+                    path = dv
+                elif any(t in dkl for t in _REASON_KEY_HINTS) and isinstance(dv, str):
+                    reason = dv
+            if path:
+                add(path, reason)
+        elif isinstance(v, list):
+            for item in v:
+                add_value(item)
 
     for key, v in args.items():
         k = key.rstrip('[]').lower()
         if 'file' in k or 'path' in k:
-            add(v)
-    return out
+            add_value(v)
+    return out, reasons
+
+
+def _extract_rationale(args, content):
+    """Pull the run-level rationale out of submit_vulnerable_files args,
+    accepting the same key sloppiness _candidate_files tolerates. When the
+    model put no rationale in the call at all, fall back to its own prose
+    from the submitting turn — the reasoning immediately before the tool
+    call almost always says why — so the dashboard/comment never shows a
+    bare filename with no explanation."""
+    for key, v in args.items():
+        k = key.rstrip('[]').lower()
+        if any(t in k for t in _REASON_KEY_HINTS) and isinstance(v, str) and v.strip():
+            return v.strip()
+    # Fallback: prose before the tool call, after any chain-of-thought.
+    prose = content.split(_TOOLCALL_OPEN)[0]
+    if '</think>' in prose:
+        prose = prose.rsplit('</think>', 1)[1]
+    prose = ' '.join(prose.split()).strip()
+    if len(prose) > 400:
+        prose = prose[:397] + '…'
+    return prose
 
 
 # --------------------------------------------------------------------------
@@ -390,8 +441,10 @@ def localize(repo, cwe, context, max_commands):
 
         if name == 'submit_vulnerable_files':
             result['verdict'] = 'vulnerable'
-            result['candidates'] = _candidate_files(args)
-            result['rationale'] = args.get('rationale') or args.get('reason') or ''
+            paths, per_file = _candidate_files(args)
+            result['candidates'] = paths
+            result['candidate_reasons'] = per_file
+            result['rationale'] = _extract_rationale(args, content)
             break
         if name == 'submit_no_vulnerability_found':
             # A clean verdict must be earned. Fewer than MIN_CLEAN_COMMANDS

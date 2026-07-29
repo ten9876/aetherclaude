@@ -343,7 +343,7 @@ run_antares_detector() {
 
     if [ "$verdict" = "vulnerable" ] && [ -n "$cands" ]; then
         local files_md rationale comment_body payload
-        files_md=$(jq -r '(.candidates // [])[] | "- `" + . + "`"' "$out_issue" 2>/dev/null || echo "")
+        files_md=$(jq -r '. as $r | ($r.candidates // [])[] | "- `" + . + "`" + ((($r.candidate_reasons // {})[.] // "") | if . == "" then "" else " — " + . end)' "$out_issue" 2>/dev/null || echo "")
         rationale=$(jq -r '.rationale // ""' "$out_issue" 2>/dev/null || echo "")
 
         # Structural gate: the public advisory comment only posts when the
