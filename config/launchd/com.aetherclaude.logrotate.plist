@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aetherclaude.logrotate</string>
+
+  <!--
+    Nightly rotation of the service logs in /Users/aetherclaude/logs and
+    /Users/Shared/aetherclaude/logs.
+
+    Several plists previously documented rotation as "rely on macOS's
+    newsyslog" — but newsyslog only rotates paths with an explicit
+    /etc/newsyslog.d entry, and none was ever shipped. The result was
+    unbounded growth: tinyproxy-access.log hit 2.0 GB and the logs tree
+    2.3 GB with the Data volume at 81%.
+
+    rotate-logs.sh copy-truncates rather than renaming, because launchd
+    holds the fd for every StandardOutPath and tinyproxy holds its own
+    LogFile — a rename would leave both writing to the unlinked inode.
+    See the script header for the full rationale.
+
+    03:30 local, half an hour ahead of codegraph-refresh (03:00) has
+    finished its ~3 min run and well clear of the antares sweep (02:00).
+    Runs as root: the target files span nobody / aetherclaude / root.
+  -->
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/Shared/aetherclaude/bin/rotate-logs.sh</string>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>/Users/Shared/aetherclaude/logs/logrotate.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/Shared/aetherclaude/logs/logrotate.log</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+
+  <!--
+    Deliberately no RunAtLoad. Rotation is never urgent, and firing it at
+    boot would put it in the same boot-time scramble that made the orphaned
+    batch-triage job fail against a not-yet-ready network.
+  -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+</dict>
+</plist>

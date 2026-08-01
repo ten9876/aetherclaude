@@ -22,22 +22,27 @@
                  payloads aren't useful for "what got blocked")
       - -l    = line-buffered output so the log updates immediately
 
-    Rotation: rely on macOS's newsyslog (default config rotates large
-    logs); the file is line-buffered text so a tail -f works.
+    Rotation: com.aetherclaude.logrotate, nightly at 03:30. (This used to
+    say "rely on macOS's newsyslog" — that was wrong. newsyslog only
+    rotates paths with an explicit /etc/newsyslog.d entry and we never
+    shipped one, so this log grew unbounded.) The file is line-buffered
+    text so a tail -f works.
 
     Only root can read pflog0, so UserName is implicit-root.
+
+    Wait for pflog0 before exec'ing tcpdump: at boot this job races
+    com.aetherclaude.pf-enable, and tcpdump against a not-yet-created
+    interface dies instantly with "(No such device exists)". KeepAlive
+    did eventually recover it, but only after filling pf-blocked.err with
+    1.2 MB of that one message. Poll for the interface for up to 60s
+    instead, then exec so tcpdump keeps this job's PID.
   -->
 
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/sbin/tcpdump</string>
-    <string>-i</string>
-    <string>pflog0</string>
-    <string>-nn</string>
-    <string>-tttt</string>
-    <string>-s</string>
-    <string>200</string>
-    <string>-l</string>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>for _ in $(seq 1 60); do /sbin/ifconfig pflog0 &gt;/dev/null 2&gt;&amp;1 &amp;&amp; break; sleep 1; done; exec /usr/sbin/tcpdump -i pflog0 -nn -tttt -s 200 -l</string>
   </array>
 
   <key>StandardOutPath</key>
