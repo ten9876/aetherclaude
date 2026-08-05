@@ -44,6 +44,16 @@ for f in "$REPO_DIR"/skills/*.md; do
     fi
 done
 
+echo "==> Syncing Claude tool deny list into the agent's settings.json"
+# Merges permissions.deny only; every other key in settings.json is
+# hand-managed and left alone. Idempotent, so this is a no-op on most
+# deploys. Never fatal: a broken deny sync must not block shipping code,
+# and run-agent.sh still passes --disallowedTools independently.
+sudo "$REPO_DIR/bin/sync-claude-settings.py" \
+    --settings /Users/aetherclaude/.claude/settings.json \
+    --deny-list "$REPO_DIR/config/claude/deny-tools.json" \
+    | sed 's/^/   /' || echo "   WARNING: deny-list sync failed (continuing)"
+
 echo "==> Syncing pf anchor"
 if ! sudo diff -q "$REPO_DIR/config/pf/com.aetherclaude" /etc/pf.anchors/com.aetherclaude >/dev/null 2>&1; then
     sudo cp "$REPO_DIR/config/pf/com.aetherclaude" /etc/pf.anchors/com.aetherclaude
