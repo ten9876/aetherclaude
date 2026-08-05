@@ -1479,9 +1479,9 @@ def compute_posture():
                 'unsafe' in str(rs.get('r6_skill_status', '')).lower()
     if threats > 0 or skill_bad:
         st('r6', 'red', f'{threats} MCP threat(s)' if threats else 'skill scanner findings')
-    elif w['guard_blocks_24h'] > 0 or rs.get('r6_findings', 0) > 0:
+    elif w['guard_blocks_24h'] > 0 or rs.get('r6_findings_24h', 0) > 0:
         st('r6', 'yellow', f"{w['guard_blocks_24h']} guard block(s) 24h, "
-                           f"{rs.get('r6_findings', 0)} finding(s)")
+                           f"{rs.get('r6_findings_24h', 0)} finding(s) 24h")
     else:
         st('r6', 'green', 'scanners clean')
 
@@ -1913,16 +1913,37 @@ def scan_rings():
                             except: pass
                 except: pass
 
-                # Ring 6: CodeGuard — count files scanned and findings from validation log
+                # Ring 6: CodeGuard — count files scanned and findings from validation log.
+                #
+                # r6_findings stays a lifetime total because the scanner tile
+                # reports it as one ("N files · M findings"). compute_posture
+                # needs a 24h figure instead: validation.log is append-only and
+                # never truncated, so scoring the lifetime count meant the ring
+                # could never heal — 169 findings spanning Apr 14 to Jul 23, of
+                # which exactly one ever blocked, pinned it yellow forever. That
+                # contradicts this module's stated contract that every status is
+                # "re-derived every cycle from 24h windows".
                 try:
-                    scanned = findings = blocked = 0
-                    with open(VALIDATION_LOG) as vf:
-                        for vline in vf:
-                            if 'Running CodeGuard' in vline: scanned += 1
-                            if 'CodeGuard found' in vline: findings += 1
-                            if 'BLOCKED: CodeGuard' in vline: blocked += 1
+                    scanned = findings = blocked = findings_24h = 0
+                    cutoff = datetime.now() - timedelta(days=1)
+                    for vline in open(VALIDATION_LOG):
+                        if 'Running CodeGuard' in vline: scanned += 1
+                        if 'BLOCKED: CodeGuard' in vline: blocked += 1
+                        if 'CodeGuard found' in vline:
+                            findings += 1
+                            # Lines lead with an ISO stamp, with or without a
+                            # trailing Z: "2026-04-14T12:32:22 VALIDATE: ...".
+                            # Undateable lines are ignored rather than counted,
+                            # so a format drift can't silently re-pin the ring.
+                            try:
+                                stamp = vline.split(None, 1)[0].rstrip('Z')
+                                if datetime.fromisoformat(stamp) >= cutoff:
+                                    findings_24h += 1
+                            except Exception:
+                                pass
                     ring_stats['r6_files_scanned'] = scanned
                     ring_stats['r6_findings'] = findings
+                    ring_stats['r6_findings_24h'] = findings_24h
                     ring_stats['r6_blocked'] = blocked
                 except: pass
 
