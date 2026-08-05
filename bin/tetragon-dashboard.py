@@ -2683,13 +2683,22 @@ def tail_mcp_audit(logfile):
                     'policy': '', 'is_agent': True, 'source': 'mcp'})
             reads['n'] = 0
         reads['last'] = time.time()
-    with open(logfile) as f:
-        f.seek(0, 2)
+    # Not a `with`: _tail_rotation_check may swap in a fresh fd on rotation,
+    # and rebinding the name out from under a context manager reads worse
+    # than owning the lifetime here. The thread runs for process life.
+    f = open(logfile)
+    f.seek(0, 2)
+    _inode = os.fstat(f.fileno()).st_ino
+    try:
         while True:
             line = f.readline()
             if not line:
                 if reads['n'] and time.time() - reads['last'] >= 20:
                     flush_reads()
+                # mcp-audit.log is a rotation target too (139 MB at the time
+                # logrotate landed), so this follower needs the same re-anchor
+                # as tail_tinyproxy_log or Ring 7 goes quiet after 03:30.
+                f, _inode = _tail_rotation_check(f, logfile, _inode)
                 time.sleep(1); continue
             try:
                 d = json.loads(line.strip())
@@ -2714,6 +2723,43 @@ def tail_mcp_audit(logfile):
                 if blocked:
                     stats['alerts'].append({'time': mcp_ts, 'msg': f"MCP guardrail: {text}", 'severity': 'high'})
                 append_event(entry)
+    finally:
+        try: f.close()
+        except Exception: pass
+
+
+def _tail_rotation_check(f, path, inode):
+    """Re-anchor a follower whose log just rotated. Returns (file, inode).
+
+    Every tail_* here follows by holding one fd and seeking to EOF. That
+    silently dies the moment the file rotates: the offset stays where it
+    was, past the new EOF, and readline() returns '' forever with no error
+    to notice.
+
+    That is not hypothetical. com.aetherclaude.logrotate copy-truncates
+    tinyproxy-access.log nightly at 03:30, and the first run stranded this
+    follower ~2 GB past EOF — proxy denials kept happening and kept being
+    written to the log, but Ring 2 recorded none of them for nine hours,
+    until an unrelated deploy restarted the dashboard. Security telemetry
+    that fails silently is worse than telemetry that fails loudly.
+
+    Handles both rotation shapes: copy-truncate leaves the inode alone and
+    shrinks the file (size < our offset), so rewind; a rename-and-recreate
+    swaps the inode, so reopen.
+    """
+    try:
+        st = os.stat(path)
+        if st.st_ino != inode:
+            try: f.close()
+            except Exception: pass
+            f = open(path, 'r')
+            return f, os.fstat(f.fileno()).st_ino
+        if st.st_size < f.tell():
+            f.seek(0)
+    except OSError:
+        pass  # log briefly absent mid-rotation; retry on the next pass
+    return f, inode
+
 
 def tail_tinyproxy_log():
     """Watch tinyproxy log for proxy connections and denials."""
@@ -2724,9 +2770,11 @@ def tail_tinyproxy_log():
         _time.sleep(5)
     f = open(logfile, 'r')
     f.seek(0, 2)  # seek to end
+    _inode = os.fstat(f.fileno()).st_ino
     while True:
         line = f.readline()
         if not line:
+            f, _inode = _tail_rotation_check(f, logfile, _inode)
             _time.sleep(1)
             continue
         line = line.strip()
