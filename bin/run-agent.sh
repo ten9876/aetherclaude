@@ -2189,8 +2189,20 @@ work that is already merged."
 
             local skill_template
             skill_template=$(load_skill "implement-fix")
+            # Shift-left CodeGuard: inject the always-apply secure-by-default rules
+            # (no hardcoded credentials, modern cryptography) so the fixer writes
+            # secure C++ from the start — not just gets scanned after — and point it
+            # at the language-scoped rule set to consult on demand. The always-apply
+            # pair is vendored from cosai-oasis/project-codeguard 1.4.0 (Apache-2.0);
+            # the full 109-rule set is the Project CodeGuard plugin checkout. Fail-open.
+            local codeguard_rules=""
+            local cg_dir="/Users/Shared/aetherclaude/config/codeguard/rules"
+            local cg_full="/Users/aetherclaude/.claude/plugins/marketplaces/project-codeguard/sources/rules"
+            if [ -f "$cg_dir/codeguard-1-hardcoded-credentials.md" ]; then
+                codeguard_rules=$(printf 'Cisco **CodeGuard** secure-by-default rules are ACTIVE — apply them while writing the fix; do not introduce patterns they forbid. These ALWAYS apply:\n\n%s\n\n%s\n\nFor the C/C++ you touch, also read and follow the matching rules under `%s/core/` before writing: codeguard-0-safe-c-functions.md, codeguard-0-input-validation-injection.md, codeguard-0-authentication-mfa.md, codeguard-0-authorization-access-control.md, codeguard-0-file-handling-and-uploads.md, codeguard-0-logging.md, codeguard-0-data-storage.md, codeguard-1-digital-certificates.md. When you apply a rule, note it briefly in the PR body (e.g. "CodeGuard: parameterized query per input-validation-injection").' "$(cat "$cg_dir/codeguard-1-hardcoded-credentials.md")" "$(cat "$cg_dir/codeguard-1-crypto-algorithms.md")" "$cg_full")
+            fi
             local prompt
-            prompt=$(render_skill "$skill_template" "ISSUE_NUMBER" "$number" "ISSUE_TITLE" "$title" "ISSUE_BODY" "$issue_body" "ISSUE_COMMENTS" "$issue_comments" "ATTACHMENTS" "$attachments_section" "RETRY_CONTEXT" "$retry_context" "REPO_PACK" "$repo_pack" "DETECTOR_CANDIDATES" "$detector_candidates" "BRANCH" "$branch" "WORKSPACE" "$WORKTREE")
+            prompt=$(render_skill "$skill_template" "ISSUE_NUMBER" "$number" "ISSUE_TITLE" "$title" "ISSUE_BODY" "$issue_body" "ISSUE_COMMENTS" "$issue_comments" "ATTACHMENTS" "$attachments_section" "RETRY_CONTEXT" "$retry_context" "REPO_PACK" "$repo_pack" "DETECTOR_CANDIDATES" "$detector_candidates" "CODEGUARD_RULES" "$codeguard_rules" "BRANCH" "$branch" "WORKSPACE" "$WORKTREE")
 
             record_action "$number" "implement" "implement" "started"
             log "Running Claude Code for issue #${number}"

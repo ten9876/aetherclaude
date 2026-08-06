@@ -21,6 +21,8 @@ ${RETRY_CONTEXT}
 ${REPO_PACK}
 ${DETECTOR_CANDIDATES}
 
+${CODEGUARD_RULES}
+
 Your task for this pass (IMPLEMENT):
 1. **Read the project constitution first.** If `.specify/memory/constitution.md`
    exists in the working directory (`${WORKSPACE}/.specify/memory/constitution.md`),
