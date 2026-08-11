@@ -137,22 +137,16 @@ done
 
 # --- Check 4b: literal secret values from .env ---
 #
-# The patterns above only catch credentials whose vendor shape someone
-# enumerated. Every secret this host actually holds — WEBHOOK_SECRET,
-# VIRUSTOTAL_API_KEY, DEFENSECLAW_DASHBOARD_BEARER, GALILEO_API_KEY — is an
-# opaque string matching none of them, so a diff carrying one sailed through
-# this gate. The MCP server gained value-based scanning for comments; this is
-# the same check on the push path, which matters more because writing files
-# and pushing them is the agent's actual job.
+# The patterns above match known vendor credential shapes. This check also
+# blocks the literal values loaded from .env, which are opaque strings that no
+# such pattern would recognise. Mirrors validateContent in the MCP server, so
+# the comment path and the push path enforce the same rule.
 #
-# This is containment at the exit rather than at the read: the agent's uid can
-# still open .env by some means (head, tail, git diff --no-index, whatever verb
-# the allowlist hasn't thought of), so the durable guarantee is that the value
-# cannot leave in a diff regardless of how it was obtained.
+# Containment at the exit: whatever a diff was assembled from, a configured
+# secret value cannot leave in it.
 #
-# Secret values never reach argv — `ps` is world-readable — so patterns are
-# passed to grep over a pipe via process substitution. Only the variable NAME
-# is ever logged.
+# Values never reach argv — `ps` is world-readable — so patterns are passed to
+# grep over a pipe via process substitution. Only the variable NAME is logged.
 ENV_FILE=/Users/aetherclaude/.env
 if [ -r "$ENV_FILE" ]; then
     ADDED_LINES=$(printf '%s' "$DIFF_CONTENT" | grep '^+' || true)

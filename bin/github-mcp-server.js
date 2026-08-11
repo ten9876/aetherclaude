@@ -31,21 +31,17 @@ function checkRateLimit(key, max) {
 
 const CRED_RE = [/ghp_[A-Za-z0-9]{36}/, /ghs_[A-Za-z0-9]{36}/, /github_pat_[A-Za-z0-9_]{80,}/, /sk-ant-[A-Za-z0-9\-]{40,}/, /-----BEGIN.*PRIVATE KEY-----/, /AKIA[A-Z0-9]{16}/];
 
-// Vendor-format patterns above only catch secrets whose shape someone
-// thought to enumerate. Every secret this agent actually holds in .env —
-// WEBHOOK_SECRET, VIRUSTOTAL_API_KEY, DEFENSECLAW_DASHBOARD_BEARER,
-// GALILEO_API_KEY — is an opaque string matching none of them, so a post
-// containing one would have sailed straight out to a public issue.
+// The patterns above match known vendor credential shapes. Configured values
+// are opaque strings that no such pattern recognises, so scan for the literal
+// values too. This server already loads its own configuration for JWT
+// signing, and value matching needs no per-vendor pattern: whatever is added
+// to that file next is covered the moment it lands.
 //
-// So scan for the literal values too. This server already reads .env for
-// its own JWT signing, and value matching needs no per-vendor pattern:
-// whatever lands in .env next is covered the moment it is added.
-//
-// Only names that look like credentials are treated as secret. .env also
-// holds GALILEO_PROJECT ("aetherclaude") and GALILEO_CONSOLE_URL, which
-// are legitimate words in agent prose — blocking on those would wedge
-// every post. The length floor guards against a short or placeholder
-// value turning into a substring that matches everything.
+// Only credential-looking names qualify. The file also holds ordinary
+// settings — a project slug, a console URL — that appear legitimately in
+// agent prose, and blocking on those would wedge every post. The length floor
+// guards against a short or placeholder value becoming a substring that
+// matches everything.
 const SECRET_NAME_RE = /(SECRET|TOKEN|KEY|BEARER|PASSWORD|PASSWD|CREDENTIAL|PRIVATE)/;
 const MIN_SECRET_LEN = 8;
 let _secretCache = { at: 0, values: [] };

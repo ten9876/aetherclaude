@@ -581,13 +581,10 @@ CLAUDE_HARD_CEILING="${CLAUDE_HARD_CEILING:-${CLAUDE_TIMEOUT:-3600}}"  # 60 min 
 
 # Default tool surface — used by all skills that legitimately write code
 # (triage, continue-triage, implement-fix, review-pr, explain-ci).
-# No Bash(head *) / Bash(tail *): both read the contents of any path this uid
-# can open, which includes .env, .credentials.json and the app private key —
-# all mode 0600 and owned by the agent's own uid. The Read tool does the same
-# job for the checkout and, unlike a raw shell verb, is bound by the Read(...)
-# deny rules below. Removing them narrows the read surface; it does not close
-# it (see the git-diff note in the deny list), which is why the real guarantee
-# lives in validate-diff.sh's value scan on the way out.
+# File reads go through Read/Glob/Grep, not raw shell verbs: the Read tool
+# covers the same ground for a checkout and is bound by the Read(...) deny
+# rules, so file access stays governed by one set of path rules rather than by
+# which command happened to be allowed.
 CLAUDE_ALLOWED_TOOLS_DEFAULT="Read,Glob,Grep,Edit,Write,Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git diff *),Bash(git log *),Bash(git status),Bash(git checkout *),Bash(ls *),mcp__aetherclaude-github__*,mcp__codegraph__*"
 
 # @Mention tool surface — strictly conversational. No code mutation, no git
@@ -597,11 +594,10 @@ CLAUDE_ALLOWED_TOOLS_DEFAULT="Read,Glob,Grep,Edit,Write,Bash(git add *),Bash(git
 # which routes to implement-fix with the full default tool surface.
 # Lesson learned: trace 91e3b290 showed an @Mention going off-script
 # to push a branch and 422 itself trying to open a PR.
-# No Bash(head *) / Bash(tail *) here. The @mention path is reachable by any
-# GitHub user, and those two read the contents of any path the agent's uid can
-# open — which includes /Users/aetherclaude/.env, mode 0600 and owned by that
-# very uid. Read/Glob/Grep already cover reading the checkout, and unlike a raw
-# shell verb they are constrained by the Read(...) deny rules below.
+# The narrowest surface of any flow, since this one takes the most
+# externally-authored input. File reads go through Read/Glob/Grep only, so
+# they stay governed by the Read(...) path rules; the git verbs here are
+# read-only and never contact a remote.
 CLAUDE_ALLOWED_TOOLS_MENTION="Read,Glob,Grep,Bash(git log *),Bash(git status),Bash(git diff *),Bash(git branch *),Bash(ls *),mcp__aetherclaude-github__read_issue,mcp__aetherclaude-github__list_issue_comments,mcp__aetherclaude-github__comment_on_issue,mcp__aetherclaude-github__search_issues"
 
 # --- Galileo eval-trace emitter (Foundry: measure, don't just enforce) ---
@@ -692,19 +688,15 @@ run_claude() {
         # working directory per case: $WORKSPACE for triage/welcome,
         # /tmp/aetherclaude/issue-N for IMPLEMENT. We do not force a cd.
         # Strip every .env-sourced variable from the agent's environment.
-        # This script sources /Users/aetherclaude/.env at startup, and `env`
-        # without -i hands the whole inherited environment to the child, so
-        # the agent process was being given WEBHOOK_SECRET,
-        # VIRUSTOTAL_API_KEY, DEFENSECLAW_DASHBOARD_BEARER and
-        # GALILEO_API_KEY outright. It needs none of them: every GitHub call
-        # is brokered by the MCP server, which reads .env in its own process.
-        # Of those, only GITHUB_APP_ID was ever unset here.
+        # This script sources .env at startup and the agent needs none of it:
+        # GitHub calls are brokered by the MCP server, which loads its own
+        # configuration in its own process.
         #
-        # Derived from the file rather than hardcoded so a secret added to
+        # Derived from the file rather than hardcoded so a variable added to
         # .env tomorrow is stripped the day it lands, with no second list to
         # keep in sync. `env -i` was the alternative but would also drop the
         # inherited bits Claude Code legitimately wants (TMPDIR, LANG, TERM,
-        # SSL_CERT_FILE), trading a known leak for an unknown breakage.
+        # SSL_CERT_FILE).
         local -a env_strip=()
         local _envk
         while IFS= read -r _envk; do
