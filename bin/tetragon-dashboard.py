@@ -10763,6 +10763,29 @@ a{{color:#0a6aba}}
             is_mention = '@aethersdr-agent' in comment_body.lower() or '@aetherclaude' in comment_body.lower()
             if sender in ('AetherClaude', 'aethersdr-agent[bot]'):
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (own event)'); return
+            # An @mention starts an agent turn, so until now any GitHub account
+            # that could comment on the repo could make this agent run — with a
+            # prompt of the commenter's choosing. The mention path is read-only
+            # and its output is guarded, but "an unauthenticated stranger can
+            # drive the agent" is the wrong default for the entry point that
+            # takes the most attacker-controlled input.
+            #
+            # Restricted to accounts GitHub already vouches for on this repo.
+            # author_association is computed by GitHub from repo permissions,
+            # not self-reported in the payload, so it cannot be spoofed by the
+            # commenter. Everyone else is dropped here — before any agent
+            # process starts, rather than relying on the model to decline.
+            #
+            # Triage, review and CI paths are unaffected: they fire on issue
+            # and PR events, act on the artifact rather than on comment text,
+            # and remain open to all contributors.
+            if is_mention and (payload.get('comment') or {}).get(
+                    'author_association') not in ('OWNER', 'MEMBER', 'COLLABORATOR'):
+                _log_exc('webhook.mention_unauthorized', Exception(
+                    f"@mention from {sender or '?'} "
+                    f"({(payload.get('comment') or {}).get('author_association')}) dropped"))
+                self.send_response(200); self.end_headers()
+                self.wfile.write(b'Skipped (mention not authorized)'); return
             # Allow maintainer events through if they @mention the bot
             # Maintainer-skip filter — the maintainer's everyday GitHub
             # activity (closing issues, comments without @mention)

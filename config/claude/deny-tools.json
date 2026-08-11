@@ -17,7 +17,13 @@
     "",
     "Keep in sync with run-agent.sh. The dashboard's Ring 5 posture check",
     "counts these entries; an empty list reads as 'tool deny list not",
-    "loaded'."
+    "loaded'.",
+    "",
+    "The Bash(cat <path>) entries are necessary but nowhere near",
+    "sufficient on their own: they match one exact command string, and",
+    "head, tail, grep, od and a dozen other verbs read the same bytes.",
+    "The Read(...)/Edit(...) rules below are the ones that actually hold,",
+    "because they gate on the path rather than on how it is spelled."
   ],
   "deny": [
     "Bash(sudo *)",
@@ -46,6 +52,16 @@
     "Bash(env)",
     "Bash(printenv)",
     "Bash(set)",
+
+    "Read(//Users/aetherclaude/.env)",
+    "Read(//Users/aetherclaude/.env.*)",
+    "Read(//Users/aetherclaude/.git-credentials)",
+    "Read(//Users/aetherclaude/.github-app-key.pem)",
+    "Read(//Users/aetherclaude/.claude/.credentials.json)",
+    "Read(//Users/aetherclaude/.ssh/**)",
+    "Edit(//Users/aetherclaude/.env)",
+    "Edit(//Users/aetherclaude/.claude/settings.json)",
+
     "WebFetch",
     "WebSearch",
     "Agent"

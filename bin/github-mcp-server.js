@@ -30,9 +30,52 @@ function checkRateLimit(key, max) {
 }
 
 const CRED_RE = [/ghp_[A-Za-z0-9]{36}/, /ghs_[A-Za-z0-9]{36}/, /github_pat_[A-Za-z0-9_]{80,}/, /sk-ant-[A-Za-z0-9\-]{40,}/, /-----BEGIN.*PRIVATE KEY-----/, /AKIA[A-Z0-9]{16}/];
+
+// Vendor-format patterns above only catch secrets whose shape someone
+// thought to enumerate. Every secret this agent actually holds in .env —
+// WEBHOOK_SECRET, VIRUSTOTAL_API_KEY, DEFENSECLAW_DASHBOARD_BEARER,
+// GALILEO_API_KEY — is an opaque string matching none of them, so a post
+// containing one would have sailed straight out to a public issue.
+//
+// So scan for the literal values too. This server already reads .env for
+// its own JWT signing, and value matching needs no per-vendor pattern:
+// whatever lands in .env next is covered the moment it is added.
+//
+// Only names that look like credentials are treated as secret. .env also
+// holds GALILEO_PROJECT ("aetherclaude") and GALILEO_CONSOLE_URL, which
+// are legitimate words in agent prose — blocking on those would wedge
+// every post. The length floor guards against a short or placeholder
+// value turning into a substring that matches everything.
+const SECRET_NAME_RE = /(SECRET|TOKEN|KEY|BEARER|PASSWORD|PASSWD|CREDENTIAL|PRIVATE)/;
+const MIN_SECRET_LEN = 8;
+let _secretCache = { at: 0, values: [] };
+function secretValues() {
+    // 60s cache: validateContent runs on every outbound post, and .env is
+    // re-read rather than snapshotted at boot so a rotated secret is
+    // covered without restarting the server.
+    const now = Date.now();
+    if (now - _secretCache.at < 60000) return _secretCache.values;
+    let values = [];
+    try {
+        const env = loadEnv();
+        values = Object.entries(env)
+            .filter(([k, v]) => SECRET_NAME_RE.test(k) && v && v.length >= MIN_SECRET_LEN)
+            .map(([, v]) => v);
+    } catch (e) {
+        // Fail closed on the caller's side would mean never posting at all;
+        // fail open here but keep the vendor patterns as the floor.
+        values = _secretCache.values;
+    }
+    _secretCache = { at: now, values };
+    return values;
+}
+
 function validateContent(text, maxLen) {
     if (text.length > (maxLen || MAX_COMMENT_LENGTH)) throw new Error(`BLOCKED: Content too long (${text.length})`);
     if (CRED_RE.some(p => p.test(text))) throw new Error('BLOCKED: Content contains credential pattern');
+    // Deliberately does not name which variable matched — the error text
+    // travels back into the agent's transcript and on into logs.
+    if (secretValues().some(v => text.includes(v))) throw new Error('BLOCKED: Content contains a configured secret value');
 }
 
 // Append the public cost-band footer + log a precise audit row for a

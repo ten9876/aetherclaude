@@ -590,7 +590,12 @@ CLAUDE_ALLOWED_TOOLS_DEFAULT="Read,Glob,Grep,Edit,Write,Bash(git add *),Bash(git
 # which routes to implement-fix with the full default tool surface.
 # Lesson learned: trace 91e3b290 showed an @Mention going off-script
 # to push a branch and 422 itself trying to open a PR.
-CLAUDE_ALLOWED_TOOLS_MENTION="Read,Glob,Grep,Bash(git log *),Bash(git status),Bash(git diff *),Bash(git branch *),Bash(ls *),Bash(head *),Bash(tail *),mcp__aetherclaude-github__read_issue,mcp__aetherclaude-github__list_issue_comments,mcp__aetherclaude-github__comment_on_issue,mcp__aetherclaude-github__search_issues"
+# No Bash(head *) / Bash(tail *) here. The @mention path is reachable by any
+# GitHub user, and those two read the contents of any path the agent's uid can
+# open — which includes /Users/aetherclaude/.env, mode 0600 and owned by that
+# very uid. Read/Glob/Grep already cover reading the checkout, and unlike a raw
+# shell verb they are constrained by the Read(...) deny rules below.
+CLAUDE_ALLOWED_TOOLS_MENTION="Read,Glob,Grep,Bash(git log *),Bash(git status),Bash(git diff *),Bash(git branch *),Bash(ls *),mcp__aetherclaude-github__read_issue,mcp__aetherclaude-github__list_issue_comments,mcp__aetherclaude-github__comment_on_issue,mcp__aetherclaude-github__search_issues"
 
 # --- Galileo eval-trace emitter (Foundry: measure, don't just enforce) ---
 # Best-effort: POSTs a compact run record to the dashboard over localhost, which
@@ -679,7 +684,28 @@ run_claude() {
         # Run claude in the caller's cwd. The orch chooses the right
         # working directory per case: $WORKSPACE for triage/welcome,
         # /tmp/aetherclaude/issue-N for IMPLEMENT. We do not force a cd.
+        # Strip every .env-sourced variable from the agent's environment.
+        # This script sources /Users/aetherclaude/.env at startup, and `env`
+        # without -i hands the whole inherited environment to the child, so
+        # the agent process was being given WEBHOOK_SECRET,
+        # VIRUSTOTAL_API_KEY, DEFENSECLAW_DASHBOARD_BEARER and
+        # GALILEO_API_KEY outright. It needs none of them: every GitHub call
+        # is brokered by the MCP server, which reads .env in its own process.
+        # Of those, only GITHUB_APP_ID was ever unset here.
+        #
+        # Derived from the file rather than hardcoded so a secret added to
+        # .env tomorrow is stripped the day it lands, with no second list to
+        # keep in sync. `env -i` was the alternative but would also drop the
+        # inherited bits Claude Code legitimately wants (TMPDIR, LANG, TERM,
+        # SSL_CERT_FILE), trading a known leak for an unknown breakage.
+        local -a env_strip=()
+        local _envk
+        while IFS= read -r _envk; do
+            [ -n "$_envk" ] && env_strip+=( -u "$_envk" )
+        done < <(sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' /Users/aetherclaude/.env 2>/dev/null)
+
         env \
+            ${env_strip[@]+"${env_strip[@]}"} \
             -u GH_TOKEN -u GITHUB_TOKEN -u GH_APP_TOKEN -u GITHUB_APP_ID \
             HOME="$HOME" PATH="$PATH" \
             HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" NO_PROXY="$NO_PROXY" \
@@ -691,7 +717,7 @@ run_claude() {
                 --strict-mcp-config \
                 --permission-mode bypassPermissions \
                 --allowedTools "$allowed_tools" \
-                --disallowedTools "Bash(sudo *),Bash(curl *),Bash(wget *),Bash(rm -rf *),Bash(ssh *),Bash(scp *),Bash(nc *),Bash(ncat *),Bash(dd *),Bash(mount *),Bash(chmod *),Bash(chown *),Bash(chsh *),Bash(passwd *),Bash(brew *),Bash(npm *),Bash(pip *),Bash(nft *),Bash(systemctl *),Bash(cat /Users/aetherclaude/.env),Bash(cat /Users/aetherclaude/.git-credentials),Bash(cat /Users/aetherclaude/.github-app-key.pem),Bash(echo \$*),Bash(env),Bash(printenv),Bash(set),WebFetch,WebSearch,Agent" \
+                --disallowedTools "Bash(sudo *),Bash(curl *),Bash(wget *),Bash(rm -rf *),Bash(ssh *),Bash(scp *),Bash(nc *),Bash(ncat *),Bash(dd *),Bash(mount *),Bash(chmod *),Bash(chown *),Bash(chsh *),Bash(passwd *),Bash(brew *),Bash(npm *),Bash(pip *),Bash(nft *),Bash(systemctl *),Bash(cat /Users/aetherclaude/.env),Bash(cat /Users/aetherclaude/.git-credentials),Bash(cat /Users/aetherclaude/.github-app-key.pem),Bash(echo \$*),Bash(env),Bash(printenv),Bash(set),Read(//Users/aetherclaude/.env),Read(//Users/aetherclaude/.env.*),Read(//Users/aetherclaude/.git-credentials),Read(//Users/aetherclaude/.github-app-key.pem),Read(//Users/aetherclaude/.claude/.credentials.json),Read(//Users/aetherclaude/.ssh/**),Edit(//Users/aetherclaude/.env),Edit(//Users/aetherclaude/.claude/settings.json),WebFetch,WebSearch,Agent" \
                 ${op_notes_args[@]+"${op_notes_args[@]}"} \
                 --mcp-config /Users/aetherclaude/.claude/mcp-servers.json \
             >> "$logfile" 2>&1 &
