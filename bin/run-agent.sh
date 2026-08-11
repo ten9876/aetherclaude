@@ -581,7 +581,14 @@ CLAUDE_HARD_CEILING="${CLAUDE_HARD_CEILING:-${CLAUDE_TIMEOUT:-3600}}"  # 60 min 
 
 # Default tool surface — used by all skills that legitimately write code
 # (triage, continue-triage, implement-fix, review-pr, explain-ci).
-CLAUDE_ALLOWED_TOOLS_DEFAULT="Read,Glob,Grep,Edit,Write,Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git diff *),Bash(git log *),Bash(git status),Bash(git checkout *),Bash(ls *),Bash(head *),Bash(tail *),mcp__aetherclaude-github__*,mcp__codegraph__*"
+# No Bash(head *) / Bash(tail *): both read the contents of any path this uid
+# can open, which includes .env, .credentials.json and the app private key —
+# all mode 0600 and owned by the agent's own uid. The Read tool does the same
+# job for the checkout and, unlike a raw shell verb, is bound by the Read(...)
+# deny rules below. Removing them narrows the read surface; it does not close
+# it (see the git-diff note in the deny list), which is why the real guarantee
+# lives in validate-diff.sh's value scan on the way out.
+CLAUDE_ALLOWED_TOOLS_DEFAULT="Read,Glob,Grep,Edit,Write,Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git diff *),Bash(git log *),Bash(git status),Bash(git checkout *),Bash(ls *),mcp__aetherclaude-github__*,mcp__codegraph__*"
 
 # @Mention tool surface — strictly conversational. No code mutation, no git
 # write, no PR creation, no label management. Claude can read code and
@@ -717,7 +724,7 @@ run_claude() {
                 --strict-mcp-config \
                 --permission-mode bypassPermissions \
                 --allowedTools "$allowed_tools" \
-                --disallowedTools "Bash(sudo *),Bash(curl *),Bash(wget *),Bash(rm -rf *),Bash(ssh *),Bash(scp *),Bash(nc *),Bash(ncat *),Bash(dd *),Bash(mount *),Bash(chmod *),Bash(chown *),Bash(chsh *),Bash(passwd *),Bash(brew *),Bash(npm *),Bash(pip *),Bash(nft *),Bash(systemctl *),Bash(cat /Users/aetherclaude/.env),Bash(cat /Users/aetherclaude/.git-credentials),Bash(cat /Users/aetherclaude/.github-app-key.pem),Bash(echo \$*),Bash(env),Bash(printenv),Bash(set),Read(//Users/aetherclaude/.env),Read(//Users/aetherclaude/.env.*),Read(//Users/aetherclaude/.git-credentials),Read(//Users/aetherclaude/.github-app-key.pem),Read(//Users/aetherclaude/.claude/.credentials.json),Read(//Users/aetherclaude/.ssh/**),Edit(//Users/aetherclaude/.env),Edit(//Users/aetherclaude/.claude/settings.json),WebFetch,WebSearch,Agent" \
+                --disallowedTools "Bash(sudo *),Bash(curl *),Bash(wget *),Bash(rm -rf *),Bash(ssh *),Bash(scp *),Bash(nc *),Bash(ncat *),Bash(dd *),Bash(mount *),Bash(chmod *),Bash(chown *),Bash(chsh *),Bash(passwd *),Bash(brew *),Bash(npm *),Bash(pip *),Bash(nft *),Bash(systemctl *),Bash(cat /Users/aetherclaude/.env),Bash(cat /Users/aetherclaude/.git-credentials),Bash(cat /Users/aetherclaude/.github-app-key.pem),Bash(echo \$*),Bash(env),Bash(printenv),Bash(set),Bash(git diff --no-index *),Bash(git *--no-index*),Read(//Users/aetherclaude/.env),Read(//Users/aetherclaude/.env.*),Read(//Users/aetherclaude/.git-credentials),Read(//Users/aetherclaude/.github-app-key.pem),Read(//Users/aetherclaude/.claude/.credentials.json),Read(//Users/aetherclaude/.ssh/**),Edit(//Users/aetherclaude/.env),Edit(//Users/aetherclaude/.claude/settings.json),WebFetch,WebSearch,Agent" \
                 ${op_notes_args[@]+"${op_notes_args[@]}"} \
                 --mcp-config /Users/aetherclaude/.claude/mcp-servers.json \
             >> "$logfile" 2>&1 &

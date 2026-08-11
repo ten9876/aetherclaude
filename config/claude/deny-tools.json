@@ -23,7 +23,16 @@
     "sufficient on their own: they match one exact command string, and",
     "head, tail, grep, od and a dozen other verbs read the same bytes.",
     "The Read(...)/Edit(...) rules below are the ones that actually hold,",
-    "because they gate on the path rather than on how it is spelled."
+    "because they gate on the path rather than on how it is spelled.",
+    "",
+    "`git diff --no-index A B` prints the contents of any two paths, so",
+    "Bash(git diff *) was a general-purpose file reader hiding inside an",
+    "allowlist entry that looks like source control. The two deny rules",
+    "here cover the obvious spellings, but this is enumeration again and",
+    "enumeration loses: a reader can still be built from verbs nobody",
+    "listed. Treat the read surface as reduced, not closed. The guarantee",
+    "that actually holds is validate-diff.sh's Check 4b, which blocks a",
+    "secret VALUE on the way out no matter how it was read."
   ],
   "deny": [
     "Bash(sudo *)",
@@ -52,6 +61,9 @@
     "Bash(env)",
     "Bash(printenv)",
     "Bash(set)",
+
+    "Bash(git diff --no-index *)",
+    "Bash(git *--no-index*)",
 
     "Read(//Users/aetherclaude/.env)",
     "Read(//Users/aetherclaude/.env.*)",

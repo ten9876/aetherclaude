@@ -135,6 +135,47 @@ for pattern in "${CREDENTIAL_PATTERNS[@]}"; do
     fi
 done
 
+# --- Check 4b: literal secret values from .env ---
+#
+# The patterns above only catch credentials whose vendor shape someone
+# enumerated. Every secret this host actually holds — WEBHOOK_SECRET,
+# VIRUSTOTAL_API_KEY, DEFENSECLAW_DASHBOARD_BEARER, GALILEO_API_KEY — is an
+# opaque string matching none of them, so a diff carrying one sailed through
+# this gate. The MCP server gained value-based scanning for comments; this is
+# the same check on the push path, which matters more because writing files
+# and pushing them is the agent's actual job.
+#
+# This is containment at the exit rather than at the read: the agent's uid can
+# still open .env by some means (head, tail, git diff --no-index, whatever verb
+# the allowlist hasn't thought of), so the durable guarantee is that the value
+# cannot leave in a diff regardless of how it was obtained.
+#
+# Secret values never reach argv — `ps` is world-readable — so patterns are
+# passed to grep over a pipe via process substitution. Only the variable NAME
+# is ever logged.
+ENV_FILE=/Users/aetherclaude/.env
+if [ -r "$ENV_FILE" ]; then
+    ADDED_LINES=$(printf '%s' "$DIFF_CONTENT" | grep '^+' || true)
+    if [ -n "$ADDED_LINES" ]; then
+        while IFS='=' read -r env_key env_val; do
+            # Only credential-looking names. .env also holds GALILEO_PROJECT
+            # ("aetherclaude") and a console URL — legitimate strings in real
+            # diffs, and blocking on those would fail every PR.
+            case "$env_key" in
+                *SECRET*|*TOKEN*|*KEY*|*BEARER*|*PASSWORD*|*PASSWD*|*CREDENTIAL*|*PRIVATE*) ;;
+                *) continue ;;
+            esac
+            # Length floor: a short or placeholder value would be a substring
+            # of ordinary code and wedge every diff.
+            [ "${#env_val}" -ge 8 ] || continue
+            if grep -qF -f <(printf '%s\n' "$env_val") <<< "$ADDED_LINES"; then
+                log "BLOCKED: diff contains the literal value of ${env_key}"
+                ERRORS=$((ERRORS + 1))
+            fi
+        done < "$ENV_FILE"
+    fi
+fi
+
 # --- Check 5: Binary files ---
 BINARY_EXTENSIONS=(".so" ".dll" ".exe" ".bin" ".dylib" ".o" ".a")
 for file in $CHANGED_FILES; do
