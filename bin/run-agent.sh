@@ -1103,12 +1103,34 @@ review_single_pr() {
 
     log "Reviewing PR #${pr_number}: ${pr_title} by @${pr_author}"
 
-    local pr_diff
-    pr_diff=$(echo "$token" | python3 /Users/aetherclaude/bin/gh-request.py GET "/repos/${REPO}/pulls/${pr_number}" | head -500)
+    # One /files call serves both the file list and the diff. GET /pulls/{n}
+    # returns the PR's metadata object, not a patch — gh-request.py always
+    # sends Accept: application/vnd.github+json, so asking that endpoint for a
+    # diff yields 48 keys of metadata and no hunks. /files carries a real
+    # per-file `patch` with @@ headers, which is what the review needs to
+    # anchor inline comments.
+    local pr_files_json
+    pr_files_json=$(github_api GET "/repos/${REPO}/pulls/${pr_number}/files?per_page=50" "$token")
 
     local pr_files
-    pr_files=$(github_api GET "/repos/${REPO}/pulls/${pr_number}/files?per_page=50" "$token" | \
-        jq -r '.[].filename' | head -30)
+    pr_files=$(printf '%s' "$pr_files_json" | jq -r '.[].filename' 2>/dev/null | head -30)
+
+    # Reassemble a unified diff from the per-file patches. Budgeted by line
+    # count rather than per file so one huge file can't crowd out the rest,
+    # and truncation is announced so the model treats the tail as unseen
+    # rather than absent.
+    local pr_diff
+    pr_diff=$(printf '%s' "$pr_files_json" | jq -r '
+        .[] | "--- a/\(.filename)\n+++ b/\(.filename)\n" +
+              (if .patch then .patch
+               else "(no patch: binary, renamed, or too large — \(.changes) changes)" end)
+    ' 2>/dev/null | head -1200)
+    if [ "$(printf '%s' "$pr_diff" | wc -l)" -ge 1200 ]; then
+        pr_diff="${pr_diff}
+
+[diff truncated at 1200 lines — use mcp__aetherclaude-github__get_pr_diff or
+list_pr_files for the remainder before commenting on anything below this point]"
+    fi
 
     local sanitized_diff
     sanitized_diff=$(sanitize_input "$pr_diff")
@@ -1167,8 +1189,16 @@ review_single_pr() {
     # is actually posted (Claude Code 2.1.139+ feature). Per-skill
     # rollout — other skills still use render_skill until each one
     # is verified with /goal.
+    # The PR head is already checked out for CodeGuard. Hand the path to the
+    # review too: the diff shows what changed, and the strongest findings are
+    # usually what didn't — the sibling call site left unfixed, the missing
+    # migration, the test that should exist. Empty when checkout failed, which
+    # the skill treats as "those checks were unavailable" rather than "clean".
+    local pr_head_path=""
+    [ "$have_pr_worktree" = 1 ] && pr_head_path="$pr_worktree"
+
     local prompt
-    prompt=$(render_skill_full "review-pr" "PR_NUMBER" "$pr_number" "PR_TITLE" "$pr_title" "PR_AUTHOR" "$pr_author" "PR_FILES" "$pr_files" "PR_DIFF" "$sanitized_diff" "COPILOT_COMMENTS" "$copilot_comments" "PR_COMMITS" "$commit_signatures" "CODEGUARD_FINDINGS" "$codeguard_block")
+    prompt=$(render_skill_full "review-pr" "PR_NUMBER" "$pr_number" "PR_TITLE" "$pr_title" "PR_AUTHOR" "$pr_author" "PR_FILES" "$pr_files" "PR_DIFF" "$sanitized_diff" "COPILOT_COMMENTS" "$copilot_comments" "PR_COMMITS" "$commit_signatures" "CODEGUARD_FINDINGS" "$codeguard_block" "PR_HEAD_PATH" "$pr_head_path")
 
     cd "$WORKSPACE"
     run_claude "$prompt" "$review_log" || {
