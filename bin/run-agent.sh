@@ -915,8 +915,20 @@ render_skill_full() {
         goal="${goal//\$\{${var}\}/${val}}"
         shift 2
     done
+    # The goal is appended as a closing instruction, NOT emitted as a `/goal`
+    # slash command. A prompt beginning with `/goal` makes Claude Code treat
+    # everything after it — goal text and skill body alike — as the goal
+    # condition, which is capped at 4000 characters. Every real skill prompt is
+    # larger than that, so the run died at parse time with "Goal condition is
+    # limited to 4000 characters (got N)" where N was the whole prompt, before
+    # a single tool call. Confirmed directly: `/goal say DONE` with a 200-char
+    # body succeeds; the same with a 5000-char body reports got=5010.
+    #
+    # The failure is total and silent from the orchestrator's side — claude
+    # exits 0, so run_claude succeeds and the caller logs "Reviewed PR #N"
+    # having posted nothing.
     if [ -n "$goal" ]; then
-        printf '/goal %s\n\n%s\n' "$goal" "$body"
+        printf '%s\n\n---\n\nCOMPLETION REQUIREMENT — do not end your turn until this holds: %s\n' "$body" "$goal"
     else
         printf '%s\n' "$body"
     fi
