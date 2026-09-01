@@ -149,6 +149,53 @@ except Exception as e:
 PYEOF
 }
 
+# --- Concurrency claim ------------------------------------------------
+# Every skill is a check-then-act: probe GitHub/DB for "already done", then
+# spend minutes inside Claude, then record the result. Runs with different
+# LOCK_KEYs never exclude each other (the lockfile is per-key), so two of
+# them can both pass the probe and both post. Observed on PR #5100: two bot
+# reviews 3m42s apart. claim_acquire closes that window with one atomic
+# INSERT -- the winner sees rowcount 1, everyone else sees 0 and skips.
+#
+# Claims are never released explicitly; they age out after CLAIM_TTL_SECS.
+# Successful work is already guarded by each skill's own "already done"
+# probe, and letting a failed item sit for the TTL damps hot retry loops
+# (the 2026-08-17 auth outage re-attempted the same PR every few minutes
+# for two days).
+CLAIM_TTL_SECS=1800
+
+claim_acquire() {
+    # claim_acquire KIND TARGET -> rc 0 = acquired, rc 1 = held by another run
+    local kind="$1" target="$2"
+    ACTIONS_DB="$ACTIONS_DB" python3 - "$kind" "$target" "${RUN_ID:-unknown}" "$CLAIM_TTL_SECS" <<'PYEOF'
+import sqlite3, sys, os, time
+kind, target, run_id, ttl = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+db = os.environ.get('ACTIONS_DB', '/Users/aetherclaude/data/issue-actions.db')
+try:
+    conn = sqlite3.connect(db, timeout=30)
+    conn.execute('PRAGMA busy_timeout=30000')
+    conn.execute("""CREATE TABLE IF NOT EXISTS claims (
+        kind       TEXT    NOT NULL,
+        target     INTEGER NOT NULL,
+        run_id     TEXT,
+        claimed_at INTEGER NOT NULL,
+        PRIMARY KEY (kind, target))""")
+    now = int(time.time())
+    conn.execute('DELETE FROM claims WHERE claimed_at < ?', (now - ttl,))
+    cur = conn.execute(
+        'INSERT OR IGNORE INTO claims (kind,target,run_id,claimed_at) VALUES (?,?,?,?)',
+        (kind, target, run_id, now))
+    conn.commit()
+    acquired = (cur.rowcount == 1)
+    conn.close()
+    sys.exit(0 if acquired else 1)
+except Exception as e:
+    # Fail OPEN: a claims bug must never stop the agent from working.
+    print("claim_acquire error: %s" % e, file=sys.stderr)
+    sys.exit(0)
+PYEOF
+}
+
 db_get_state() {
     local issue_number="$1"
     ACTIONS_DB="$ACTIONS_DB" python3 - "$issue_number" <<'PYEOF'
@@ -1013,6 +1060,7 @@ skill_welcome_first_timers() {
             continue
         fi
 
+        claim_acquire "welcome" "$number" || { log "#${number} welcome claimed by another run, skipping"; continue; }
         log "Welcoming first-time contributor @${author} on #${number}"
 
         local body
@@ -1083,6 +1131,7 @@ skill_check_bug_reports() {
             continue
         fi
 
+        claim_acquire "bugreport" "$number" || { log "#${number} bug-report check claimed by another run, skipping"; continue; }
         log "Requesting info on #${number} (missing ${#missing[@]} fields)"
 
         local missing_list=""
@@ -1311,6 +1360,7 @@ skill_review_prs() {
             continue
         fi
 
+        claim_acquire "review" "$pr_number" || { log "PR #${pr_number} review claimed by another run, skipping"; continue; }
         review_single_pr "$pr_number" "$pr_title" "$pr_author" "$token" || continue
         count=$((count + 1))
     done
@@ -1386,6 +1436,7 @@ print('yes' if row else '')
         prompt=$(render_skill "$skill_template" "PR_NUMBER" "$pr_number" "PR_AUTHOR" "$pr_author" "CI_CONTEXT" "$ci_context" "HEAD_SHA" "$head_sha" "COPILOT_COMMENTS" "$copilot_comments")
 
         cd "$WORKSPACE"
+        claim_acquire "ci_explain" "$pr_number" || { log "PR #${pr_number} CI explain claimed by another run, skipping"; continue; }
         run_claude "$prompt" "$ci_log" || {
             log "ERROR: CI explanation failed for PR #${pr_number}"
             continue
@@ -1487,6 +1538,7 @@ print('yes' if row else '')
         prompt=$(render_skill "$skill_template" "ISSUE_NUMBER" "$number" "ISSUE_TITLE" "$title" "ISSUE_BODY" "$sanitized_body" "SEARCH_RESULTS" "$search_results")
 
         cd "$WORKSPACE"
+        claim_acquire "dup_check" "$number" || { log "#${number} duplicate check claimed by another run, skipping"; continue; }
         run_claude "$prompt" "$dup_log" || log "ERROR: Duplicate check failed for #${number}"
 
         # If Claude just posted a possible-duplicate question, park the
@@ -1564,6 +1616,7 @@ print(json.dumps(json.loads(opener.open(req, timeout=10).read()).get('data',{}).
         prompt=$(render_skill "$skill_template" "DISC_NUMBER" "$disc_number" "DISC_TITLE" "$disc_title" "DISC_AUTHOR" "$disc_author" "DISC_CATEGORY" "$disc_category")
 
         cd "$WORKSPACE"
+        claim_acquire "discussion" "$disc_number" || { log "discussion #${disc_number} claimed by another run, skipping"; continue; }
         run_claude "$prompt" "$disc_log" || log "ERROR: Discussion response failed for #${disc_number}"
         count=$((count + 1))
     done
