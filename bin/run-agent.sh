@@ -1252,6 +1252,29 @@ skill_review_prs() {
     local prs
     prs=$(github_api GET "/repos/${REPO}/pulls?state=open&sort=created&direction=desc&per_page=10" "$token")
 
+    # Webhook-only mode: a run triggered for pr-N reviews ONLY #N. Without
+    # this every run sweeps the same top-10 open-PR list and takes the top
+    # MAX_PRS_PER_RUN, so two concurrent runs (different lock keys never
+    # exclude each other) both pass the has_review check below and both
+    # post a review. Observed on #5100: two bot reviews 3m42s apart.
+    if [[ "$LOCK_KEY" =~ ^pr-([0-9]+)$ ]]; then
+        local trigger_pr="${BASH_REMATCH[1]}"
+        local scoped
+        scoped=$(echo "$prs" | jq -c --argjson n "$trigger_pr" '[.[] | select(.number == $n)]')
+        if [ "$(echo "$scoped" | jq 'length')" -eq 0 ]; then
+            local one
+            one=$(github_api GET "/repos/${REPO}/pulls/${trigger_pr}" "$token")
+            if [ "$(echo "$one" | jq -r '.state // empty')" = "open" ]; then
+                scoped=$(echo "$one" | jq -c '[.]')
+            else
+                log "PR Review: #${trigger_pr} not open, nothing to review"
+                return 0
+            fi
+        fi
+        prs="$scoped"
+        log "PR Review scoped to triggering PR #${trigger_pr}"
+    fi
+
     echo "$prs" | jq -c '.[]' | while read -r pr; do
         [ "$count" -ge "$MAX_PRS_PER_RUN" ] && break
 
