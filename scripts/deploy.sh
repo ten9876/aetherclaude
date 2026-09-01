@@ -121,6 +121,21 @@ for f in "$REPO_DIR"/config/launchd/*.plist; do
     fi
 done
 
+echo "==> Asserting power-failure auto-recovery settings"
+# Server power posture, asserted every deploy (idempotent) so an OS update
+# or manual System Settings change can't silently strip it:
+#   autorestart 1  — power comes back => Mac boots itself
+#   sleep 0        — never system-sleep (headless server; services must poll)
+#   disksleep 0    — keep storage awake with it
+#   womp 1         — wake on network access, belt-and-suspenders
+# restartfreeze: reboot after a kernel freeze instead of hanging at a
+# dead prompt until someone drives to the machine.
+# FileVault is disabled, so a power-loss boot reaches the login window
+# unattended and every system LaunchDaemon (runner, cloudflared,
+# dashboard, tinyproxy, ollama, watchdog) starts without a human.
+sudo pmset -a autorestart 1 sleep 0 disksleep 0 womp 1 2>/dev/null || true
+sudo systemsetup -setrestartfreeze on >/dev/null 2>&1 || true
+
 if [ "$RESTART" = true ]; then
     echo "==> Kicking dashboard to pick up script changes"
     sudo launchctl kickstart -k system/com.aetherclaude.dashboard 2>/dev/null || true
