@@ -1013,6 +1013,7 @@ def galileo_forward(entry):
     except Exception as e:
         print(f'galileo_forward: SDK unavailable ({e})', file=sys.stderr)
         return None
+    logger = None
     try:
         flow = entry.get('flow', 'other')
         ref = entry.get('ref', '')
@@ -1073,6 +1074,18 @@ def galileo_forward(entry):
     except Exception as e:
         print(f'galileo_forward: log failed ({e})', file=sys.stderr)
         return None
+    finally:
+        # GalileoLogger.__init__ does atexit.register(self.terminate), so the
+        # atexit registry holds a strong ref to every instance -> its config,
+        # httpx client, connection pool and EventLoopThreadPool are never GC'd.
+        # terminate() is the only thing that unregisters it. Without this, each
+        # agent run leaked its tinyproxy sockets until the 256-FD soft limit
+        # made accept() fail and the dashboard went dark.
+        if logger is not None:
+            try:
+                logger.terminate()
+            except Exception as _te:
+                print(f'galileo_forward: terminate failed ({_te})', file=sys.stderr)
 
 def load_memory_buffer():
     """Load newest 10,000 events from SQLite into memory buffer on startup."""
@@ -2011,7 +2024,8 @@ def scan_rings():
                                 url = ('https://api.github.com/search/issues?q=' + urllib.parse.quote(q) +
                                        f'&per_page={want}&sort=updated&order=desc')
                                 try:
-                                    d = json.loads(opener.open(urllib.request.Request(url, headers=hdrs), timeout=10).read().decode())
+                                    with opener.open(urllib.request.Request(url, headers=hdrs), timeout=10) as _r:
+                                        d = json.loads(_r.read().decode())
                                     return int(d.get('total_count', 0) or 0), (d.get('items') or [])
                                 except Exception:
                                     return None, []
@@ -2036,7 +2050,8 @@ def scan_rings():
                             try:
                                 req_ci = urllib.request.Request(
                                     'https://api.github.com/repos/aethersdr/AetherSDR/actions/runs?per_page=40', headers=hdrs)
-                                wf = json.loads(opener.open(req_ci, timeout=10).read().decode()).get('workflow_runs', [])
+                                with opener.open(req_ci, timeout=10) as _r:
+                                    wf = json.loads(_r.read().decode()).get('workflow_runs', [])
                                 ring_stats['ci_runs'] = [{
                                     'name': w.get('name', ''),
                                     'title': (w.get('display_title') or '')[:80],
@@ -2077,7 +2092,8 @@ def scan_rings():
                         req_d = urllib.request.Request(
                             'https://api.github.com/graphql', data=gql_body,
                             headers={'Authorization': f'bearer {token}', 'Content-Type': 'application/json', 'User-Agent': 'AetherClaude-Dashboard'})
-                        disc_out = opener.open(req_d, timeout=10).read().decode()
+                        with opener.open(req_d, timeout=10) as _r:
+                            disc_out = _r.read().decode()
                         disc_data = json.loads(disc_out)
                         nodes = disc_data.get('data', {}).get('repository', {}).get('discussions', {}).get('nodes', [])
                         ring_stats['r9_discussion_details'] = [{'number': d['number'], 'title': d['title'], 'category': d.get('category',{}).get('name',''), 'comments': d.get('comments',{}).get('totalCount',0)} for d in nodes if d.get('comments',{}).get('totalCount',0) > 0][:20]
