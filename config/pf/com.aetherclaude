@@ -10,7 +10,7 @@ pass out quick proto tcp from any to 127.0.0.1 user 965
 pass out quick inet6 proto tcp from any to ::1 user 965
 
 # Allow DNS (Cloudflare, Google, Quad9, router)
-pass out quick proto udp from any to { 1.1.1.1 8.8.8.8 9.9.9.9 192.168.50.1 } port 53 user 965
+pass out quick proto udp from any to { 1.1.1.1 8.8.8.8 9.9.9.9 192.168.95.1 } port 53 user 965
 
 # NTP time sync (UDP 123) — Ubuntu/Canonical NTP (ntp.ubuntu.com →
 # 185.125.190.x / 91.189.9x). A uid-965 client was retrying time sync and
@@ -81,4 +81,4 @@ block out log proto udp from any user 965
 
 # Inbound: dashboard from anywhere, SSH from LAN
 pass in quick proto tcp from any to any port 8080
-pass in quick proto tcp from { 192.168.50.0/24 127.0.0.1 } to any port 22
+pass in quick proto tcp from { 192.168.95.0/24 127.0.0.1 } to any port 22

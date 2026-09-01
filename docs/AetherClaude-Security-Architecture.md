@@ -170,7 +170,7 @@ The `aetherclaude` user (UID 965) has kernel-level network restrictions:
 - DNS (port 53) allowed for hostname resolution
 - ALL other outbound traffic DROPPED with counter
 - Jeremy's user (UID 1001) is unrestricted
-- SSH inbound from 192.168.50.0/24 is always accepted (lockout prevention)
+- SSH inbound from 192.168.95.0/24 is always accepted (lockout prevention)
 
 **tinyproxy (Layer 7 — domain filtering):**
 - `api.anthropic.com` — Claude Code API
