@@ -14,7 +14,7 @@
                                   (~10 s — no actual build)
       2. codegraph-extract-clangd.py — libclang-driven AST extraction
                                   incl. the security-overlay call_tags
-                                  (~2-4 min on 10 perf cores)
+                                  (~20 min on 10 perf cores)
       3. codegraph-analyze.py   — Louvain community detection
                                   (~0.5 s)
       4. codegraph-cartographer.py — repo-context pack (repo-context.md
@@ -33,11 +33,16 @@
         docker build -t aetherclaude-codegraph:latest \
                      /Users/Shared/aetherclaude/docker/codegraph
 
-    Total budget ~3 min. Schedule at 03:00 local so it never overlaps
+    Total budget ~25 min — measured, not estimated: 1367 s on 2026-09-01
+    over 2058 TUs. The older "~3 min" figure in this file was never right;
+    the last 24.04-based run took 3046 s. Schedule at 03:00 local so it never overlaps
     an orchestrator run (those fire when webhooks arrive — bunched in
     business hours).
 
-    Output: /Users/aetherclaude/data/codegraph.db (atomically replaced).
+    Output: /Users/Shared/aetherclaude/data/codegraph.db (atomically
+    replaced) — the path tetragon-dashboard.py reads as CODEGRAPH_DB. The
+    stale file under /Users/aetherclaude/data is an orphan from the old
+    location and is read by nothing.
     Dashboard reads it lazily on /api/codegraph/data requests, so no
     daemon restart is needed; the next page load picks up the new db.
   -->
@@ -83,8 +88,15 @@
     produces a usable db within seconds rather than waiting until the
     next 03:00 window. Set false if you'd rather wait.
   -->
+  <!--
+    Deliberately no RunAtLoad. At boot this fires before local.colima has
+    finished bringing its VM up, so `docker run` fails with "Cannot connect
+    to the Docker daemon" and the job burns an exit 1 on every restart —
+    63 of them in the current log. The 03:00 schedule is the only trigger
+    that matters; by then colima has been warm for hours.
+  -->
   <key>RunAtLoad</key>
-  <true/>
+  <false/>
 
   <!-- Log path under /Users/Shared so the jeremy-owned launchd job can
        write it. /Users/aetherclaude/logs was aetherclaude-owned and

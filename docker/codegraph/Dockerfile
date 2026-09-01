@@ -1,5 +1,12 @@
-# Codegraph extractor image — self-contained Ubuntu 24.04 with the
+# Codegraph extractor image — self-contained Ubuntu 26.04 LTS with the
 # dev headers AetherSDR uses + clang/libclang/python-clang.
+#
+# The base tracks AetherSDR's Qt floor and cannot drop below it. CMakeLists
+# hard-fails under Qt 6.8 (FATAL_ERROR, not a warning), and the configure step
+# here exists purely to emit compile_commands.json for the clangd extractor, so
+# a base whose Qt is too old fails the whole refresh. 24.04 LTS ships Qt 6.4.2
+# and silently broke this job on 2026-08-01 — every nightly run failed and the
+# graph went a month stale before anyone looked. 26.04 LTS ships 6.10.2.
 #
 # We use Ubuntu directly (not the ghcr.io aethersdr-ci base) because
 # that base is published as amd64-only — on the Mac Mini M4 it would
@@ -15,11 +22,11 @@
 #   docker run --rm \
 #     -v /Users/aetherclaude/workspace/AetherSDR:/src:ro \
 #     -v /Users/Shared/aetherclaude/bin:/tools:ro \
-#     -v /Users/aetherclaude/data:/out \
+#     -v /Users/Shared/aetherclaude/data:/out \
 #     aetherclaude-codegraph:latest \
 #     /codegraph-run.sh
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
