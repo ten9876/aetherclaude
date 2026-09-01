@@ -151,6 +151,32 @@ server, the automation bridge transport) stay legitimate, but check that the PR
 body discloses the test, that its `tests.cmake` block names the socket it binds,
 and that it fails fast or skips with exit 77 rather than consuming its timeout.
 
+### Socket tests: surface them, even though you cannot run them
+
+You never build or execute anything, so the execution gate canon puts on
+socket-owning tests does not apply to you. The reporting half does, and your
+review body is the only channel you have — there is no operator to notify
+mid-run, and nothing to stop before running.
+
+Inspect the PR's own test sources, never the working tree. Your working
+directory is the base branch: it will pass this check vacuously on a PR that
+does add a socket test. Read the added and modified tests from the diff or from
+`${PR_HEAD_PATH}`. Look for `QTcpServer`, `QTcpSocket`, `QUdpSocket`,
+`QLocalServer`, `QWebSocketServer`, `bind()`, `listen()`, `connectToHost()`,
+peer processes, and `Fake*` radio, amplifier or tuner classes — and for an
+existing registered target that has quietly gained network behavior. Check the
+test sources themselves, not only `tests.cmake`. These are candidates, not
+proof: distinguish a socket object used as an inert value from a test that
+opens, binds, listens or connects.
+
+When the PR adds or modifies one, record it in the review body — the test, the
+socket type, the target, and whether CI runs it. That entry is the
+notification. It does not block the review and it is not by itself a finding.
+
+A PR that **removes** a socket test or fake peer is the remediation #5254 asks
+for. Record it the same way, then review it normally — never treat a removal as
+a problem.
+
 If there is NO linked issue: say so, review against the PR's own stated
 intent, and note whether GOVERNANCE.md wanted an issue or RFC first
 (architectural changes need an RFC; bug fixes with a clear root cause
