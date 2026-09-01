@@ -119,8 +119,37 @@ expectations, explicit non-goals), then map each requirement to the diff:
 which hunk addresses it? Flag requirements the diff does not touch, and diff
 changes no requirement explains — those feed the scope audit in §3.
 
-Check the tests: is there a test that would fail without this fix? A bug fix
-with no regression test pinning the reported symptom is at minimum a nit.
+Check the tests: is there a test that would fail without this fix? Classify the
+layer before asking for one — `AGENTS.md` "Test-layer boundary" is authoritative:
+
+- Wire encoding, parsing, model tables, scheduling, DSP, capabilities, safety
+  policy: a socket-free CTest.
+- Refusals, malformed or disconnected input, dropped messages, non-events, TX
+  guards: socket-free transport or state-machine injection.
+- Race or lifetime behavior: the sanitizer lane.
+- Positive session, RX, control, or meter convergence: the automation bridge
+  plus `radiocert` against real firmware.
+- A necessary simulator closed loop: an explicit opt-in target, never the
+  default graph.
+
+Never request a synthetic peer standing in for third-party radio, amplifier,
+tuner, or other external-device firmware. A fake peer proves the client agrees
+with our model of the radio, not with the radio; the model freezes while
+firmware moves, so the test fails on correct changes or stays green on real
+divergence. If a fake peer is the only apparent approach, do not ask for it —
+describe the honest coverage boundary instead and route positive convergence to
+bridge/`radiocert` evidence.
+
+Missing coverage is a blocker only when the reported behavior has a
+deterministic, policy-compliant seam, or canon explicitly makes that coverage
+merge-gating. Otherwise report it as a nit — worth naming, not worth withholding
+a merge for. Never count additions to a retired target, or to an unregistered
+target lacking the `# not registered: <reason>` marker, as coverage.
+
+Socket tests where **our own server** is the subject (rigctld, CAT, the TCI
+server, the automation bridge transport) stay legitimate, but check that the PR
+body discloses the test, that its `tests.cmake` block names the socket it binds,
+and that it fails fast or skips with exit 77 rather than consuming its timeout.
 
 If there is NO linked issue: say so, review against the PR's own stated
 intent, and note whether GOVERNANCE.md wanted an issue or RFC first
