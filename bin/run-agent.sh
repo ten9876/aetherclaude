@@ -1064,6 +1064,19 @@ skill_welcome_first_timers() {
               | jq -c 'if type=="array" then . else [] end')
     fi
 
+    # Search API allows 30 requests/min; a 30-PR sweep can make up to 60.
+    # Pace every call and log the error body when GitHub refuses one.
+    search_total() {
+        local q="$1" resp total
+        resp=$(github_api GET "/search/issues?q=${q}&per_page=1" "$token")
+        total=$(printf '%s' "$resp" | jq -r 'if type=="object" then (.total_count // empty) else empty end')
+        if [ -z "$total" ]; then
+            log "Welcome: search failed: $(printf '%s' "$resp" | tr '\n' ' ' | head -c 200)"
+        fi
+        sleep 2
+        printf '%s' "$total"
+    }
+
     # Authors welcomed in this run: the search index lags a freshly posted
     # comment by minutes, so without this an author with several open PRs
     # would be welcomed on each of them in one sweep.
@@ -1087,8 +1100,7 @@ skill_welcome_first_timers() {
 
         # No merged PR by this author yet (GitHub's first-timer definition).
         local merged
-        merged=$(github_api GET "/search/issues?q=repo%3A${REPO}+is%3Apr+is%3Amerged+author%3A${author}&per_page=1" "$token" \
-                 | jq -r 'if type=="object" then (.total_count // empty) else empty end')
+        merged=$(search_total "repo%3A${REPO}+is%3Apr+is%3Amerged+author%3A${author}")
         if [ -z "$merged" ]; then
             log "Welcome: merged-PR search failed for @${author} on #${number}; skipping"
             continue
@@ -1099,8 +1111,7 @@ skill_welcome_first_timers() {
 
         # Not welcomed on any of their PRs already (search across comments).
         local prior
-        prior=$(github_api GET "/search/issues?q=repo%3A${REPO}+is%3Apr+author%3A${author}+%22Welcome+to+AetherSDR%22+in%3Acomments&per_page=1" "$token" \
-                | jq -r 'if type=="object" then (.total_count // empty) else empty end')
+        prior=$(search_total "repo%3A${REPO}+is%3Apr+author%3A${author}+%22Welcome+to+AetherSDR%22+in%3Acomments")
         if [ -z "$prior" ]; then
             log "Welcome: prior-welcome search failed for @${author} on #${number}; skipping"
             continue
