@@ -1032,31 +1032,67 @@ remove_label() {
 
 # =====================================================================
 # SKILL: First-Time Contributor Welcome (no Claude Code — template only)
+#
+# Welcomes the author of their first pull request to the repo. PRs only:
+# GitHub computes FIRST_TIME_CONTRIBUTOR for pull requests, never issues.
+#
+# First-timer status is decided by counting the author's PRs against the
+# repo via the search API rather than reading author_association. That
+# field is viewer-dependent: a maintainer's token sees
+# FIRST_TIME_CONTRIBUTOR, but the App installation token this script runs
+# with sees NONE for the same PR (verified on #5462, 2026-09-07). The
+# association check therefore never matched — 0 welcomes in ~9,400 runs.
+#
+# Scope: a webhook run for pr-N (LOCK_KEY) checks only #N, like PR review.
+# Interval sweeps check the 10 most recently opened PRs.
 # =====================================================================
 skill_welcome_first_timers() {
     log "--- Skill: First-Time Contributor Welcome ---"
     local token="$1"
 
-    # Check recent issues and PRs for first-timers
-    local items
-    items=$(github_api GET "/repos/${REPO}/issues?state=open&sort=created&direction=desc&per_page=10" "$token")
+    local prs
+    if [[ "${LOCK_KEY:-}" =~ ^pr-([0-9]+)$ ]]; then
+        local trigger_pr="${BASH_REMATCH[1]}"
+        prs=$(github_api GET "/repos/${REPO}/pulls/${trigger_pr}" "$token" \
+              | jq -c 'if type=="object" and .number then [.] else [] end')
+        log "Welcome scoped to triggering PR #${trigger_pr}"
+    else
+        prs=$(github_api GET "/repos/${REPO}/pulls?state=open&sort=created&direction=desc&per_page=10" "$token" \
+              | jq -c 'if type=="array" then . else [] end')
+    fi
 
-    echo "$items" | jq -c '.[]' | while read -r item; do
-        local number author association is_pr has_bot_comment
-        number=$(echo "$item" | jq -r '.number')
-        author=$(echo "$item" | jq -r '.user.login')
-        association=$(echo "$item" | jq -r '.author_association')
-        is_pr=$(echo "$item" | jq -r '.pull_request // empty')
+    echo "$prs" | jq -c '.[]' | while read -r pr; do
+        local number author association user_type
+        number=$(echo "$pr" | jq -r '.number')
+        author=$(echo "$pr" | jq -r '.user.login // empty')
+        user_type=$(echo "$pr" | jq -r '.user.type // empty')
+        association=$(echo "$pr" | jq -r '.author_association // "NONE"')
 
-        # Only first-timers
-        if [ "$association" != "FIRST_TIME_CONTRIBUTOR" ] && [ "$association" != "FIRST_TIMER" ]; then
+        # Bots and people already on the project never get a welcome.
+        if [ -z "$author" ] || [ "$user_type" = "Bot" ] || [[ "$author" == *"[bot]"* ]]; then
+            continue
+        fi
+        case "$association" in
+            MEMBER|OWNER|COLLABORATOR) continue ;;
+        esac
+
+        # First PR in this repo <=> the search finds only this one.
+        local total
+        total=$(github_api GET "/search/issues?q=repo%3A${REPO}+is%3Apr+author%3A${author}&per_page=1" "$token" \
+                | jq -r 'if type=="object" then (.total_count // empty) else empty end')
+        if [ -z "$total" ]; then
+            log "Welcome: PR search failed for @${author} on #${number}; skipping"
+            continue
+        fi
+        if [ "$total" -gt 1 ]; then
             continue
         fi
 
-        # Check if we already welcomed them
-        has_bot_comment=$(github_api GET "/repos/${REPO}/issues/${number}/comments?per_page=30" "$token" | \
-            jq '[.[] | select(.user.login == "aethersdr-agent[bot]") | select(.body | test("Welcome to AetherSDR"))] | length')
-        if [ "$has_bot_comment" -gt 0 ]; then
+        # Already welcomed on this PR?
+        local has_bot_comment
+        has_bot_comment=$(github_api GET "/repos/${REPO}/issues/${number}/comments?per_page=50" "$token" | \
+            jq 'if type=="array" then [.[] | select(.user.login == "aethersdr-agent[bot]") | select((.body // "") | test("Welcome to AetherSDR"))] | length else 0 end')
+        if [ "${has_bot_comment:-0}" -gt 0 ]; then
             continue
         fi
 
@@ -1064,16 +1100,19 @@ skill_welcome_first_timers() {
         log "Welcoming first-time contributor @${author} on #${number}"
 
         local body
-        if [ -n "$is_pr" ]; then
-            body="Welcome to AetherSDR, @${author}! Thanks for your first pull request.\n\nA few things that might help:\n- Our [CONTRIBUTING.md](https://github.com/${REPO}/blob/main/CONTRIBUTING.md) covers coding conventions and the PR process\n- CI will run automatically — if it fails, I'll post a comment explaining what went wrong\n- Jeremy (KK7GWY) reviews all PRs before merge\n\nIf you have questions, feel free to ask here or in [Discussions](https://github.com/${REPO}/discussions).\n\n— AetherClaude (automated agent for AetherSDR)"
-        else
-            body="Welcome to AetherSDR, @${author}! Thanks for taking the time to open this issue.\n\nJeremy (KK7GWY) and I will take a look. If we need any additional details, we'll ask here.\n\nIf you have questions about the project, our [Discussions](https://github.com/${REPO}/discussions) page is a good place to start.\n\n— AetherClaude (automated agent for AetherSDR)"
-        fi
+        body="Welcome to AetherSDR, @${author}! Thanks for your first pull request.\n\nA few things that might help:\n- Our [CONTRIBUTING.md](https://github.com/${REPO}/blob/main/CONTRIBUTING.md) covers coding conventions and the PR process\n- CI will run automatically — if it fails, I'll post a comment explaining what went wrong\n- Jeremy (KK7GWY) reviews all PRs before merge\n- Come say hello on the [AetherSDR Discord](https://discord.gg/gscnyDqHWc) — most of the community hangs out there, and merged contributors get the Contributors role\n\nIf you have questions, feel free to ask here or in [Discussions](https://github.com/${REPO}/discussions).\n\n— AetherClaude (automated agent for AetherSDR)"
 
-        local welcome_kind="issue_comment"
-        [ -n "$is_pr" ] && welcome_kind="pr_review"
-        post_bot_comment "/repos/${REPO}/issues/${number}/comments" "$token" \
-            "{\"body\":\"${body}\"}" "$welcome_kind" > /dev/null 2>&1
+        # Capture stdout only: bot-cost.py writes scrub/audit warnings to
+        # stderr, and mixing them in would break the JSON parse below.
+        local response url
+        response=$(post_bot_comment "/repos/${REPO}/issues/${number}/comments" "$token" \
+            "{\"body\":\"${body}\"}" "pr_review") || true
+        url=$(printf '%s' "$response" | jq -r '.html_url // empty' 2>/dev/null || true)
+        if [ -n "$url" ]; then
+            log "Welcome posted on #${number}: ${url}"
+        else
+            log "ERROR: welcome post on #${number} failed: $(printf '%s' "$response" | tr '\n' ' ' | head -c 300)"
+        fi
     done
 }
 

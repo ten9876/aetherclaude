@@ -120,16 +120,24 @@ MCP operations (read PR, post review)
 
 ## Skill 2: First-Time Contributor Welcome
 
-**Trigger:** New PR or issue where `author_association` is
-`FIRST_TIME_CONTRIBUTOR` or `FIRST_TIMER`
+**Trigger:** New PR whose author has no other PR in the repo (search API
+`repo:X is:pr author:Y` total_count <= 1). PRs only: GitHub does not compute
+first-timer status for issues.
+
+Do not use `author_association` for this. Its `FIRST_TIME_CONTRIBUTOR` /
+`FIRST_TIMER` values are only shown to maintainer viewers; the App
+installation token sees `NONE` for the same PR (verified 2026-09-07 on
+#5462), which is why the original check never fired in ~9,400 runs.
 
 **Skip if:**
-- Author already has a welcome comment from `aethersdr-agent[bot]`
+- Author is a bot, or `author_association` is MEMBER / OWNER / COLLABORATOR
+- Author already has a welcome comment from `aethersdr-agent[bot]` on this PR
 
 **What it does:**
-1. Detect first-time status from the `author_association` field (already
-   present in API responses — no extra call needed)
-2. Post a welcome comment via `comment_on_issue`:
+1. Webhook runs (lock key `pr-N`) check only PR N; interval sweeps check
+   the 10 most recently opened PRs
+2. Post a welcome comment (includes the Discord invite) and log the
+   resulting URL, or the error body on failure:
 
    ```
    Welcome to AetherSDR, @username! Thanks for your first contribution.
