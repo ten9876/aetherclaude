@@ -122,8 +122,9 @@ MCP operations (read PR, post review)
 
 **Trigger:** New PR whose author has no merged PR in the repo (search API
 `repo:X is:pr is:merged author:Y` total_count == 0) and has not been
-welcomed on any PR yet (`"Welcome to AetherSDR" in:comments`). One welcome
-per author. PRs only: GitHub does not compute first-timer status for issues.
+welcomed on any PR yet (state file key `welcomed:<login>`; the comment
+search index is eventually consistent and cannot be used for this). One
+welcome per author. PRs only: GitHub does not compute first-timer status for issues.
 
 Do not use `author_association` for this. Its `FIRST_TIME_CONTRIBUTOR` /
 `FIRST_TIMER` values are only shown to maintainer viewers; the App

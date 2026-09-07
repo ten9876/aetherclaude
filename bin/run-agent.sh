@@ -1044,7 +1044,10 @@ remove_label() {
 #
 # Rule (mirrors GitHub's own): the author has no merged PR in the repo, and
 # the bot has not welcomed them on any PR yet. One welcome per author, on
-# whichever of their PRs is being processed.
+# whichever of their PRs is being processed. "Already welcomed" is tracked
+# in the state file (welcomed:<login> = PR number): the search index is
+# eventually consistent and returned 0 for a comment posted 3 minutes
+# earlier, which produced a duplicate welcome on #5366.
 #
 # Scope: a webhook run for pr-N (LOCK_KEY) checks only #N, like PR review.
 # Interval sweeps check the 30 most recently opened PRs.
@@ -1064,7 +1067,7 @@ skill_welcome_first_timers() {
               | jq -c 'if type=="array" then . else [] end')
     fi
 
-    # Search API allows 30 requests/min; a 30-PR sweep can make up to 60.
+    # Search API allows 30 requests/min; a 30-PR sweep can make up to 30.
     # Pace every call and log the error body when GitHub refuses one.
     search_total() {
         local q="$1" resp total
@@ -1077,10 +1080,6 @@ skill_welcome_first_timers() {
         printf '%s' "$total"
     }
 
-    # Authors welcomed in this run: the search index lags a freshly posted
-    # comment by minutes, so without this an author with several open PRs
-    # would be welcomed on each of them in one sweep.
-    local welcomed_authors=" "
     echo "$prs" | jq -c '.[]' | while read -r pr; do
         local number author association user_type
         number=$(echo "$pr" | jq -r '.number')
@@ -1096,7 +1095,10 @@ skill_welcome_first_timers() {
             MEMBER|OWNER|COLLABORATOR) continue ;;
         esac
 
-        case "$welcomed_authors" in *" ${author} "*) continue ;; esac
+        # Already welcomed on some PR (persistent, survives across runs).
+        if [ -n "$(get_state "welcomed:${author}")" ]; then
+            continue
+        fi
 
         # No merged PR by this author yet (GitHub's first-timer definition).
         local merged
@@ -1109,22 +1111,12 @@ skill_welcome_first_timers() {
             continue
         fi
 
-        # Not welcomed on any of their PRs already (search across comments).
-        local prior
-        prior=$(search_total "repo%3A${REPO}+is%3Apr+author%3A${author}+%22Welcome+to+AetherSDR%22+in%3Acomments")
-        if [ -z "$prior" ]; then
-            log "Welcome: prior-welcome search failed for @${author} on #${number}; skipping"
-            continue
-        fi
-        if [ "$prior" -gt 0 ]; then
-            continue
-        fi
-
         # Already welcomed on this PR?
         local has_bot_comment
         has_bot_comment=$(github_api GET "/repos/${REPO}/issues/${number}/comments?per_page=50" "$token" | \
             jq 'if type=="array" then [.[] | select(.user.login == "aethersdr-agent[bot]") | select((.body // "") | test("Welcome to AetherSDR"))] | length else 0 end')
         if [ "${has_bot_comment:-0}" -gt 0 ]; then
+            set_state "welcomed:${author}" "$number"   # backfill state from an existing comment
             continue
         fi
 
@@ -1137,11 +1129,11 @@ skill_welcome_first_timers() {
         # Capture stdout only: bot-cost.py writes scrub/audit warnings to
         # stderr, and mixing them in would break the JSON parse below.
         local response url
-        welcomed_authors="${welcomed_authors}${author} "
         response=$(post_bot_comment "/repos/${REPO}/issues/${number}/comments" "$token" \
             "{\"body\":\"${body}\"}" "pr_review") || true
         url=$(printf '%s' "$response" | jq -r '.html_url // empty' 2>/dev/null || true)
         if [ -n "$url" ]; then
+            set_state "welcomed:${author}" "$number"
             log "Welcome posted on #${number}: ${url}"
         else
             log "ERROR: welcome post on #${number} failed: $(printf '%s' "$response" | tr '\n' ' ' | head -c 300)"
