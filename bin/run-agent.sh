@@ -1036,15 +1036,18 @@ remove_label() {
 # Welcomes the author of their first pull request to the repo. PRs only:
 # GitHub computes FIRST_TIME_CONTRIBUTOR for pull requests, never issues.
 #
-# First-timer status is decided by counting the author's PRs against the
-# repo via the search API rather than reading author_association. That
-# field is viewer-dependent: a maintainer's token sees
-# FIRST_TIME_CONTRIBUTOR, but the App installation token this script runs
-# with sees NONE for the same PR (verified on #5462, 2026-09-07). The
+# First-timer status is decided with the search API rather than by reading
+# author_association. That field is viewer-dependent: a maintainer's token
+# sees FIRST_TIME_CONTRIBUTOR, but the App installation token this script
+# runs with sees NONE for the same PR (verified on #5462, 2026-09-07). The
 # association check therefore never matched — 0 welcomes in ~9,400 runs.
 #
+# Rule (mirrors GitHub's own): the author has no merged PR in the repo, and
+# the bot has not welcomed them on any PR yet. One welcome per author, on
+# whichever of their PRs is being processed.
+#
 # Scope: a webhook run for pr-N (LOCK_KEY) checks only #N, like PR review.
-# Interval sweeps check the 10 most recently opened PRs.
+# Interval sweeps check the 30 most recently opened PRs.
 # =====================================================================
 skill_welcome_first_timers() {
     log "--- Skill: First-Time Contributor Welcome ---"
@@ -1057,10 +1060,14 @@ skill_welcome_first_timers() {
               | jq -c 'if type=="object" and .number then [.] else [] end')
         log "Welcome scoped to triggering PR #${trigger_pr}"
     else
-        prs=$(github_api GET "/repos/${REPO}/pulls?state=open&sort=created&direction=desc&per_page=10" "$token" \
+        prs=$(github_api GET "/repos/${REPO}/pulls?state=open&sort=created&direction=desc&per_page=30" "$token" \
               | jq -c 'if type=="array" then . else [] end')
     fi
 
+    # Authors welcomed in this run: the search index lags a freshly posted
+    # comment by minutes, so without this an author with several open PRs
+    # would be welcomed on each of them in one sweep.
+    local welcomed_authors=" "
     echo "$prs" | jq -c '.[]' | while read -r pr; do
         local number author association user_type
         number=$(echo "$pr" | jq -r '.number')
@@ -1076,15 +1083,29 @@ skill_welcome_first_timers() {
             MEMBER|OWNER|COLLABORATOR) continue ;;
         esac
 
-        # First PR in this repo <=> the search finds only this one.
-        local total
-        total=$(github_api GET "/search/issues?q=repo%3A${REPO}+is%3Apr+author%3A${author}&per_page=1" "$token" \
-                | jq -r 'if type=="object" then (.total_count // empty) else empty end')
-        if [ -z "$total" ]; then
-            log "Welcome: PR search failed for @${author} on #${number}; skipping"
+        case "$welcomed_authors" in *" ${author} "*) continue ;; esac
+
+        # No merged PR by this author yet (GitHub's first-timer definition).
+        local merged
+        merged=$(github_api GET "/search/issues?q=repo%3A${REPO}+is%3Apr+is%3Amerged+author%3A${author}&per_page=1" "$token" \
+                 | jq -r 'if type=="object" then (.total_count // empty) else empty end')
+        if [ -z "$merged" ]; then
+            log "Welcome: merged-PR search failed for @${author} on #${number}; skipping"
             continue
         fi
-        if [ "$total" -gt 1 ]; then
+        if [ "$merged" -gt 0 ]; then
+            continue
+        fi
+
+        # Not welcomed on any of their PRs already (search across comments).
+        local prior
+        prior=$(github_api GET "/search/issues?q=repo%3A${REPO}+is%3Apr+author%3A${author}+%22Welcome+to+AetherSDR%22+in%3Acomments&per_page=1" "$token" \
+                | jq -r 'if type=="object" then (.total_count // empty) else empty end')
+        if [ -z "$prior" ]; then
+            log "Welcome: prior-welcome search failed for @${author} on #${number}; skipping"
+            continue
+        fi
+        if [ "$prior" -gt 0 ]; then
             continue
         fi
 
@@ -1105,6 +1126,7 @@ skill_welcome_first_timers() {
         # Capture stdout only: bot-cost.py writes scrub/audit warnings to
         # stderr, and mixing them in would break the JSON parse below.
         local response url
+        welcomed_authors="${welcomed_authors}${author} "
         response=$(post_bot_comment "/repos/${REPO}/issues/${number}/comments" "$token" \
             "{\"body\":\"${body}\"}" "pr_review") || true
         url=$(printf '%s' "$response" | jq -r '.html_url // empty' 2>/dev/null || true)
