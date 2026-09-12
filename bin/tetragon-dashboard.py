@@ -10846,7 +10846,12 @@ a{{color:#0a6aba}}
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (action)'); return
             if event_type == 'issue_comment' and action != 'created':
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (action)'); return
-            if event_type == 'pull_request' and action not in ('opened', 'synchronize', 'reopened', 'closed'):
+            # 'ready_for_review' is the draft -> ready transition. Drafts are
+            # skipped by skill_review_prs, so this is the moment a PR first
+            # becomes reviewable; CI may well have finished while it was still
+            # a draft, in which case no later check_run event ever arrives and
+            # this is the ONLY webhook that can start the review.
+            if event_type == 'pull_request' and action not in ('opened', 'synchronize', 'reopened', 'closed', 'ready_for_review'):
                 self.send_response(200); self.end_headers(); self.wfile.write(b'Skipped (action)'); return
             # CI events: react on completion, both pass and fail.
             #   - failure → explain-ci posts a CI-failure explainer
