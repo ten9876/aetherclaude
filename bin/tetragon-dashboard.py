@@ -2608,11 +2608,18 @@ def scan_tokens():
 def tail_validation_log(logfile):
     current_run = {'time': '', 'files': 0, 'blocked': []}
     while not os.path.exists(logfile): time.sleep(5)
-    with open(logfile) as f:
-        f.seek(0, 2)
+    # Not a `with`: _tail_rotation_check may swap in a fresh fd on rotation.
+    # validation.log is a rotate-logs.sh target, so the anchor is re-checked
+    # on every EOF cycle to keep the CodeGuard lane on the live file.
+    f = open(logfile)
+    f.seek(0, 2)
+    _inode = os.fstat(f.fileno()).st_ino
+    try:
         while True:
             line = f.readline()
-            if not line: time.sleep(1); continue
+            if not line:
+                f, _inode = _tail_rotation_check(f, logfile, _inode)
+                time.sleep(1); continue
             line = line.strip()
             if not line or 'VALIDATE:' not in line: continue
             with lock:
@@ -2653,6 +2660,9 @@ def tail_validation_log(logfile):
                          'is_agent': True, 'source': 'codeguard',
                          'trace_id': trace_for_entry}
                 append_event(entry)
+    finally:
+        try: f.close()
+        except Exception as _e: _log_exc('tail_validation_log', _e)
 
 # An MCP audit row whose `operation` is shaped like "GET /repos/..." is a
 # transport-layer HTTP poll, not a tool call. Real tool rows carry the tool
@@ -3184,30 +3194,209 @@ def tail_defenseclaw_audit(logfile):
         except Exception as _e: _log_exc('tail_defenseclaw_audit', _e)
 
 
+# Scanner output emitted into the orchestrator log is not a skill-dispatch
+# event — it's a SCAN event. Classify it that way so the Scan filter button
+# picks it up and the agent-walk classifier routes it to the right stage
+# (4 = pre-flight scanning; 5 = prompt-scanner, kept in Stage 5 with the
+# prompt itself). Everything else (real skill markers like 'First-Time
+# Contributor Welcome', '@Mention …', 'Token Rotated …') stays SKILL.
+_ORCH_SCANNERS = {
+    'skill-scanner':   'skill-scan',
+    'mcp-scanner':     'mcp-scan',
+    'vt-scan':         'vt-scan',
+    'prompt-scanner':  'prompt-scan',
+}
+
+
+def _orchestrator_event_fields(skill):
+    """(type, binary, source) for one parsed orchestrator skill marker.
+
+    Shared with bin/replay-orchestrator-log.py — source is what
+    _classify_agent_walk_stage keys the walk lanes off, so the replay must
+    derive it here rather than reimplementing the mapping.
+    """
+    if skill in _ORCH_SCANNERS:
+        return 'SCAN', skill, _ORCH_SCANNERS[skill]
+    return 'SKILL', f'skill:{skill}', 'skill-dispatch'
+
+
+def _parse_orchestrator_line(line):
+    """Map one orchestrator.log line to (skill, detail), or (None, None).
+
+    Pure function over the line text. Extracted from tail_orchestrator_skills
+    so the live follower and bin/replay-orchestrator-log.py derive events from
+    exactly the same rules — a replay that parsed differently would write rows
+    the live path would never have produced, into what is an audit record.
+
+    Order matters: later patterns intentionally override earlier ones for the
+    same line (the generic "--- Skill: X ---" header loses to a more specific
+    per-issue match), which is why every branch assigns rather than returns.
+    """
+    skill = None
+    detail = None
+
+    # Run-level boundaries (lowest specificity — overridden below if a
+    # later pattern matches the same line, which won't happen for these).
+    m = re.search(r'=== Agent run starting ===', line)
+    if m:
+        skill = 'agent-run'; detail = 'starting'
+
+    m = re.search(r'=== Agent run complete ===', line)
+    if m: skill = 'agent-run'; detail = 'complete'
+
+    # Generic skill-section header. Matches "--- Skill: NAME ---" for
+    # every section the orchestrator enters (Welcome, Bug Report
+    # Quality, Issue Pipeline, PR Review, Duplicate Detection, CI
+    # Failure Explainer, Discussion Responder, @Mention Response).
+    # Specific per-issue patterns below override this for richer detail.
+    m = re.search(r'--- Skill: (.+?) ---', line)
+    if m: skill = 'skill-section'; detail = m.group(1)
+
+    m = re.search(r'TRIAGE: Analyzing issue #(\d+)', line)
+    if m: skill = 'triage-issue'; detail = f'Issue #{m.group(1)}'
+
+    m = re.search(r'IMPLEMENT: Fixing issue #(\d+)', line)
+    if m: skill = 'implement-fix'; detail = f'Issue #{m.group(1)}'
+
+    m = re.search(r'Reviewing PR #(\d+): (.+)', line)
+    if m: skill = 'review-pr'; detail = f'PR #{m.group(1)}: {m.group(2)[:40]}'
+
+    m = re.search(r'Checking #(\d+) for duplicates', line)
+    if m: skill = 'detect-duplicate'; detail = f'Issue #{m.group(1)}'
+
+    m = re.search(r'Responding to discussion #(\d+)', line)
+    if m: skill = 'respond-discussion'; detail = f'Discussion #{m.group(1)}'
+
+    m = re.search(r'Skill: @Mention Response \(Issue #(\d+)\)', line)
+    if m: skill = '@mention'; detail = f'Issue #{m.group(1)}'
+
+    m = re.search(r'@Mention Response complete for #(\d+)', line)
+    if m: skill = '@mention-done'; detail = f'Issue #{m.group(1)} responded'
+
+    m = re.search(r'MCP Scanner: (.+)', line)
+    if m: skill = 'mcp-scanner'; detail = m.group(1)
+
+    m = re.search(r'Skill Scanner: (.+)', line)
+    if m: skill = 'skill-scanner'; detail = m.group(1)
+
+    m = re.search(r'VT Scan: (.+)', line)
+    if m: skill = 'vt-scan'; detail = m.group(1)
+
+    m = re.search(r'Prompt Scanner: (.+)', line)
+    if m: skill = 'prompt-scanner'; detail = m.group(1)
+
+    m = re.search(r'Token Rotated: (.+)', line)
+    if m: skill = 'dc-rotate'; detail = m.group(1)
+
+    # --- Orchestrator state-machine and substep markers ---
+    # These describe the orchestrator's own work (state transitions,
+    # phase boundaries, validation, push, PR creation) — not skill
+    # dispatch. Their binary uses the 'skill:orch-*' prefix so the
+    # classifier routes them to Stage 2 (Orchestrator) rather than
+    # Stage 3 (Skill). Without these the Orchestrator lane has only
+    # agent-run start/stop, which is what the dashboard previously
+    # showed.
+    m = re.search(r'Trigger: (\S+)\s*(?:\(([^)]+)\))?', line)
+    if m: skill = 'orch-trigger'; detail = f'{m.group(1)}{":"+m.group(2) if m.group(2) else ""}'
+
+    m = re.search(r'Found (\d+) candidate (issues|prs|discussions)', line)
+    if m: skill = 'orch-pipeline'; detail = f'{m.group(1)} {m.group(2)}'
+
+    m = re.search(r'Issue #(\d+) — detected state: (\S+)', line)
+    if m: skill = 'orch-state'; detail = f'Issue #{m.group(1)}: {m.group(2)}'
+
+    m = re.search(r'Issue #(\d+) — state changed to (\S+)', line)
+    if m: skill = 'orch-transition'; detail = f'Issue #{m.group(1)} → {m.group(2)}'
+
+    m = re.search(r'Issue #(\d+) — already (\S+), skipping', line)
+    if m: skill = 'orch-skip'; detail = f'Issue #{m.group(1)} ({m.group(2)})'
+
+    m = re.search(r'Issue #(\d+) — \d+ PR\(s\) already exist', line)
+    if m: skill = 'orch-skip'; detail = f'Issue #{m.group(1)} (PR exists)'
+
+    m = re.search(r'Issue #(\d+) — asked questions, moving to (\S+)', line)
+    if m: skill = 'orch-transition'; detail = f'Issue #{m.group(1)} → {m.group(2)}'
+
+    m = re.search(r'Issue #(\d+) — triage complete, moving to (\S+)', line)
+    if m: skill = 'orch-transition'; detail = f'Issue #{m.group(1)} → {m.group(2)}'
+
+    m = re.search(r'Issue #(\d+) — Claude handed off to maintainer', line)
+    if m: skill = 'orch-transition'; detail = f'Issue #{m.group(1)} → maintainer-review'
+
+    m = re.search(r'Issue #(\d+) — maintainer authorized', line)
+    if m: skill = 'orch-transition'; detail = f'Issue #{m.group(1)} → implement'
+
+    m = re.search(r'Running Claude Code for issue #(\d+)', line)
+    if m: skill = 'orch-claude-start'; detail = f'Issue #{m.group(1)}'
+
+    m = re.search(r'Issue #(\d+) — (\d+) commit\(s\) from Claude Code', line)
+    if m: skill = 'orch-commits'; detail = f'Issue #{m.group(1)}: {m.group(2)} commits'
+
+    m = re.search(r'Running validation gate for issue #(\d+)', line)
+    if m: skill = 'orch-validate'; detail = f'Issue #{m.group(1)}'
+
+    m = re.search(r'VALIDATION FAILED for issue #(\d+)', line)
+    if m: skill = 'orch-validate-fail'; detail = f'Issue #{m.group(1)}'
+
+    m = re.search(r'Pushing branch (\S+) as signed commit', line)
+    if m: skill = 'orch-push'; detail = f'branch {m.group(1)}'
+
+    m = re.search(r'Signed commit ([0-9a-f]+) pushed to (\S+)', line)
+    if m: skill = 'orch-push-done'; detail = f'{m.group(1)} → {m.group(2)}'
+
+    m = re.search(r'Creating PR for issue #(\d+)', line)
+    if m: skill = 'orch-pr'; detail = f'Issue #{m.group(1)}'
+
+    m = re.search(r'PR #(\d+) created for issue #(\d+)', line)
+    if m: skill = 'orch-pr-done'; detail = f'PR #{m.group(1)} for #{m.group(2)}'
+
+    m = re.search(r'Completed issue #(\d+)', line)
+    if m: skill = 'orch-complete'; detail = f'Issue #{m.group(1)}'
+
+    # Errors / timeouts — last so a generic regex doesn't swallow
+    # a more specific match above. Don't catch random ERROR: lines
+    # from sub-tools (validate-diff, MCP); restrict to orchestrator-
+    # framed errors via the leading [trace_prefix] log marker.
+    m = re.search(r'(ERROR|TIMEOUT|CRITICAL): (.+)', line)
+    if m and not skill: skill = f'orch-{m.group(1).lower()}'; detail = m.group(2)[:80]
+
+    return skill, detail
+
+
 def tail_orchestrator_skills(logfile):
-    """Watch orchestrator log for skill dispatch events."""
+    """Watch orchestrator log for skill dispatch events.
+
+    Sole producer of source='skill-dispatch', which _classify_agent_walk_stage
+    maps to the Agent Walk's Orchestrator and Skill stages; scanner lines from
+    this log feed the Scanning stage. The invariant is that this follower
+    stays anchored to the live file for the life of the process, so those
+    stages track the orchestrator continuously.
+
+    orchestrator.log is a rotate-logs.sh target (copy-truncate at 50 MB), so
+    the anchor is re-checked on every EOF cycle.
+    """
     import re
     while not os.path.exists(logfile):
         time.sleep(5)
-    with open(logfile, 'r') as f:
-        f.seek(0, 2)
+    # Not a `with`: _tail_rotation_check may swap in a fresh fd on rotation
+    # (same reasoning as tail_mcp_audit). The thread runs for process life.
+    f = open(logfile, 'r')
+    f.seek(0, 2)
+    _inode = os.fstat(f.fileno()).st_ino
+    try:
         while True:
             line = f.readline()
             if not line:
+                f, _inode = _tail_rotation_check(f, logfile, _inode)
                 time.sleep(1)
                 continue
             line = line.strip()
             if not line:
                 continue
 
-            skill = None
-            detail = None
+            skill, detail = _parse_orchestrator_line(line)
 
-            # Run-level boundaries (lowest specificity — overridden below if a
-            # later pattern matches the same line, which won't happen for these).
-            m = re.search(r'=== Agent run starting ===', line)
-            if m:
-                skill = 'agent-run'; detail = 'starting'
+            if skill == 'agent-run' and detail == 'starting':
                 # Race fix: when we see an Agent-run-starting line, the
                 # orchestrator has JUST written /Users/aetherclaude/state/
                 # active-trace-id with its full UUID. The tracker thread
@@ -3226,125 +3415,6 @@ def tail_orchestrator_skills(logfile):
                 except (FileNotFoundError, OSError):
                     pass
 
-            m = re.search(r'=== Agent run complete ===', line)
-            if m: skill = 'agent-run'; detail = 'complete'
-
-            # Generic skill-section header. Matches "--- Skill: NAME ---" for
-            # every section the orchestrator enters (Welcome, Bug Report
-            # Quality, Issue Pipeline, PR Review, Duplicate Detection, CI
-            # Failure Explainer, Discussion Responder, @Mention Response).
-            # Specific per-issue patterns below override this for richer detail.
-            m = re.search(r'--- Skill: (.+?) ---', line)
-            if m: skill = 'skill-section'; detail = m.group(1)
-
-            m = re.search(r'TRIAGE: Analyzing issue #(\d+)', line)
-            if m: skill = 'triage-issue'; detail = f'Issue #{m.group(1)}'
-
-            m = re.search(r'IMPLEMENT: Fixing issue #(\d+)', line)
-            if m: skill = 'implement-fix'; detail = f'Issue #{m.group(1)}'
-
-            m = re.search(r'Reviewing PR #(\d+): (.+)', line)
-            if m: skill = 'review-pr'; detail = f'PR #{m.group(1)}: {m.group(2)[:40]}'
-
-            m = re.search(r'Checking #(\d+) for duplicates', line)
-            if m: skill = 'detect-duplicate'; detail = f'Issue #{m.group(1)}'
-
-            m = re.search(r'Responding to discussion #(\d+)', line)
-            if m: skill = 'respond-discussion'; detail = f'Discussion #{m.group(1)}'
-
-            m = re.search(r'Skill: @Mention Response \(Issue #(\d+)\)', line)
-            if m: skill = '@mention'; detail = f'Issue #{m.group(1)}'
-
-            m = re.search(r'@Mention Response complete for #(\d+)', line)
-            if m: skill = '@mention-done'; detail = f'Issue #{m.group(1)} responded'
-
-            m = re.search(r'MCP Scanner: (.+)', line)
-            if m: skill = 'mcp-scanner'; detail = m.group(1)
-
-            m = re.search(r'Skill Scanner: (.+)', line)
-            if m: skill = 'skill-scanner'; detail = m.group(1)
-
-            m = re.search(r'VT Scan: (.+)', line)
-            if m: skill = 'vt-scan'; detail = m.group(1)
-
-            m = re.search(r'Prompt Scanner: (.+)', line)
-            if m: skill = 'prompt-scanner'; detail = m.group(1)
-
-            m = re.search(r'Token Rotated: (.+)', line)
-            if m: skill = 'dc-rotate'; detail = m.group(1)
-
-            # --- Orchestrator state-machine and substep markers ---
-            # These describe the orchestrator's own work (state transitions,
-            # phase boundaries, validation, push, PR creation) — not skill
-            # dispatch. Their binary uses the 'skill:orch-*' prefix so the
-            # classifier routes them to Stage 2 (Orchestrator) rather than
-            # Stage 3 (Skill). Without these the Orchestrator lane has only
-            # agent-run start/stop, which is what the dashboard previously
-            # showed.
-            m = re.search(r'Trigger: (\S+)\s*(?:\(([^)]+)\))?', line)
-            if m: skill = 'orch-trigger'; detail = f'{m.group(1)}{":"+m.group(2) if m.group(2) else ""}'
-
-            m = re.search(r'Found (\d+) candidate (issues|prs|discussions)', line)
-            if m: skill = 'orch-pipeline'; detail = f'{m.group(1)} {m.group(2)}'
-
-            m = re.search(r'Issue #(\d+) — detected state: (\S+)', line)
-            if m: skill = 'orch-state'; detail = f'Issue #{m.group(1)}: {m.group(2)}'
-
-            m = re.search(r'Issue #(\d+) — state changed to (\S+)', line)
-            if m: skill = 'orch-transition'; detail = f'Issue #{m.group(1)} → {m.group(2)}'
-
-            m = re.search(r'Issue #(\d+) — already (\S+), skipping', line)
-            if m: skill = 'orch-skip'; detail = f'Issue #{m.group(1)} ({m.group(2)})'
-
-            m = re.search(r'Issue #(\d+) — \d+ PR\(s\) already exist', line)
-            if m: skill = 'orch-skip'; detail = f'Issue #{m.group(1)} (PR exists)'
-
-            m = re.search(r'Issue #(\d+) — asked questions, moving to (\S+)', line)
-            if m: skill = 'orch-transition'; detail = f'Issue #{m.group(1)} → {m.group(2)}'
-
-            m = re.search(r'Issue #(\d+) — triage complete, moving to (\S+)', line)
-            if m: skill = 'orch-transition'; detail = f'Issue #{m.group(1)} → {m.group(2)}'
-
-            m = re.search(r'Issue #(\d+) — Claude handed off to maintainer', line)
-            if m: skill = 'orch-transition'; detail = f'Issue #{m.group(1)} → maintainer-review'
-
-            m = re.search(r'Issue #(\d+) — maintainer authorized', line)
-            if m: skill = 'orch-transition'; detail = f'Issue #{m.group(1)} → implement'
-
-            m = re.search(r'Running Claude Code for issue #(\d+)', line)
-            if m: skill = 'orch-claude-start'; detail = f'Issue #{m.group(1)}'
-
-            m = re.search(r'Issue #(\d+) — (\d+) commit\(s\) from Claude Code', line)
-            if m: skill = 'orch-commits'; detail = f'Issue #{m.group(1)}: {m.group(2)} commits'
-
-            m = re.search(r'Running validation gate for issue #(\d+)', line)
-            if m: skill = 'orch-validate'; detail = f'Issue #{m.group(1)}'
-
-            m = re.search(r'VALIDATION FAILED for issue #(\d+)', line)
-            if m: skill = 'orch-validate-fail'; detail = f'Issue #{m.group(1)}'
-
-            m = re.search(r'Pushing branch (\S+) as signed commit', line)
-            if m: skill = 'orch-push'; detail = f'branch {m.group(1)}'
-
-            m = re.search(r'Signed commit ([0-9a-f]+) pushed to (\S+)', line)
-            if m: skill = 'orch-push-done'; detail = f'{m.group(1)} → {m.group(2)}'
-
-            m = re.search(r'Creating PR for issue #(\d+)', line)
-            if m: skill = 'orch-pr'; detail = f'Issue #{m.group(1)}'
-
-            m = re.search(r'PR #(\d+) created for issue #(\d+)', line)
-            if m: skill = 'orch-pr-done'; detail = f'PR #{m.group(1)} for #{m.group(2)}'
-
-            m = re.search(r'Completed issue #(\d+)', line)
-            if m: skill = 'orch-complete'; detail = f'Issue #{m.group(1)}'
-
-            # Errors / timeouts — last so a generic regex doesn't swallow
-            # a more specific match above. Don't catch random ERROR: lines
-            # from sub-tools (validate-diff, MCP); restrict to orchestrator-
-            # framed errors via the leading [trace_prefix] log marker.
-            m = re.search(r'(ERROR|TIMEOUT|CRITICAL): (.+)', line)
-            if m and not skill: skill = f'orch-{m.group(1).lower()}'; detail = m.group(2)[:80]
-
             if skill:
                 # The orchestrator log timestamps in local time without a zone
                 # marker, which would parse as local in the browser only by
@@ -3360,28 +3430,7 @@ def tail_orchestrator_skills(logfile):
                 if m_prefix:
                     short = m_prefix.group(1)
                     trace_for_entry = _trace_prefix_to_full.get(short, short)
-                # Scanner output emitted into the orchestrator log is not a
-                # skill-dispatch event — it's a SCAN event. Classify it that
-                # way so the Scan filter button picks it up and the agent-
-                # walk classifier routes it to the right stage (4 = pre-
-                # flight scanning; 5 = prompt-scanner, kept in Stage 5 with
-                # the prompt itself). Everything else (real skill markers
-                # like 'First-Time Contributor Welcome', '@Mention …',
-                # 'Token Rotated …') stays SKILL.
-                _SCANNERS = {
-                    'skill-scanner':   'skill-scan',
-                    'mcp-scanner':     'mcp-scan',
-                    'vt-scan':         'vt-scan',
-                    'prompt-scanner':  'prompt-scan',
-                }
-                if skill in _SCANNERS:
-                    ev_type = 'SCAN'
-                    ev_binary = skill
-                    ev_source = _SCANNERS[skill]
-                else:
-                    ev_type = 'SKILL'
-                    ev_binary = f'skill:{skill}'
-                    ev_source = 'skill-dispatch'
+                ev_type, ev_binary, ev_source = _orchestrator_event_fields(skill)
                 with lock:
                     entry = {
                         'time': ts,
@@ -3395,6 +3444,10 @@ def tail_orchestrator_skills(logfile):
                         'trace_id': trace_for_entry,
                     }
                     append_event(entry)
+    finally:
+        try: f.close()
+        except Exception as _e: _log_exc('tail_orchestrator_skills', _e)
+
 
 def tail_claude_transcripts():
     """Tail Claude Code's session JSONL transcripts under
@@ -3584,13 +3637,24 @@ def tail_claude_transcripts():
 
 def tail_log(logfile):
     while not os.path.exists(logfile): time.sleep(1)
-    with open(logfile) as f:
-        f.seek(0, 2)
+    # Not a `with`: _tail_rotation_check may swap in a fresh fd on rotation.
+    # The default target, /Users/aetherclaude/logs/tetragon.log, is a
+    # rotate-logs.sh target, so the anchor is re-checked on every EOF cycle
+    # to keep the eslogger event stream on the live file.
+    f = open(logfile)
+    f.seek(0, 2)
+    _inode = os.fstat(f.fileno()).st_ino
+    try:
         while True:
             line = f.readline()
-            if not line: time.sleep(0.2); continue
+            if not line:
+                f, _inode = _tail_rotation_check(f, logfile, _inode)
+                time.sleep(0.2); continue
             try: process_event(json.loads(line.strip()))
             except: continue
+    finally:
+        try: f.close()
+        except Exception as _e: _log_exc('tail_log', _e)
 
 def process_event(event):
     with lock:
