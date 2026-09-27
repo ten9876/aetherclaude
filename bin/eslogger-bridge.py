@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 
 # ── .env loader — required so launchd children see WEBHOOK_SECRET etc. ──
+# Runs as root (Endpoint Security needs it), so ~ is /var/root; the service
+# account's .env is read as well. Existing env wins over both (setdefault).
 import os as _os
-_env_path = _os.path.expanduser('~/.env')
-if _os.path.exists(_env_path):
+_SERVICE_ENV = '/Users/aetherclaude/.env'
+for _env_path in (_os.path.expanduser('~/.env'), _SERVICE_ENV):
+    if not _os.path.exists(_env_path):
+        continue
     with open(_env_path) as _f:
         for _line in _f:
             _line = _line.strip()
@@ -76,16 +80,34 @@ EVENT_TYPES = ['exec', 'fork', 'exit', 'rename', 'unlink', 'signal']  # skip ope
 DASHBOARD_URL = 'http://localhost:8080/api/ingest'
 WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', '')
 
+_ingest_warned = False
+
 def send_to_dashboard(events):
-    """POST events to dashboard's /api/ingest endpoint."""
-    import urllib.request
+    """POST events to dashboard's /api/ingest endpoint.
+
+    Signed with X-Ingest-Signature (HMAC-SHA256 of the exact body bytes),
+    matching galileo-log-run.py and run-eval.sh.
+    """
+    global _ingest_warned
+    import urllib.request, hmac, hashlib
     try:
-        payload = json.dumps({'events': events, 'hmac': WEBHOOK_SECRET}).encode()
+        payload = json.dumps({'events': events}).encode()
+        headers = {'Content-Type': 'application/json'}
+        if WEBHOOK_SECRET:
+            headers['X-Ingest-Signature'] = hmac.new(
+                WEBHOOK_SECRET.encode(), payload, hashlib.sha256).hexdigest()
         req = urllib.request.Request(DASHBOARD_URL, data=payload, method='POST',
-            headers={'Content-Type': 'application/json'})
+            headers=headers)
         urllib.request.urlopen(req, timeout=5)
-    except Exception:
-        pass  # Dashboard may be down, don't crash
+    except Exception as e:
+        # Dashboard may be down, don't crash. Report a 401 once on stderr
+        # (launchd routes it to logs/eslogger-error.log).
+        if not _ingest_warned:
+            _ingest_warned = True
+            code = getattr(e, 'code', None)
+            if code == 401:
+                print('[eslogger-bridge] ingest returned 401; check WEBHOOK_SECRET',
+                      file=sys.stderr, flush=True)
 
 def parse_event(line):
     """Parse an eslogger JSON line and extract relevant fields for the dashboard."""

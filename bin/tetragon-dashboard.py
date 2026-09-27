@@ -203,8 +203,11 @@ _SECRET_PATTERNS = [
     (_re.compile(r'(GH_(?:APP_)?TOKEN=)(?!\$)([A-Za-z0-9_\-\.]{10,})'), r'\1***'),
     # printenv that dumps token values
     (_re.compile(r'printenv\s+GH_(?:APP_)?TOKEN\b'), 'printenv ***'),
+    # Anthropic API keys and Claude Code OAuth tokens (sk-ant-*).
+    (_re.compile(r'(sk-ant-[A-Za-z0-9_\-]{20,})'), '***'),
     # File paths to credential stores (full path or bare filename)
     (_re.compile(r'(?:/Users/aetherclaude/)?\.gh-token'), '***'),
+    (_re.compile(r'(?:/Users/aetherclaude/)?(?:\.claude/)?\.credentials\.json'), '***'),
     (_re.compile(r'(?:/Users/aetherclaude/)?\.git-credentials'), '***'),
     (_re.compile(r'/tmp/gh_app_token\.txt'), '***'),
     # Webhook secret. Guard against an unset/empty secret: re.compile('') is a
@@ -327,6 +330,7 @@ ring_stats = {
     'r4_protect_system': True, 'r4_no_new_privs': True, 'r4_private_tmp': True,
     'r5_allowed_tools': 0, 'r5_denied_tools': 0,
     'r6_files_scanned': 0, 'r6_findings': 0, 'r6_blocked': 0,
+    'r6_pr_findings': 0, 'r6_findings_24h': 0, 'r6_pr_findings_24h': 0,
     'r6_mcp_tools_scanned': 0, 'r6_mcp_threats': 0, 'r6_skill_status': 'unknown',
     'r7_mcp_ops': 0, 'r7_blocked': 0, 'r7_rate_limited': 0,
     'r8_validation_checks': 0, 'r8_validation_passed': 0, 'r8_validation_failed': 0,
@@ -1926,38 +1930,41 @@ def scan_rings():
                             except: pass
                 except: pass
 
-                # Ring 6: CodeGuard — count files scanned and findings from validation log.
+                # Ring 6: CodeGuard. Gate runs and blocks come from
+                # validation.log (only the Validation Gate writes there);
+                # finding counts come from codeguard_findings, the one table
+                # both scan paths write — the gate (source='agent') and PR
+                # review (source='pr'). PR scans never touch validation.log,
+                # so counting findings from the log misses all of them.
                 #
-                # r6_findings stays a lifetime total because the scanner tile
-                # reports it as one ("N files · M findings"). compute_posture
-                # needs a 24h figure instead: validation.log is append-only and
-                # never truncated, so scoring the lifetime count meant the ring
-                # could never heal — 169 findings spanning Apr 14 to Jul 23, of
-                # which exactly one ever blocked, pinned it yellow forever. That
-                # contradicts this module's stated contract that every status is
-                # "re-derived every cycle from 24h windows".
+                # r6_findings is the lifetime total the scanner tile reports.
+                # r6_findings_24h feeds compute_posture, which re-derives every
+                # status from 24h windows, and counts gate findings only: a PR
+                # finding is about a contributor's code, not the agent's, and
+                # PR scans are advisory by design.
                 try:
-                    scanned = findings = blocked = findings_24h = 0
-                    cutoff = datetime.now() - timedelta(days=1)
+                    scanned = blocked = 0
                     for vline in open(VALIDATION_LOG):
                         if 'Running CodeGuard' in vline: scanned += 1
                         if 'BLOCKED: CodeGuard' in vline: blocked += 1
-                        if 'CodeGuard found' in vline:
-                            findings += 1
-                            # Lines lead with an ISO stamp, with or without a
-                            # trailing Z: "2026-04-14T12:32:22 VALIDATE: ...".
-                            # Undateable lines are ignored rather than counted,
-                            # so a format drift can't silently re-pin the ring.
-                            try:
-                                stamp = vline.split(None, 1)[0].rstrip('Z')
-                                if datetime.fromisoformat(stamp) >= cutoff:
-                                    findings_24h += 1
-                            except Exception:
-                                pass
                     ring_stats['r6_files_scanned'] = scanned
-                    ring_stats['r6_findings'] = findings
-                    ring_stats['r6_findings_24h'] = findings_24h
                     ring_stats['r6_blocked'] = blocked
+                except: pass
+                try:
+                    cgc = sqlite3.connect(EVENTS_DB, timeout=10)
+                    try:
+                        total, pr_total, agent_24h, pr_24h = cgc.execute(
+                            "SELECT COUNT(*), "
+                            "SUM(source='pr'), "
+                            "SUM(COALESCE(source,'agent')!='pr' AND scan_time>=datetime('now','-24 hours')), "
+                            "SUM(source='pr' AND scan_time>=datetime('now','-24 hours')) "
+                            "FROM codeguard_findings").fetchone()
+                    finally:
+                        cgc.close()
+                    ring_stats['r6_findings'] = total or 0
+                    ring_stats['r6_pr_findings'] = pr_total or 0
+                    ring_stats['r6_findings_24h'] = agent_24h or 0
+                    ring_stats['r6_pr_findings_24h'] = pr_24h or 0
                 except: pass
 
                 # Ring 5: Claude Code permissions
@@ -4409,7 +4416,7 @@ function renderExec(d){
       if(m.kind==='codeguard'){
         const t0=fT(m.t),t1=fT(m.t_end);
         let s=`<div style="white-space:normal;max-width:380px">`+
-          `<div style="font-weight:600;color:#eaf2fb;margin-bottom:5px"><span style="color:#d94fd4">&#9679;</span> CodeGuard run &middot; ${t0}${(t1&&t1!==t0)?'&ndash;'+t1:''} &middot; ${m.count} event${m.count===1?'':'s'}</div>`;
+          `<div style="font-weight:600;color:#eaf2fb;margin-bottom:5px"><span style="color:#d94fd4">&#9679;</span> CodeGuard run &middot; ${t0}${(t1&&t1!==t0)?'&ndash;'+t1:''} &middot; ${m.findings?`${m.findings} finding${m.findings===1?'':'s'}`:''}${m.findings&&m.count>m.findings?' + ':''}${m.count>(m.findings||0)?`${m.count-(m.findings||0)} gate event${m.count-(m.findings||0)===1?'':'s'}`:''}</div>`;
         for(const e of (m.events||[]).slice(0,8)){
           s+=`<div style="display:flex;gap:6px;margin-top:2px;font-size:11px">`+
              `<span style="color:#d94fd4;font-weight:600;flex:0 0 auto">${esc(e.type||'EVENT')}</span>`+
@@ -4827,7 +4834,7 @@ function showCodeGuard(){
 const r=lastData.rings||{};
 let h='<p style="color:#607080;margin-bottom:12px">Cisco DefenseClaw static analysis on changed source files</p>';
 h+=`<div class="modal-finding ${r.r6_blocked>0?'HIGH':'SAFE'}"><span class="sev ${r.r6_blocked>0?'HIGH':'SAFE'}">${r.r6_blocked>0?'BLOCKED':'PASS'}</span> ${r.r6_files_scanned||0} files scanned</div>`;
-if(r.r6_findings>0)h+=`<div class="modal-finding MEDIUM"><span class="sev MEDIUM">MEDIUM</span> ${r.r6_findings} findings (warnings, not blocking)</div>`;
+if(r.r6_findings>0)h+=`<div class="modal-finding MEDIUM"><span class="sev MEDIUM">FINDINGS</span> ${r.r6_findings} findings &middot; ${(r.r6_findings||0)-(r.r6_pr_findings||0)} validation gate, ${r.r6_pr_findings||0} PR review (advisory, not blocking) &middot; ${(r.r6_findings_24h||0)+(r.r6_pr_findings_24h||0)} in 24h</div>`;
 if(r.r6_blocked>0)h+=`<div class="modal-finding HIGH"><span class="sev HIGH">HIGH</span> ${r.r6_blocked} findings blocked commit</div>`;
 h+=`<div id="cg-findings-list" style="margin-top:12px"><p style="color:#607080">Loading finding details...</p></div>`;
 h+=`<div class="detail" style="margin-top:12px;color:#607080">Rules: CG-CRED (credentials), CG-EXEC (unsafe exec), CG-NET (outbound HTTP), CG-DESER (deserialization), CG-SQL (injection), CG-CRYPTO (weak crypto), CG-PATH (traversal)</div>`;
@@ -4842,7 +4849,7 @@ for(const f of d.findings){
 const sc=f.severity==='HIGH'||f.severity==='CRITICAL'?'HIGH':f.severity==='MEDIUM'?'MEDIUM':'SAFE';
 fh+=`<div class="modal-finding ${sc}" style="margin-bottom:8px">`;
 fh+=`<span class="sev ${sc}">${esc(f.severity)}</span> <strong>${esc(f.rule_id)}</strong>: ${esc(f.title)}`;
-fh+=`<div class="detail" style="margin-top:4px">File: <code>${esc(f.file)}</code>`;
+fh+=`<div class="detail" style="margin-top:4px">${f.ref?`${f.source==='pr'?'PR #':'Issue #'}${esc(String(f.ref))} &middot; `:''}File: <code>${esc(f.file)}</code>`;
 if(f.location)fh+=` at ${esc(f.location)}`;
 fh+=`</div>`;
 if(f.description)fh+=`<div class="detail" style="margin-top:2px">${esc(f.description)}</div>`;
@@ -9286,13 +9293,14 @@ a{{color:#0a6aba}}
                 limit = min(int(params.get('limit', ['200'])[0]), 5000)
                 conn = sqlite3.connect(EVENTS_DB)
                 rows = conn.execute(
-                    'SELECT scan_time, file_path, rule_id, severity, title, description, location, remediation FROM codeguard_findings ORDER BY id DESC LIMIT ?',
+                    'SELECT scan_time, file_path, rule_id, severity, title, description, location, remediation, source, ref FROM codeguard_findings ORDER BY id DESC LIMIT ?',
                     (limit,)
                 ).fetchall()
                 total = conn.execute('SELECT COUNT(*) FROM codeguard_findings').fetchone()[0]
                 conn.close()
                 findings = [{'scan_time': r[0], 'file': r[1], 'rule_id': r[2], 'severity': r[3],
-                             'title': r[4], 'description': r[5], 'location': r[6], 'remediation': r[7]} for r in rows]
+                             'title': r[4], 'description': r[5], 'location': r[6], 'remediation': r[7],
+                             'source': r[8] or 'agent', 'ref': r[9]} for r in rows]
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
@@ -9560,17 +9568,32 @@ a{{color:#0a6aba}}
                         payload['tokens_48h'].append({'t': key, 'total': tot or 0, 'inp': inp or 0,
                                                       'out': out or 0, 'cache': cache or 0})
                     # CodeGuard run markers for the activity chart: cluster
-                    # codeguard-source events within 5 minutes into 'runs';
-                    # each carries its events (capped at 12) for the hover
-                    # data card, plus the true total count.
+                    # CodeGuard activity within 5 minutes into 'runs'; each
+                    # carries its entries (capped at 12) for the hover data
+                    # card, plus the true total and finding counts. Two
+                    # sources, merged by time: Validation Gate events
+                    # (events.source='codeguard', from validation.log) and
+                    # finding rows from codeguard_findings, which is the only
+                    # place PR-review scans are recorded.
                     try:
                         cg_rows = conn.execute(
-                            "SELECT CAST(strftime('%s',created_at) AS INTEGER), created_at, "
-                            "type, args, policy FROM events WHERE source='codeguard' "
+                            "SELECT * FROM ("
+                            "SELECT CAST(strftime('%s',created_at) AS INTEGER) AS ep, "
+                            "created_at AS ca, type, args, policy, 0 AS is_finding "
+                            "FROM events WHERE source='codeguard' "
                             "AND created_at>=datetime('now','-24 hours') "
-                            "ORDER BY created_at ASC LIMIT 2000").fetchall()
+                            "UNION ALL "
+                            "SELECT CAST(strftime('%s',scan_time) AS INTEGER), scan_time, "
+                            "COALESCE(severity,''), "
+                            "(CASE WHEN source='pr' THEN 'PR #' ELSE '#' END) "
+                            "|| COALESCE(ref,'?') || ' ' || COALESCE(rule_id,'') || ' ' "
+                            "|| COALESCE(title,'') || ' in ' || COALESCE(file_path,''), "
+                            "'codeguard', 1 "
+                            "FROM codeguard_findings "
+                            "WHERE scan_time>=datetime('now','-24 hours')"
+                            ") ORDER BY ep ASC LIMIT 2000").fetchall()
                         cg_clusters = []
-                        for ep, ca, ty, ar, po in cg_rows:
+                        for ep, ca, ty, ar, po, is_f in cg_rows:
                             if ep is None:
                                 continue
                             evd = {'t': (ca or '').replace(' ', 'T') + 'Z',
@@ -9579,11 +9602,13 @@ a{{color:#0a6aba}}
                                 c = cg_clusters[-1]
                                 c['_end'] = ep
                                 c['count'] += 1
+                                c['findings'] += is_f
                                 if len(c['events']) < 12:
                                     c['events'].append(evd)
                             else:
                                 cg_clusters.append({'t': evd['t'], '_end': ep,
-                                                    'count': 1, 'events': [evd]})
+                                                    'count': 1, 'findings': is_f,
+                                                    'events': [evd]})
                         for c in cg_clusters:
                             c['t_end'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(c.pop('_end')))
                         payload['codeguard_24h'] = cg_clusters[-50:]
@@ -9863,12 +9888,37 @@ a{{color:#0a6aba}}
                     total = conn.execute(
                         f'SELECT COUNT(*) FROM events WHERE {where_sql}', sql_args
                     ).fetchone()[0]
-                    conn.close()
                     events = [{
                         'time': r[0], 'type': r[1], 'uid': r[2], 'binary': r[3],
                         'args': r[4], 'policy': r[5], 'is_agent': bool(r[6]),
                         'source': r[7], 'trace_id': r[8],
                     } for r in rows]
+                    if source == 'codeguard' and not policy_filter and not type_filter:
+                        # Gate events above come from validation.log; findings
+                        # from both scan paths (gate + PR review) live in
+                        # codeguard_findings, the only record of PR scans.
+                        # Merge them newest-first. Only HIGH/CRITICAL carry a
+                        # policy, so the modal flags just those.
+                        cg = conn.execute(
+                            "SELECT scan_time, severity, file_path, rule_id, title, location, "
+                            "source, ref FROM codeguard_findings ORDER BY id DESC LIMIT ?",
+                            (limit,)).fetchall()
+                        total += conn.execute(
+                            'SELECT COUNT(*) FROM codeguard_findings').fetchone()[0]
+                        for st, sev, fp, rid, ttl, loc, src, ref in cg:
+                            line = (loc or '').rsplit(':', 1)[-1] if loc else ''
+                            who = ('PR #' if src == 'pr' else '#') + (ref or '?')
+                            events.append({
+                                'time': (st or '').replace(' ', 'T') + 'Z',
+                                'type': sev or '', 'uid': '', 'binary': 'codeguard',
+                                'args': f"{who} {rid or ''} {ttl or ''} in {fp or ''}"
+                                        + (f":{line}" if line.isdigit() else ''),
+                                'policy': (sev or '').lower() if sev in ('HIGH', 'CRITICAL') else '',
+                                'is_agent': src != 'pr', 'source': 'codeguard', 'trace_id': None,
+                            })
+                        events.sort(key=lambda e: e['time'] or '', reverse=True)
+                        events = events[:limit]
+                    conn.close()
                     self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Access-Control-Allow-Origin', '*'); self.end_headers()
                     self._send_json({'events': events, 'total': total, 'source': source})
                 except Exception as ex:
@@ -10585,11 +10635,12 @@ a{{color:#0a6aba}}
             import hmac, hashlib
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length)
-            # Validate HMAC
+            # Validate HMAC. When a secret is configured a valid signature is
+            # required, same as /api/eval-ingest; every producer signs.
             sig_header = self.headers.get('X-Ingest-Signature', '')
-            if WEBHOOK_SECRET and sig_header:
+            if WEBHOOK_SECRET:
                 expected = hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
-                if not hmac.compare_digest(sig_header, expected):
+                if not sig_header or not hmac.compare_digest(sig_header, expected):
                     self.send_response(401); self.end_headers(); self.wfile.write(b'Invalid signature'); return
             try:
                 payload = json.loads(body)
