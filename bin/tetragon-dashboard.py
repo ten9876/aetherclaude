@@ -4343,7 +4343,7 @@ function renderExec(d){
     ['r3','OS Isolation',fmtCompact(r.r3_es_events||0)+' events',"showRingEvents('eslogger','OS Isolation','Process executions under the agent UID',{type:'EXEC'})"],
     ['r4','Agent Sandbox',(r.r4_sandboxed_runs||0)+' runs','showRing4()'],
     ['r5','Claude Code',fmtCompact(tools.total||0)+' tool calls',"showRingEvents('claude-code','Claude Code Permissions','Tool calls tracked — per-tool breakdown')"],
-    ['r6','CodeGuard',fmtCompact((r.r6_files_scanned||0)+(r.r6_mcp_tools_scanned||0))+' scanned',"showRingEvents('codeguard','Cisco AI Defense','CodeGuard, MCP Scanner, Skill Scanner events')"],
+    ['r6','CodeGuard',fmtCompact((r.r6_files_scanned||0)+(r.r6_mcp_tools_scanned||0))+' scanned','showCodeGuard()'],
     ['r7','MCP Isolation',fmtCompact(r.r7_mcp_ops||0)+' ops',"showRingEvents('mcp','MCP Token Isolation','Named MCP tools · in-process token the agent never sees · validation · rate limiting')"],
     ['r8','Validation Gate',(r.r8_validation_failed||0)+' failed','showValidation()'],
     ['r9','Human Review',(r.r9_prs_open||0)+' open PRs','showRing9()']];
