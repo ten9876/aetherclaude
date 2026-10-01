@@ -26,19 +26,25 @@ whether data reaching the changed code is attacker-controlled.
 
 CodeGuard rules live in
 `/Users/aetherclaude/.claude/plugins/marketplaces/project-codeguard/sources/rules/core/`,
-one markdown file per rule. Read the frontmatter `languages:` field and use
-only rules that apply to the audited files' languages (AetherSDR is C/C++
-with Qt). Start from the rules the triage reasons point at:
+one markdown file per rule. Choose rules by what the change does, not by the
+frontmatter `languages:` field: AetherSDR is C/C++ with Qt, and several
+rules that apply to its network and protocol code list other languages.
 
-| Triage reason | Rules to read first |
+Always apply the three `codeguard-1-*` rules (`hardcoded-credentials`,
+`crypto-algorithms`, `digital-certificates`). Then read the rules the triage
+reasons point at:
+
+| Triage reason | Rules to read |
 |---|---|
 | buffer / memory APIs | `codeguard-0-safe-c-functions.md` |
 | input_read, network, protocol, parser | `codeguard-0-input-validation-injection.md`, `codeguard-0-api-web-services.md` |
+| WebSocket or TCI server code | `codeguard-0-client-side-web-security.md` (WebSockets: `wss://`, origin checks, auth, message size limits), `codeguard-0-input-validation-injection.md` |
 | deserial | `codeguard-0-xml-and-serialization.md` |
 | cmd_exec | `codeguard-0-input-validation-injection.md` |
-| path_ops, file handling | `codeguard-0-file-handling-and-uploads.md` |
-| auth, token, credential, TLS | `codeguard-0-authentication-mfa.md`, `codeguard-1-hardcoded-credentials.md`, `codeguard-1-digital-certificates.md`, `codeguard-1-crypto-algorithms.md` |
+| path_ops, file handling, downloads | `codeguard-0-file-handling-and-uploads.md`, `codeguard-0-api-web-services.md` (SSRF) |
+| auth, token, credential, TLS | `codeguard-0-authentication-mfa.md`, `codeguard-0-additional-cryptography.md` |
 | logging | `codeguard-0-logging.md` |
+| forced by a maintainer, no specific reason | all of the above that match the code you read |
 
 Never report anything inside the rules directory itself, `.claude/`,
 `third_party/`, build output or vendored code — they contain example
