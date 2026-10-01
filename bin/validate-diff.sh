@@ -52,6 +52,7 @@ PROTECTED_PATTERNS=(
     ".github/"
     "Dockerfile"
     "CLAUDE.md"
+    "docs/agents/"
     "CONTRIBUTING.md"
     ".gitignore"
     ".clang-format"
