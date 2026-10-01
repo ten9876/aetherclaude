@@ -23,6 +23,8 @@ ${DETECTOR_CANDIDATES}
 
 ${CODEGUARD_RULES}
 
+**Security audit:** do not launch the `security-audit` subagent in this pass. If your change touches security-sensitive code, the harness runs a separate audit pass on it after the validation gate.
+
 Your task for this pass (IMPLEMENT):
 1. **Read the project constitution first.** If `.specify/memory/constitution.md`
    exists in the working directory (`${WORKSPACE}/.specify/memory/constitution.md`),

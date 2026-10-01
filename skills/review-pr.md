@@ -27,6 +27,8 @@ ${CODEGUARD_FINDINGS}
 
 PR head checkout (empty if the checkout failed): ${PR_HEAD_PATH}
 
+${SECURITY_AUDIT}
+
 ## 0. Stance — adversarially red-team the PR
 
 **Your job is to break the PR, not to bless it.** Assume the author is

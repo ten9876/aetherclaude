@@ -11,6 +11,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_TARGET="/Users/aetherclaude/bin"
 SKILLS_TARGET="/Users/aetherclaude/skills"
+AGENTS_TARGET="/Users/aetherclaude/.claude/agents"
 RESTART=true
 
 for arg in "$@"; do
@@ -37,6 +38,18 @@ echo "==> Syncing skills into $SKILLS_TARGET (via symlinks)"
 for f in "$REPO_DIR"/skills/*.md; do
     name=$(basename "$f")
     target="$SKILLS_TARGET/$name"
+    current=$(readlink "$target" 2>/dev/null || true)
+    if [ "$current" != "$f" ]; then
+        sudo -u aetherclaude ln -sfn "$f" "$target"
+        echo "   linked $name"
+    fi
+done
+
+echo "==> Syncing Claude subagents into $AGENTS_TARGET (via symlinks)"
+sudo -u aetherclaude mkdir -p "$AGENTS_TARGET"
+for f in "$REPO_DIR"/config/claude/agents/*.md; do
+    name=$(basename "$f")
+    target="$AGENTS_TARGET/$name"
     current=$(readlink "$target" 2>/dev/null || true)
     if [ "$current" != "$f" ]; then
         sudo -u aetherclaude ln -sfn "$f" "$target"
