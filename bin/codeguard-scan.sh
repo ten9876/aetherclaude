@@ -67,8 +67,20 @@ for f in findings:
 
 # Since 0.8.5 the scan JSON redacts description/location/remediation. Rebuild
 # the first two from the scanned file and line_number (the pre-0.8.5 shapes:
-# the matched source line, and path:line); remediation is fixed per rule, so
-# reuse the last unredacted text recorded for that rule_id.
+# the matched source line, and path:line). Remediation is a fixed string per
+# rule, mirrored here from internal/scanner/codeguard.go in DefenseClaw 0.8.10.
+REMEDIATION = {
+    "CG-CRED-001": "Move credentials to environment variables or a secrets manager",
+    "CG-CRED-002": "Rotate the key and store in AWS Secrets Manager or environment variables",
+    "CG-CRED-003": "Remove the private key from source code; use a certificate store or secrets manager",
+    "CG-EXEC-001": "Use parameterized execution or an allowlist of commands",
+    "CG-EXEC-002": "Avoid shell=True; pass arguments as a list",
+    "CG-NET-001": "Validate and allowlist outbound URLs",
+    "CG-DESER-001": "Use yaml.safe_load or json for deserialization; never unpickle untrusted data",
+    "CG-SQL-001": "Use parameterized queries with bind variables",
+    "CG-CRYPTO-001": "Use SHA-256 or stronger; see codeguard-0-additional-cryptography",
+    "CG-PATH-001": "Canonicalize paths and validate against an allowed root directory",
+}
 def _redacted(v):
     return isinstance(v, str) and v.startswith("<redacted")
 try:
@@ -76,16 +88,6 @@ try:
         src_lines = fh.read().splitlines()
 except Exception:
     src_lines = []
-known_remediation = {}
-try:
-    rdb = sqlite3.connect(os.environ["EVENTS_DB"], timeout=10)
-    for rule_id, rem in rdb.execute(
-            "SELECT rule_id, remediation FROM codeguard_findings "
-            "WHERE remediation NOT LIKE ? ORDER BY id", ("<redacted%",)):
-        known_remediation[rule_id] = rem
-    rdb.close()
-except Exception:
-    pass
 for f in findings:
     line = f.get("line_number")
     path = os.path.join(os.environ.get("SCAN_ROOT", "."), scan_file)
@@ -93,8 +95,8 @@ for f in findings:
         f["location"] = f"{path}:{line}"
     if _redacted(f.get("description")) and isinstance(line, int) and 0 < line <= len(src_lines):
         f["description"] = src_lines[line - 1].strip()
-    if _redacted(f.get("remediation")) and f.get("id") in known_remediation:
-        f["remediation"] = known_remediation[f["id"]]
+    if _redacted(f.get("remediation")) and f.get("id") in REMEDIATION:
+        f["remediation"] = REMEDIATION[f["id"]]
 
 # accumulate for stdout aggregation
 acc_path = os.environ["ACC"]
