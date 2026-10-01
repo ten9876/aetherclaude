@@ -13,6 +13,9 @@ Covers:
   - rg --pre / --hostname-bin / --search-zip / -z (incl. clusters) rejected
   - sed accepts only line-range printing; -i, w, e and s/// are rejected
   - sort -o / --output / --compress-program and uniq output files rejected
+  - tree output files / --fromfile, file --compile / decompression / sandbox
+    escape / path lists, and --files0-from on find/du/sort/wc rejected
+  - path arguments outside the repo rejected for the new verbs too
   - cd and xargs are rejected with a usage hint, not the generic message
   - run_command executes rg and sed against a temp repo (skipped if rg absent)
 """
@@ -54,6 +57,17 @@ try:
         'sort -k2 src/a.cpp',
         'uniq src/a.cpp',
         'pwd',
+        'tree -L 2 src',
+        'diff src/a.cpp src/a.cpp',
+        'file src/a.cpp',
+        'stat src/a.cpp',
+        'du -sh src',
+        'basename src/a.cpp',
+        'dirname src/a.cpp',
+        'realpath src/a.cpp',
+        'echo hi',
+        'true',
+        'false',
     ]
     for cmd in allowed:
         stages, reason = det.validate_command(cmd, repo)
@@ -76,6 +90,21 @@ try:
         'sort -uo out src/a.cpp',
         'sort --compress-program=sh src/a.cpp',
         'uniq src/a.cpp out',
+        'tree -o out src',
+        'tree --output=out src',
+        'tree -ao out src',
+        'tree --fromfile src/list',
+        'file --compile -m src/a.cpp',
+        'file -C -m src/a.cpp',
+        'file -z src/a.cpp',
+        'file --no-sandbox src/a.cpp',
+        'file -f src/list',
+        'file --files-from=src/list',
+        'du --files0-from=src/list',
+        'wc --files0-from=src/list',
+        'find --files0-from=src/list',
+        'diff src/a.cpp /etc/passwd',
+        'realpath ../outside',
         'xargs cat',
         'cd src',
         'awk 1 src/a.cpp',

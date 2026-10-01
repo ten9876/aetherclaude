@@ -36,14 +36,16 @@ OLLAMA_URL = os.environ.get('ANTARES_OLLAMA_URL', 'http://127.0.0.1:11434/api/ch
 MODEL = os.environ.get('ANTARES_MODEL', 'antares-1b')
 CARTOGRAPHER = '/Users/aetherclaude/bin/codegraph-cartographer.py'
 
-# Read-only verb allowlist. Every one of these only READS — none can write a
-# file or execute another program. rg/sed/sort/uniq can do either, so their
-# write and exec options are blocked per verb in _verb_arg_violation (mirroring
-# cisco-antares-cli's read-only policy). Deliberately excluded: awk (runs
-# shells), tee/dd/cp/mv (write), xargs/env/find-exec (spawn arbitrary
-# programs). rg and sed -n 'N,Mp' are the model's most-requested tools.
-ALLOWED_CMDS = {'grep', 'find', 'cat', 'ls', 'head', 'tail', 'nl', 'wc',
-                'cut', 'tr', 'rg', 'sed', 'sort', 'uniq', 'pwd'}
+# Read-only verb allowlist: cisco-antares-cli's SAFE_COMMAND_ALLOWLIST plus tr.
+# Every one of these only READS. rg/sed/sort/uniq/tree/file have options that
+# write a file, run another program or read a repo-controlled path list; those
+# are blocked per verb in _verb_arg_violation, mirroring Cisco's read-only
+# policy. Deliberately excluded: awk (runs shells), tee/dd/cp/mv (write),
+# xargs/env/find-exec (spawn arbitrary programs).
+ALLOWED_CMDS = {'basename', 'cat', 'cut', 'diff', 'dirname', 'du', 'echo',
+                'false', 'file', 'find', 'grep', 'head', 'ls', 'nl', 'pwd',
+                'realpath', 'rg', 'sed', 'sort', 'stat', 'tail', 'tr', 'tree',
+                'true', 'uniq', 'wc'}
 # Executor PATH: system tools first, Homebrew only for rg.
 EXEC_PATH = '/usr/bin:/bin:/opt/homebrew/bin'
 # Rejection hints for verbs the model reaches for that have no safe form.
@@ -116,9 +118,11 @@ SYSTEM_PROMPT = (
     "\n"
     "SANDBOX RULES — the terminal is read-only (no shell metacharacters except "
     "the pipe), so obey these or the command is REJECTED and your turn wasted:\n"
-    "- Allowed programs (read-only only): rg, grep, find, cat, ls, head, "
-    "tail, nl, wc, cut, tr, sort, uniq, pwd, and sed for printing line "
-    "ranges only. Anything else (awk, xargs, cd, python) is REJECTED.\n"
+    "- Allowed programs (read-only only): rg, grep, find, cat, ls, tree, "
+    "head, tail, nl, wc, cut, tr, sort, uniq, diff, file, stat, du, "
+    "basename, dirname, realpath, pwd, echo, true, false, and sed for "
+    "printing line ranges only. Anything else (awk, xargs, cd, python) is "
+    "REJECTED.\n"
     "- Commands run from the repository root; there is no cd, so use "
     "relative paths (src/core/...).\n"
     "- Pipes ARE allowed: chain the programs above, e.g. "
@@ -175,7 +179,31 @@ def _short_cluster_has(tok, flag, takes_value=frozenset()):
 def _verb_arg_violation(verb, args):
     """Per-verb write/exec option checks for the verbs that have them.
     Returns a rejection reason, or None."""
-    if verb == 'rg':
+    if verb in ('find', 'du', 'sort', 'wc'):
+        for tok in args:
+            if tok in ('-files0-from', '--files0-from') or \
+                    tok.startswith(('-files0-from=', '--files0-from=')):
+                return f'{verb} {tok} reads a repo-controlled path list'
+    if verb == 'tree':
+        tree_vals = set('HLPITXo')
+        for tok in args:
+            if tok == '-o' or tok.startswith('--output=') or \
+                    _short_cluster_has(tok, 'o', tree_vals):
+                return f'tree {tok} writes an output file'
+            if tok in ('--fromfile', '--fromtabfile'):
+                return f'tree {tok} reads a repo-controlled path list'
+    elif verb == 'file':
+        file_vals = set('eFfmMP')
+        for tok in args:
+            if tok == '--compile' or _short_cluster_has(tok, 'C', file_vals):
+                return 'file --compile writes a magic database'
+            if tok in ('--uncompress', '--uncompress-noreport', '--no-sandbox') or \
+                    any(_short_cluster_has(tok, f, file_vals) for f in 'zZS'):
+                return f'file {tok} runs decompressors or drops its sandbox'
+            if tok in ('-f', '--files-from') or tok.startswith('--files-from=') or \
+                    _short_cluster_has(tok, 'f', file_vals):
+                return f'file {tok} reads a repo-controlled path list'
+    elif verb == 'rg':
         rg_vals = set('ABCEFefgjmMrtT')
         for tok in args:
             if tok in ('--pre', '--hostname-bin', '--search-zip') or \
