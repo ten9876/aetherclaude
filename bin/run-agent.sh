@@ -2400,7 +2400,7 @@ work that is already merged."
             # (no hardcoded credentials, modern cryptography) so the fixer writes
             # secure C++ from the start — not just gets scanned after — and point it
             # at the language-scoped rule set to consult on demand. The always-apply
-            # pair is vendored from cosai-oasis/project-codeguard 1.4.0 (Apache-2.0);
+            # pair is vendored from cosai-oasis/project-codeguard 1.5.0 (Apache-2.0);
             # the full 109-rule set is the Project CodeGuard plugin checkout. Fail-open.
             local codeguard_rules=""
             local cg_dir="/Users/Shared/aetherclaude/config/codeguard/rules"
