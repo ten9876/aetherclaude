@@ -111,7 +111,7 @@ env \
         --strict-mcp-config \
         --permission-mode bypassPermissions \
         --allowedTools "Read,Glob,Grep,Bash(git log *),Bash(git show *),Bash(git tag *)" \
-        --disallowedTools "Edit,Write,Bash(sudo *),Bash(curl *),Bash(rm *),WebFetch,WebSearch,Agent" \
+        --disallowedTools "Edit,Write,Bash(sudo *),Bash(curl *),Bash(rm *),WebFetch,WebSearch" \
         --mcp-config /Users/aetherclaude/.claude/mcp-servers.json \
     > "$RELEASE_LOG" 2>&1 || {
     log "ERROR: Release notes compilation failed"

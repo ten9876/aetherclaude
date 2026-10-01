@@ -2883,7 +2883,12 @@ def _session_trace_lookup(filepath):
     cached = _session_trace.get(filepath)
     if cached is not None:
         return cached
-    proj_dir = os.path.basename(os.path.dirname(filepath))
+    # Subagent transcripts live at <project>/<session>/subagents/agent-*.jsonl;
+    # attribute them to the parent session's project directory.
+    parent = os.path.dirname(filepath)
+    if os.path.basename(parent) == 'subagents':
+        parent = os.path.dirname(os.path.dirname(parent))
+    proj_dir = os.path.basename(parent)
     m = _WORKTREE_RE.search(proj_dir)
     if not m:
         _session_trace[filepath] = (None, None)
@@ -3009,8 +3014,9 @@ def tail_sessions():
     while True:
         try:
             # Find all session files
+            # Includes subagent transcripts (<session>/subagents/*.jsonl) so tool
+            # calls made by sandbox subagents reach the stream too.
             files = glob.glob(os.path.join(SESSION_DIR, '**', '*.jsonl'), recursive=True)
-            files = [f for f in files if '/subagents/' not in f]
 
             for filepath in files:
                 try:

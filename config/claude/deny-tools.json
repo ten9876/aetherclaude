@@ -70,7 +70,6 @@
     "Edit(//Users/aetherclaude/.claude/settings.json)",
 
     "WebFetch",
-    "WebSearch",
-    "Agent"
+    "WebSearch"
   ]
 }

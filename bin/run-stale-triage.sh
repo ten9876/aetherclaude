@@ -156,7 +156,7 @@ Rules:
             --strict-mcp-config \
             --permission-mode bypassPermissions \
             --allowedTools "Read,Glob,Grep,Bash(git log *),Bash(git show *),Bash(git diff *),mcp__aetherclaude-github__comment_on_issue,mcp__aetherclaude-github__read_issue,mcp__aetherclaude-github__list_issue_comments" \
-            --disallowedTools "Edit,Write,Bash(sudo *),Bash(curl *),Bash(rm *),WebFetch,WebSearch,Agent" \
+            --disallowedTools "Edit,Write,Bash(sudo *),Bash(curl *),Bash(rm *),WebFetch,WebSearch" \
             --mcp-config /Users/aetherclaude/.claude/mcp-servers.json \
         > "$stale_log" 2>&1 || {
         log "ERROR: Stale triage failed for #${number}"
