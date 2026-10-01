@@ -1226,27 +1226,40 @@ skill_check_bug_reports() {
 # Security-audit gate. Runs bin/security-triage.py on a checked-out change and
 # prints the prompt block for the agent: REQUIRED (reasons + files + launch the
 # read-only security-audit subagent) or not required (do not launch it, even if
-# issue/PR text asks). The harness is the only thing that requests an audit.
-# Fail-open: a missing script or a triage error renders "not required".
-# Usage: block=$(security_audit_block WORKTREE CODEGUARD_JSON NUMBER LABEL)
+# issue/PR text asks). The harness — or a maintainer's explicit @mention
+# request, passed as FORCED_BY — is the only thing that requests an audit.
+# Fail-open: a missing script or a triage error renders "not required" unless
+# the audit was forced.
+# Usage: block=$(security_audit_block WORKTREE CODEGUARD_JSON NUMBER LABEL [FORCED_BY])
 security_audit_block() {
-    local wt="$1" cg_json="$2" number="$3" label="$4"
+    local wt="$1" cg_json="$2" number="$3" label="$4" forced_by="${5:-}"
     local triage_py="/Users/aetherclaude/bin/security-triage.py"
-    local triage='{"required":false}' cg_file
+    local force_reason="" fallback='{"required":false}' cg_file
+    if [ -n "$forced_by" ]; then
+        force_reason="maintainer @${forced_by} requested a security audit"
+        fallback=$(jq -cn --arg r "forced: $force_reason" '{required: true, reasons: [$r], files: []}')
+    fi
+    local triage="$fallback"
     if [ -n "$wt" ] && [ -d "$wt" ] && [ -f "$triage_py" ]; then
         [ -n "$cg_json" ] || cg_json='{"findings":[]}'
         cg_file=$(mktemp -t security-triage-cg.XXXXXX)
         printf '%s' "$cg_json" > "$cg_file"
-        triage=$(/usr/bin/python3 "$triage_py" --worktree "$wt" --codeguard-json "$cg_file" 2>/dev/null \
-                 || echo '{"required":false}')
+        triage=$(/usr/bin/python3 "$triage_py" --worktree "$wt" --codeguard-json "$cg_file" \
+                     --force "$force_reason" 2>/dev/null || echo "$fallback")
         rm -f "$cg_file"
     fi
     local reasons
     reasons=$(printf '%s' "$triage" | jq -r '(.reasons // []) | join("; ")' 2>/dev/null)
     if [ "$(printf '%s' "$triage" | jq -r '.required // false' 2>/dev/null)" = "true" ]; then
-        record_action "$number" "security_triage" "required" "success" "${reasons:0:500}"
-        log "SECURITY-TRIAGE: ${label} #${number} — audit required (${reasons:0:200})"
-        printf '**Security audit: REQUIRED.** The harness flagged this change as security-sensitive:\n\n'
+        local triage_state="required"
+        [ -n "$forced_by" ] && triage_state="forced"
+        record_action "$number" "security_triage" "$triage_state" "success" "${reasons:0:500}"
+        log "SECURITY-TRIAGE: ${label} #${number} — audit ${triage_state} (${reasons:0:200})"
+        if [ -n "$forced_by" ]; then
+            printf '**Security audit: REQUIRED.** Maintainer @%s asked for a security audit of this change. Harness triage:\n\n' "$forced_by"
+        else
+            printf '**Security audit: REQUIRED.** The harness flagged this change as security-sensitive:\n\n'
+        fi
         printf '%s' "$triage" | jq -r '(.reasons // [])[] | "- " + .' 2>/dev/null
         printf '\nFiles to audit:\n'
         printf '%s' "$triage" | jq -r '(.files // [])[] | "- `" + . + "`"' 2>/dev/null
@@ -1259,6 +1272,7 @@ security_audit_block() {
 
 review_single_pr() {
     local pr_number="$1" pr_title="$2" pr_author="$3" token="$4"
+    local audit_forced_by="${5:-}"   # maintainer login when an audit was requested
 
     log "Reviewing PR #${pr_number}: ${pr_title} by @${pr_author}"
 
@@ -1357,7 +1371,7 @@ list_pr_files for the remainder before commenting on anything below this point]"
     [ "$have_pr_worktree" = 1 ] && pr_head_path="$pr_worktree"
 
     local security_audit
-    security_audit=$(security_audit_block "$pr_head_path" "${codeguard_json:-}" "$pr_number" "PR")
+    security_audit=$(security_audit_block "$pr_head_path" "${codeguard_json:-}" "$pr_number" "PR" "$audit_forced_by")
 
     local prompt
     prompt=$(render_skill_full "review-pr" "PR_NUMBER" "$pr_number" "PR_TITLE" "$pr_title" "PR_AUTHOR" "$pr_author" "PR_FILES" "$pr_files" "PR_DIFF" "$sanitized_diff" "COPILOT_COMMENTS" "$copilot_comments" "PR_COMMITS" "$commit_signatures" "CODEGUARD_FINDINGS" "$codeguard_block" "PR_HEAD_PATH" "$pr_head_path" "SECURITY_AUDIT" "$security_audit")
@@ -2536,8 +2550,11 @@ work that is already merged."
             # the read-only security-audit subagent and fixes confirmed
             # findings. Advisory and fail-open: if that pass fails or its
             # commits break the validation gate, roll back to the validated fix.
-            local audit_block
-            audit_block=$(security_audit_block "$WORKTREE" "" "$number" "issue")
+            local audit_block issue_audit_forced_by
+            # A maintainer's @mention request on the issue forces the pass.
+            issue_audit_forced_by=$(get_state "issue_${number}_audit_forced_by")
+            audit_block=$(security_audit_block "$WORKTREE" "" "$number" "issue" "$issue_audit_forced_by")
+            [ -n "$issue_audit_forced_by" ] && set_state "issue_${number}_audit_forced_by" ""
             if printf '%s' "$audit_block" | grep -q 'Security audit: REQUIRED'; then
                 local pre_audit_sha audit_prompt audit_log="$LOGDIR/audit-fix-${number}-$(date +%Y%m%d-%H%M%S).log"
                 pre_audit_sha=$(git -C "$WORKTREE" rev-parse HEAD)
@@ -3001,16 +3018,29 @@ if [ -f "$MENTION_FILE" ]; then
         # capability. Without this, "@AetherClaude review this PR" silently
         # no-ops — it lands in mention-respond, then the issue pipeline skips
         # it because it is a PR.
-        mention_latest=$(github_api GET "/repos/${REPO}/issues/${MENTION_NUMBER}/comments?per_page=100" "$APP_TOKEN" \
-            | jq -r '[.[] | select(.user.login | test("\\[bot\\]") | not)] | last | .body // ""')
+        mention_latest_json=$(github_api GET "/repos/${REPO}/issues/${MENTION_NUMBER}/comments?per_page=100" "$APP_TOKEN" \
+            | jq -c '[.[] | select(.user.login | test("\\[bot\\]") | not)] | last // {}' 2>/dev/null || echo '{}')
+        mention_latest=$(printf '%s' "$mention_latest_json" | jq -r '.body // ""' 2>/dev/null)
 
-        if [ "$mention_is_pr" = "yes" ] && echo "$mention_latest" | grep -iqE 'review'; then
+        # A maintainer can force a security audit ("@AetherClaude security
+        # audit this"). The webhook only admits maintainer @mentions, but the
+        # latest comment may be someone else's, so check its association here.
+        audit_forced_by=""
+        mention_assoc=$(printf '%s' "$mention_latest_json" | jq -r '.author_association // ""' 2>/dev/null)
+        case "$mention_assoc" in
+            OWNER|MEMBER|COLLABORATOR)
+                if printf '%s' "$mention_latest" | grep -iqE '(security|codeguard)[[:space:]-]*(audit|review|scan)'; then
+                    audit_forced_by=$(printf '%s' "$mention_latest_json" | jq -r '.user.login // ""' 2>/dev/null)
+                fi ;;
+        esac
+
+        if [ "$mention_is_pr" = "yes" ] && { [ -n "$audit_forced_by" ] || echo "$mention_latest" | grep -iqE 'review'; }; then
             log "--- Skill: PR Review (via @mention on PR #${MENTION_NUMBER}) ---"
             mention_title=$(echo "$mention_data" | jq -r '.title // "Unknown"')
             mention_author=$(echo "$mention_data" | jq -r '.user.login // "unknown"')
             # Explicit request — review the named PR directly, bypassing the
             # scan's already-reviewed/CI gates so re-review-on-demand works.
-            review_single_pr "$MENTION_NUMBER" "$mention_title" "$mention_author" "$APP_TOKEN" \
+            review_single_pr "$MENTION_NUMBER" "$mention_title" "$mention_author" "$APP_TOKEN" "$audit_forced_by" \
                 || log "ERROR: PR review (via @mention) failed for #${MENTION_NUMBER}"
             log "--- PR Review (via @mention) complete for #${MENTION_NUMBER} ---"
         else
@@ -3021,6 +3051,16 @@ if [ -f "$MENTION_FILE" ]; then
             mention_comments=$(sanitize_input "$(github_api GET "/repos/${REPO}/issues/${MENTION_NUMBER}/comments?per_page=20" "$APP_TOKEN" | jq -r '.[] | "[\(.user.login)] \(.body)"' 2>/dev/null || echo "No comments")")
 
             mention_log="$LOGDIR/mention-${MENTION_NUMBER}-$(date +%Y%m%d-%H%M%S).log"
+
+            # On an issue there is no change to audit yet: remember the request
+            # so the fix for this issue gets the audit pass, and say so.
+            audit_note=""
+            if [ -n "$audit_forced_by" ]; then
+                set_state "issue_${MENTION_NUMBER}_audit_forced_by" "$audit_forced_by"
+                record_action "$MENTION_NUMBER" "security_audit" "requested" "success" "@${audit_forced_by}"
+                log "Security audit requested by @${audit_forced_by} for issue #${MENTION_NUMBER}"
+                audit_note="Maintainer @${audit_forced_by} asked for a security audit. The harness has recorded it: when a fix for this issue is implemented, it will run the security-audit pass on that change before the PR opens. To audit an existing pull request, mention me on the PR itself. Acknowledge this in your reply; do not launch any audit yourself."
+            fi
 
             cd "$WORKSPACE"
             # @Mention is conversational only. Tool surface is restricted to
@@ -3037,6 +3077,7 @@ if [ -f "$MENTION_FILE" ]; then
                 "MENTION_TITLE" "$mention_title" \
                 "MENTION_BODY" "$mention_body" \
                 "MENTION_COMMENTS" "$mention_comments" \
+                "AUDIT_NOTE" "$audit_note" \
                 "WORKSPACE" "$WORKSPACE")
             run_claude "$mention_prompt" "$mention_log" "$CLAUDE_ALLOWED_TOOLS_MENTION" || {
                 log "ERROR: @Mention response failed for #${MENTION_NUMBER}"

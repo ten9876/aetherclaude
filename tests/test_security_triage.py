@@ -17,6 +17,7 @@ Covers:
   - path matching is by whole CamelCase word (RtlSdr is not Tls)
   - boundary matches by function line range, not by file
   - a missing codegraph DB fails open (no boundary signal, no error)
+  - --force requires an audit and lists every changed code file
 """
 import importlib.util
 import os
@@ -105,6 +106,11 @@ try:
 
     r = run(diff('docs/agents/backends.md', ['system("rm")']))
     check(f'docs are ignored ({r})', not r['required'])
+
+    r = st.triage(diff('src/gui/Panel.cpp', ['int x = 1;']), None, db,
+                  'maintainer @alice requested a security audit')
+    check(f'force requires audit and lists the file ({r})', r['required']
+          and r['reasons'][0].startswith('forced:') and r['files'] == ['src/gui/Panel.cpp'])
 
     r = run(diff('src/core/Foo.cpp', ['// QProcess is not used here']))
     check(f'apis in comments do not count ({r})', not r['required'])

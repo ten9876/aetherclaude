@@ -17,12 +17,15 @@ change, and only a `required` verdict lets the agent launch the read-only
 STRONG signals alone require an audit; WEAK ones (memory/format/path APIs,
 which are common in ordinary C++ edits) only together with a strong one.
 
+A maintainer can force an audit (--force REASON): required becomes true and
+every changed code file (third_party/ excepted) is listed for the audit.
+
 Fail-open: any error yields {"required": false, "error": ...} so triage
 never blocks a review or a fix.
 
 Usage:
-  security-triage.py --worktree DIR [--base main] [--codeguard-json FILE]
-  security-triage.py --diff-file PATH [--codeguard-json FILE]
+  security-triage.py --worktree DIR [--base main] [--codeguard-json FILE] [--force REASON]
+  security-triage.py --diff-file PATH [--codeguard-json FILE] [--force REASON]
 """
 import argparse
 import json
@@ -184,7 +187,7 @@ def codeguard_signal(findings):
             if (f.get('id') or f.get('rule_id') or '') not in CODEGUARD_IGNORED_RULES]
 
 
-def triage(diff_text, codeguard_findings=None, db_path=DEFAULT_DB):
+def triage(diff_text, codeguard_findings=None, db_path=DEFAULT_DB, force=''):
     files, ranges = parse_diff(diff_text)
     paths = sorted(files)
     reasons, strong, weak, flagged = [], False, False, set()
@@ -225,7 +228,12 @@ def triage(diff_text, codeguard_findings=None, db_path=DEFAULT_DB):
         reasons.append(f'path: {", ".join(spath[:6])}')
 
     required = strong
-    if weak and not strong:
+    if force:
+        required = True
+        reasons.insert(0, f'forced: {force}')
+        flagged.update(p for p in paths
+                       if p.endswith(CODE_EXT) and not p.startswith('third_party/'))
+    elif weak and not strong:
         reasons.append('weak signals only (memory/format/path APIs) — no audit')
     return {'required': required, 'reasons': reasons, 'categories': categories,
             'files': sorted(flagged), 'changed_files': len(paths)}
@@ -239,6 +247,7 @@ def main():
     ap.add_argument('--base', default='main')
     ap.add_argument('--codeguard-json', help='codeguard-scan.sh output ({"findings": [...]})')
     ap.add_argument('--db', default=DEFAULT_DB)
+    ap.add_argument('--force', default='', help='Require an audit; REASON is recorded (maintainer request).')
     a = ap.parse_args()
     try:
         if a.diff_file:
@@ -253,10 +262,10 @@ def main():
                     findings = json.load(fh).get('findings') or []
             except (OSError, ValueError):
                 findings = []
-        result = triage(diff, findings, a.db)
+        result = triage(diff, findings, a.db, a.force)
     except Exception as e:  # fail-open: triage must never block the caller
-        result = {'required': False, 'reasons': [], 'categories': [], 'files': [],
-                  'error': f'{type(e).__name__}: {e}'}
+        result = {'required': bool(a.force), 'reasons': [f'forced: {a.force}'] if a.force else [],
+                  'categories': [], 'files': [], 'error': f'{type(e).__name__}: {e}'}
     print(json.dumps(result))
     return 0
 
