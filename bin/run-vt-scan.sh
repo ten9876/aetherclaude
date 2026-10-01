@@ -28,9 +28,10 @@ ERR="$LOGDIR/vt-scan-stderr.log"
 
 mkdir -p "$LOGDIR"
 
-# Run the VT subcommand. stderr captures the scanner's progress logs +
+# vt-scan.py calls the VirusTotal analyzer directly (the mcp-scanner CLI
+# subcommand crashes in 4.7.0-4.8.4, upstream #251). stderr captures the scanner's progress logs +
 # any per-file warnings (rate-limit timeouts, API errors, etc.).
-mcp-scanner virustotal "$SCAN_PATH" --format raw > "$OUT" 2> "$ERR" || true
+/Users/aetherclaude/bin/vt-scan.py "$SCAN_PATH" > "$OUT" 2> "$ERR" || true
 
 ts=$(date "+%Y-%m-%dT%H:%M:%S")
 
