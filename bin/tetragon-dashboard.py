@@ -2883,11 +2883,13 @@ def _session_trace_lookup(filepath):
     cached = _session_trace.get(filepath)
     if cached is not None:
         return cached
-    # Subagent transcripts live at <project>/<session>/subagents/agent-*.jsonl;
-    # attribute them to the parent session's project directory.
-    parent = os.path.dirname(filepath)
-    if os.path.basename(parent) == 'subagents':
-        parent = os.path.dirname(os.path.dirname(parent))
+    # Subagent transcripts live under <project>/<session>/subagents/ (directly,
+    # or nested as subagents/workflows/<wf>/agent-*.jsonl); attribute them to
+    # the parent session's project directory.
+    if '/subagents/' in filepath:
+        parent = os.path.dirname(filepath.split('/subagents/', 1)[0])
+    else:
+        parent = os.path.dirname(filepath)
     proj_dir = os.path.basename(parent)
     m = _WORKTREE_RE.search(proj_dir)
     if not m:
