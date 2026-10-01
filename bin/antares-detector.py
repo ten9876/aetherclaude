@@ -8,8 +8,9 @@ Seeded with the Cartographer's --cwe security-overlay slice so it starts from
 the map instead of cold `ls`.
 
 SECURITY: the model issues arbitrary "terminal" commands; this harness NEVER
-runs a shell. Each command is parsed, its verb checked against a four-command
-allowlist (grep/find/cat/ls), path arguments validated to stay inside the
+runs a shell. Each command is parsed, its verb checked against a read-only
+allowlist (ALLOWED_CMDS, with per-verb write/exec options blocked), path
+arguments validated to stay inside the
 read-only repo root, and executed via argv (shell=False) — so pipes, `;`,
 `$()`, backticks, `-exec`, and path escapes are inert by construction. The
 harness itself runs as uid 965 behind the pf firewall as defense in depth.
@@ -24,6 +25,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -35,12 +37,26 @@ MODEL = os.environ.get('ANTARES_MODEL', 'antares-1b')
 CARTOGRAPHER = '/Users/aetherclaude/bin/codegraph-cartographer.py'
 
 # Read-only verb allowlist. Every one of these only READS — none can write a
-# file or execute another program. Deliberately excluded: sed/awk (can write &
-# run shells), sort/uniq (write via -o / positional output file), tee/dd/cp/mv
-# (write), xargs/env/find-exec (spawn arbitrary programs). The model gets its
-# paging idioms (head/tail/nl) and pipes, but no write or exec vector.
+# file or execute another program. rg/sed/sort/uniq can do either, so their
+# write and exec options are blocked per verb in _verb_arg_violation (mirroring
+# cisco-antares-cli's read-only policy). Deliberately excluded: awk (runs
+# shells), tee/dd/cp/mv (write), xargs/env/find-exec (spawn arbitrary
+# programs). rg and sed -n 'N,Mp' are the model's most-requested tools.
 ALLOWED_CMDS = {'grep', 'find', 'cat', 'ls', 'head', 'tail', 'nl', 'wc',
-                'cut', 'tr'}
+                'cut', 'tr', 'rg', 'sed', 'sort', 'uniq', 'pwd'}
+# Executor PATH: system tools first, Homebrew only for rg.
+EXEC_PATH = '/usr/bin:/bin:/opt/homebrew/bin'
+# Rejection hints for verbs the model reaches for that have no safe form.
+VERB_HINTS = {
+    'cd': 'cd is not supported; commands run from the repository root, so '
+          'use relative paths directly (e.g. ls src/core)',
+    'xargs': 'xargs is not supported; pass paths directly or use '
+             'grep -rIn "pattern" dir / rg -n "pattern" dir',
+}
+# sed is allowed only to print line ranges: 'N,Mp', 'Np', '$p', 'N,$p'.
+SED_PRINT_EXPR = re.compile(r'(?:\d+|\$)(?:,(?:\d+|\$))?p')
+SED_ALLOWED_OPTIONS = {'-n', '--quiet', '--silent', '-E', '-r',
+                       '--regexp-extended'}
 # find primaries that act rather than list — never allowed.
 FIND_DANGEROUS = {'-exec', '-execdir', '-delete', '-ok', '-okdir',
                   '-fprint', '-fprintf', '-fls', '-fprint0'}
@@ -100,17 +116,20 @@ SYSTEM_PROMPT = (
     "\n"
     "SANDBOX RULES — the terminal is read-only (no shell metacharacters except "
     "the pipe), so obey these or the command is REJECTED and your turn wasted:\n"
-    "- Allowed programs (read-only only): grep, find, cat, ls, head, tail, nl, "
-    "wc, cut, tr. Anything else (sed, awk, sort, uniq, xargs, python, rg) is "
-    "REJECTED.\n"
+    "- Allowed programs (read-only only): rg, grep, find, cat, ls, head, "
+    "tail, nl, wc, cut, tr, sort, uniq, pwd, and sed for printing line "
+    "ranges only. Anything else (awk, xargs, cd, python) is REJECTED.\n"
+    "- Commands run from the repository root; there is no cd, so use "
+    "relative paths (src/core/...).\n"
     "- Pipes ARE allowed: chain the programs above, e.g. "
-    "grep -rIn \"memcpy\" src | head -n 40.\n"
+    "rg -n \"memcpy\" src | head -n 40.\n"
     "- NOT allowed: redirection '>' '<', ';' '&&' '||' '&', '$()' or "
     "backticks. Paths must stay inside the repository (no '..' or absolute "
     "paths like /etc).\n"
     "- Useful idioms:\n"
-    "    * search a tree:            grep -rIn \"pattern\" src | head -n 40\n"
-    "    * view code AROUND a match: grep -n -B5 -A20 \"pattern\" path/to/file\n"
+    "    * search a tree:            rg -n \"pattern\" src | head -n 40\n"
+    "    * view code AROUND a match: rg -n -B5 -A20 \"pattern\" path/to/file\n"
+    "    * read part of a file:      sed -n '120,180p' path/to/file\n"
     "    * read a file:              cat path/to/file  (or: nl path | head -n 60)\n"
     "\n"
     "You have a limited command budget. A grep hit plus reading the lines "
@@ -140,15 +159,83 @@ def _path_ok(tok, repo_root):
     return full == root or full.startswith(root + os.sep)
 
 
+def _short_cluster_has(tok, flag, takes_value=frozenset()):
+    """True if short-option cluster `tok` (e.g. '-nz') sets `flag`. Scanning
+    stops at the first option that takes a value — the rest is its value."""
+    if not tok.startswith('-') or tok.startswith('--') or len(tok) < 2:
+        return False
+    for ch in tok[1:]:
+        if ch == flag:
+            return True
+        if ch in takes_value:
+            return False
+    return False
+
+
+def _verb_arg_violation(verb, args):
+    """Per-verb write/exec option checks for the verbs that have them.
+    Returns a rejection reason, or None."""
+    if verb == 'rg':
+        rg_vals = set('ABCEFefgjmMrtT')
+        for tok in args:
+            if tok in ('--pre', '--hostname-bin', '--search-zip') or \
+                    tok.startswith(('--pre=', '--hostname-bin=')) or \
+                    _short_cluster_has(tok, 'z', rg_vals):
+                return f'rg {tok} runs another program and is not permitted'
+    elif verb == 'sed':
+        exprs, i = [], 0
+        while i < len(args):
+            tok = args[i]
+            if tok == '-e':
+                i += 1
+                if i >= len(args):
+                    return 'sed -e requires an expression'
+                exprs.append(args[i])
+            elif tok.startswith('-'):
+                if tok not in SED_ALLOWED_OPTIONS:
+                    return f'sed option {tok} is not permitted'
+            elif not exprs:
+                exprs.append(tok)
+            i += 1
+        if not exprs or not all(SED_PRINT_EXPR.fullmatch(e) for e in exprs):
+            return ("sed is allowed only to print line ranges, e.g. "
+                    "sed -n '120,180p' path/to/file")
+    elif verb == 'sort':
+        sort_vals = set('kSTto')
+        for tok in args:
+            if tok in ('-o', '--output') or \
+                    tok.startswith(('--output=', '--compress-program',
+                                    '--files0-from')) or \
+                    _short_cluster_has(tok, 'o', sort_vals):
+                return f'sort {tok} is not permitted (writes or runs a helper)'
+    elif verb == 'uniq':
+        positional, i = 0, 0
+        while i < len(args):
+            tok = args[i]
+            if tok in ('-f', '-s', '-w'):
+                i += 1
+            elif not tok.startswith('-'):
+                positional += 1
+            i += 1
+        if positional > 1:
+            return 'uniq with an output file is not permitted'
+    return None
+
+
 def _validate_stage(argv, repo_root):
     """Validate one pipeline stage (a single program invocation).
     Returns (argv, None) if safe, or (None, reason) if rejected."""
     if not argv:
         return None, 'empty pipeline stage'
     verb = os.path.basename(argv[0])
+    if verb in VERB_HINTS:
+        return None, VERB_HINTS[verb]
     if verb not in ALLOWED_CMDS:
         return None, (f'command "{verb}" not allowed; use only '
                       f'{sorted(ALLOWED_CMDS)}')
+    violation = _verb_arg_violation(verb, argv[1:])
+    if violation:
+        return None, violation
     bad_args = DANGEROUS_ARGS.get(verb, set())
     for tok in argv[1:]:
         if verb == 'find' and tok in FIND_DANGEROUS:
@@ -210,7 +297,7 @@ def run_command(cmd_str, repo_root):
     stages, reason = validate_command(cmd_str, repo_root)
     if reason:
         return f'REJECTED: {reason}'
-    env = {'PATH': '/usr/bin:/bin', 'LANG': 'C'}
+    env = {'PATH': EXEC_PATH, 'LANG': 'C'}
     procs = []
     try:
         prev_out = None
