@@ -599,19 +599,22 @@ def localize(repo, cwe, context, max_commands):
             continue
         # No parseable tool call. The 1B model sometimes rambles instead of
         # terminating (esp. generic mode on a non-security issue) — after a few
-        # consecutive non-calls, stop and treat it as no finding rather than
-        # burning the whole budget (was the #4414 'budget_exhausted' noise).
+        # consecutive non-calls, stop rather than burning the whole budget (was
+        # the #4414 'budget_exhausted' noise). This is not an inspected-and-
+        # clean result, so it gets its own verdict, and the replies are kept
+        # so unparsed tool-call formats can be diagnosed.
         no_call += 1
+        result.setdefault('non_call_replies', []).append((content or '')[:400])
         if no_call >= 3:
-            result['verdict'] = 'clean'
-            result['note'] = f'no tool call after {no_call} nudges — no finding'
+            result['verdict'] = 'no_tool_call'
+            result['note'] = f'no tool call after {no_call} nudges — no verdict'
             break
         messages.append({'role': 'user', 'content':
                          'You did not emit a valid tool call. If you found the '
                          'vulnerable file(s), call submit_vulnerable_files now; if you '
                          'found nothing relevant, call submit_no_vulnerability_found. '
-                         'Otherwise emit exactly one <tool_call> with a grep/find/cat/ls '
-                         'command.'})
+                         'Otherwise emit exactly one <tool_call> with a read-only '
+                         'command such as rg -n "pattern" src.'})
     else:
         result['verdict'] = result['verdict'] if result['verdict'] != 'error' else 'budget_exhausted'
 

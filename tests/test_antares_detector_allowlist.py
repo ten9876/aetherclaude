@@ -19,6 +19,8 @@ Covers:
   - cd and xargs are rejected with a usage hint, not the generic message
   - parse_tool_call keeps the command when arguments is a bare or
     JSON-encoded string instead of an object
+  - three replies without a tool call end as verdict no_tool_call (not
+    clean) and the replies are kept in the result
   - run_command executes rg and sed against a temp repo (skipped if rg absent)
 """
 import importlib.util
@@ -139,6 +141,17 @@ try:
         name, args = det.parse_tool_call(content)
         check(f'parse_tool_call {content[:60]!r} -> {args!r}',
               name == 'terminal' and args.get('command') == want)
+
+    real_chat = det.chat
+    det.chat = lambda messages, timeout=60: 'I think the bug is somewhere in src.'
+    try:
+        res = det.localize(repo, '', 'test context', 15)
+    finally:
+        det.chat = real_chat
+    check(f'no tool call -> no_tool_call verdict ({res.get("verdict")})',
+          res.get('verdict') == 'no_tool_call')
+    check('non-call replies are kept for diagnosis',
+          res.get('non_call_replies') == ['I think the bug is somewhere in src.'] * 3)
 
     out = det.run_command("sed -n '4,5p' src/a.cpp", repo)
     check(f'sed prints a line range ({out!r})', out.splitlines() == [

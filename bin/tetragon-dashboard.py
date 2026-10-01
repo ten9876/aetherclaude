@@ -4123,8 +4123,9 @@ function gotoOps(opts){
 function fmtCompact(n){if(n==null)return '—';if(n>=1e6)return (n/1e6).toFixed(1)+'M';if(n>=1e4)return Math.round(n/1e3)+'K';if(n>=1e3)return (n/1e3).toFixed(1)+'K';return String(n)}
 // Friendly label for an Antares verdict — the raw states (clean, budget_
 // exhausted, timeout) all mean "no candidate files reported"; only the model
-// being down/erroring is 'skipped'.
-function antVerdictLabel(v){v=(v||'').toString().toLowerCase();if(v==='vulnerable')return 'CANDIDATES';if(v==='server_unreachable'||v==='error')return 'SKIPPED';return 'NO FINDINGS';}
+// being down/erroring is 'skipped', and no_tool_call (the model never issued
+// a usable tool call) is 'no verdict'.
+function antVerdictLabel(v){v=(v||'').toString().toLowerCase();if(v==='vulnerable')return 'CANDIDATES';if(v==='server_unreachable'||v==='error')return 'SKIPPED';if(v==='no_tool_call')return 'NO VERDICT';return 'NO FINDINGS';}
 function deltaHtml(cur,prev,upIsGood){
   if(cur==null||prev==null)return '<span class="x-delta" style="color:var(--muted-dim)">—</span>';
   const d=cur-prev;
