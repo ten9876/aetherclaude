@@ -422,7 +422,15 @@ def parse_tool_call(content):
     if not isinstance(obj, dict):
         return None, None
     args = obj.get('arguments', {})
-    if not isinstance(args, dict):        # model sometimes emits a bare string
+    if isinstance(args, str):
+        # The model sometimes emits arguments as a string: either JSON-encoded
+        # (OpenAI style) or the bare terminal command itself.
+        try:
+            decoded = json.loads(args)
+        except ValueError:
+            decoded = None
+        args = decoded if isinstance(decoded, dict) else {'command': args}
+    if not isinstance(args, dict):
         args = {}
     return obj.get('name'), args
 

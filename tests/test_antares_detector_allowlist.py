@@ -17,6 +17,8 @@ Covers:
     escape / path lists, and --files0-from on find/du/sort/wc rejected
   - path arguments outside the repo rejected for the new verbs too
   - cd and xargs are rejected with a usage hint, not the generic message
+  - parse_tool_call keeps the command when arguments is a bare or
+    JSON-encoded string instead of an object
   - run_command executes rg and sed against a temp repo (skipped if rg absent)
 """
 import importlib.util
@@ -125,6 +127,19 @@ try:
         check(f'rg executes ({out!r})', '7:line 7 memcpy' in out)
     else:
         print('SKIP rg execution (rg not installed)')
+    parse_cases = [
+        ('<tool_call>{"name": "terminal", "arguments": {"command": "ls src"}}',
+         'ls src'),
+        ('<tool_call>{"name": "terminal", "arguments": "rg -n \\"free\\\\(\\" src"}}\n</think>',
+         'rg -n "free\\(" src'),
+        ('<tool_call>{"name": "terminal", "arguments": "{\\"command\\": \\"ls src\\"}"}',
+         'ls src'),
+    ]
+    for content, want in parse_cases:
+        name, args = det.parse_tool_call(content)
+        check(f'parse_tool_call {content[:60]!r} -> {args!r}',
+              name == 'terminal' and args.get('command') == want)
+
     out = det.run_command("sed -n '4,5p' src/a.cpp", repo)
     check(f'sed prints a line range ({out!r})', out.splitlines() == [
         'line 4 memcpy(dst, src, len);', 'line 5 memcpy(dst, src, len);'])
