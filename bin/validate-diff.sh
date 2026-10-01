@@ -75,6 +75,7 @@ done
 # into CMakeLists.txt (client_eq_test, client_eq_smoothing_test, …) and
 # Claude correctly follows that pattern when adding regression coverage
 # for a bug fix. Without it, every fix that adds a test gets blocked.
+# Admit only these AetherSDR build modules, not arbitrary cmake/ files.
 for file in $CHANGED_FILES; do
     if [[ "$file" != src/* ]] \
        && [[ "$file" != tests/* ]] \
@@ -82,6 +83,8 @@ for file in $CHANGED_FILES; do
        && [[ "$file" != resources/* ]] \
        && [[ "$file" != resources.qrc ]] \
        && [[ "$file" != CMakeLists.txt ]] \
+       && [[ "$file" != cmake/AetherQtPin.cmake ]] \
+       && [[ "$file" != cmake/AetherBuildIdentity.cmake ]] \
        && [[ "$file" != third_party/* ]] \
        && [[ "$file" != packaging/* ]] \
        && [[ "$file" != plugins/* ]]; then
