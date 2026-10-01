@@ -3152,7 +3152,26 @@ def tail_defenseclaw_audit(logfile):
             # Build a short human summary for the args column
             args_text = ''
             policy = ''
-            if etype == 'lifecycle':
+            if 'event_name' in rec:
+                # v8 envelope (DefenseClaw 0.8.5+). Body values are mostly
+                # redacted; action / event_name / bucket are not. Keep the
+                # tokens the stage classifier keys on: 'sidecar stop'-style
+                # actions, 'tool', and 'verdict' for decision events.
+                ts = coerce_ms_iso(rec.get('observed_at') or rec.get('timestamp') or '')
+                sev = (rec.get('severity') or rec.get('log_level') or 'INFO').upper()
+                name = rec.get('event_name') or 'unknown'
+                action = (rec.get('action') or '').replace('-', ' ').replace('_', ' ').strip()
+                args_text = f"{action} — {name}" if action else name
+                body = rec.get('body') or {}
+                for key in ('decision', 'verdict', 'outcome'):
+                    val = body.get(key) if isinstance(body, dict) else None
+                    if isinstance(val, str) and val and not val.startswith('<redacted'):
+                        args_text += f" {key}={val}"
+                        break
+                if name.startswith(('guardrail.', 'hook.decision', 'policy.verdict')):
+                    args_text += ' verdict'
+                policy = rec.get('bucket') or ''
+            elif etype == 'lifecycle':
                 lc = rec.get('lifecycle', {}) or {}
                 args_text = f"{lc.get('subsystem','?')} {lc.get('transition','?')}"
                 detail = (lc.get('details') or {}).get('details') or ''
