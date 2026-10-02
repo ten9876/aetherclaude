@@ -6,7 +6,7 @@
     <string>com.aetherclaude.dc-gateway</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/Shared/aetherclaude/bin/run-defenseclaw-gateway.sh</string>
+        <string>/Users/aetherclaude/.local/bin/defenseclaw-gateway</string>
     </array>
     <key>UserName</key>
     <string>aetherclaude</string>

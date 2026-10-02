@@ -54,16 +54,14 @@ mv "$tmp" "$DASH_ENV_FILE"
 trap - EXIT
 
 # 4. Restart gateway via launchd so the new token takes effect.
-# The gateway runs under com.aetherclaude.dc-gateway (run-defenseclaw-gateway.sh
-# supervisor); kickstart -k cleanly stops and respawns it through launchd
-# rather than racing the supervisor with a direct `gateway stop` call.
+# launchd runs the gateway in the foreground under com.aetherclaude.dc-gateway
+# (KeepAlive); kickstart -k restarts it through launchd. Without a sudoers
+# entry for that, stop the foreground gateway process (this user owns it) and
+# KeepAlive respawns it, reading the new token from .env at startup. The match
+# is the bare binary path, so `defenseclaw-gateway tui` sessions are left alone.
 if ! /usr/bin/sudo -n /bin/launchctl kickstart -k system/com.aetherclaude.dc-gateway >/dev/null 2>&1; then
-    # No sudoers entry for the dc-gateway kickstart: stop the gateway (this
-    # user owns it). The supervisor sees its PID exit within 30s and exits;
-    # launchd's KeepAlive respawns it, and it starts the gateway with the
-    # new token from .env.
-    defenseclaw-gateway stop >/dev/null 2>&1 || true
-    log "Token rotation: dc-gateway kickstart not permitted; stopped gateway for supervisor restart"
+    /usr/bin/pkill -TERM -u "$(id -u)" -f '^/Users/aetherclaude/.local/bin/defenseclaw-gateway$' || true
+    log "Token rotation: dc-gateway kickstart not permitted; stopped gateway for launchd restart"
 fi
 sleep 3
 
