@@ -17,7 +17,7 @@ const ENV_FILE = '/Users/aetherclaude/.env';
 const APP_KEY_FILE = '/Users/aetherclaude/.github-app-key.pem';
 const AUDIT_LOG = '/Users/aetherclaude/logs/mcp-audit.log';
 const PROXY = process.env.HTTPS_PROXY || '';
-const MAX_COMMENT_LENGTH = 16000;
+const MAX_COMMENT_LENGTH = 32000;  // GitHub accepts up to 65536
 const MAX_PR_BODY_LENGTH = 8000;
 
 const rateLimits = {};
