@@ -815,6 +815,14 @@ run_claude() {
 
                 local last_mtime
                 last_mtime=$(stat -f %m "$active_jsonl" 2>/dev/null || echo "$hb_now")
+                # A subagent (e.g. security-audit) writes its own transcript
+                # under <session>/subagents/ while the parent waits, so its
+                # activity counts as this run's activity.
+                local sub_dir="$session_dir/$claude_session_id/subagents" sub_mtime
+                if [ -d "$sub_dir" ]; then
+                    sub_mtime=$(find "$sub_dir" -type f -name '*.jsonl' -exec stat -f %m {} + 2>/dev/null | sort -n | tail -1)
+                    [ -n "$sub_mtime" ] && [ "$sub_mtime" -gt "$last_mtime" ] && last_mtime=$sub_mtime
+                fi
                 local idle=$((hb_now - last_mtime))
                 if [ "$idle" -gt "$CLAUDE_MAX_IDLE" ]; then
                     log "STALE: Claude Code no tool activity for ${idle}s (PID $claude_pid, elapsed ${hb_elapsed}s), killing"
