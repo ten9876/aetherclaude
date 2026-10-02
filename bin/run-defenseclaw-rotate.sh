@@ -57,13 +57,20 @@ trap - EXIT
 # The gateway runs under com.aetherclaude.dc-gateway (run-defenseclaw-gateway.sh
 # supervisor); kickstart -k cleanly stops and respawns it through launchd
 # rather than racing the supervisor with a direct `gateway stop` call.
-/usr/bin/sudo -n /bin/launchctl kickstart -k system/com.aetherclaude.dc-gateway >/dev/null 2>&1 || true
+if ! /usr/bin/sudo -n /bin/launchctl kickstart -k system/com.aetherclaude.dc-gateway >/dev/null 2>&1; then
+    # No sudoers entry for the dc-gateway kickstart: stop the gateway (this
+    # user owns it). The supervisor sees its PID exit within 30s and exits;
+    # launchd's KeepAlive respawns it, and it starts the gateway with the
+    # new token from .env.
+    defenseclaw-gateway stop >/dev/null 2>&1 || true
+    log "Token rotation: dc-gateway kickstart not permitted; stopped gateway for supervisor restart"
+fi
 sleep 3
 
 # 5. Reload dashboard so the new bearer is read from .env at startup.
 # `launchctl kickstart -k system/...` requires root; a tight sudoers entry
-# at /etc/sudoers.d/aetherclaude-dc-rotate grants exactly these two commands
-# (dashboard + dc-gateway kickstart).
+# at /etc/sudoers.d/aetherclaude-dc-rotate grants the dashboard kickstart
+# (and, where present, the dc-gateway one used in step 4).
 /usr/bin/sudo -n /bin/launchctl kickstart -k system/com.aetherclaude.dashboard >/dev/null 2>&1 || true
 
 # 6. Log a single line the dashboard tailer will catch
