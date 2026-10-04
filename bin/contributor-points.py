@@ -34,8 +34,12 @@ CURSOR_OVERLAP = timedelta(minutes=10)
 OWNER, NAME = REPO.split('/')
 DB_PATH = os.environ.get('CONTRIBUTOR_DB', '/Users/aetherclaude/data/contributors.db')
 MAINTAINERS = {'ten9876'}           # scored and shown, never eligible to win
-BOTS = {'aethersdr-agent[bot]', 'aethersdr-agent', 'dependabot[bot]', 'dependabot',
-        'Copilot', 'copilot-pull-request-reviewer[bot]', 'github-actions[bot]'}
+# Not ranked. AetherClaude is the agent's GitHub user account (its PRs are
+# opened under it as well as under the App); claude is the account commits
+# co-authored by Claude are attributed to. Compared case-insensitively.
+BOTS = {b.lower() for b in ('aethersdr-agent[bot]', 'aethersdr-agent', 'AetherClaude', 'claude',
+                            'dependabot[bot]', 'dependabot', 'Copilot', 'copilot-pull-request-reviewer[bot]',
+                            'github-actions[bot]')}
 BREAK_WORKFLOWS = ('ci.yml', 'full-suite.yml')   # run on every push to main
 INFRA_CAUSES = {'disk', 'oom', 'timeout', 'runner'}
 CONFIRM_LABELS = {'bug', 'enhancement'}
@@ -290,7 +294,7 @@ def set_state(db, name, value):
 def role_of(login, user_type=None):
     if not login:
         return 'ghost'
-    if user_type == 'Bot' or login in BOTS or login.endswith('[bot]'):
+    if user_type == 'Bot' or login.lower() in BOTS or login.endswith('[bot]'):
         return 'bot'
     return 'maintainer' if login in MAINTAINERS else 'contributor'
 
@@ -1176,7 +1180,9 @@ def standings(db, led, start=None, end=None):
         r['events'].append({'rule': rule, 'points': pts, 'at': at, 'ref': ref, 'note': note})
     out = []
     for login, r in rows.items():
-        kind, role, avatar, name = people.get(login, ('User', role_of(login), '', None))
+        kind, role, avatar, name = people.get(login, ('User', None, '', None))
+        if role != 'contributor' or kind != 'Backer':
+            role = role_of(login, kind)   # current rules, not the role stored when first seen
         steward = sum(e['points'] for e in r['events'] if e['rule'] in STEWARD_RULES)
         backer = sum(e['points'] for e in r['events'] if e['rule'] in BACKER_RULES)
         out.append({'login': login, 'name': name, 'role': role, 'eligible': role == 'contributor', 'avatar': avatar,
