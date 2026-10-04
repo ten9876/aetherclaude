@@ -254,6 +254,6 @@ up when this host is unreachable. To keep the two from drifting:
 
 `/leaderboard` on the dashboard: tabs for this week, the last releases and all
 time; the leader (or the week's winner) at the top; a row per person with
-points by category, the maintainer in score order but unranked and marked
-**not eligible**; each row expands into the point-by-point ledger; the main
+points by category, the maintainer in score order but unranked, with a
+**MAINTAINER** badge (its tooltip says the maintainer can't win); each row expands into the point-by-point ledger; the main
 breaks in the window; and the rules.
