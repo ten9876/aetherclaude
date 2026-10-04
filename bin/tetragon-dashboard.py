@@ -1544,6 +1544,182 @@ def compute_posture():
             'computed_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
             'rings': rings}
 
+# ── Main-branch CI health (exec view "State of main" panel) ─────────────
+# Latest run on main of every workflow that guards it, with per-job and
+# failed-step detail, and the names of failed ctest tests for the lanes that
+# report them. Full Suite and Sanitizers publish their failure list into a
+# labeled tracking issue (job annotation "Opened #N" / "Appended to #N"), so
+# the test names come from that issue's body or the comment carrying this
+# run's URL — all over api.github.com. Completed runs are immutable, so their
+# jobs and test lists are cached by id; steady state is ~1 call per workflow
+# per poll. Rides /api/events as ring_stats['main_ci'].
+MAIN_CI_REPO = 'aethersdr/AetherSDR'
+MAIN_CI_POLL_SECS = 90
+# (key, label, workflow file or path, cadence note shown under the row)
+MAIN_CI_WORKFLOWS = [
+    ('ci', 'CI', 'ci.yml', 'every push'),
+    ('full-suite', 'Full Suite', 'full-suite.yml', 'every push · full ctest'),
+    ('codeql', 'CodeQL', 'codeql.yml', 'pushes touching src/ · tools/'),
+    ('code-quality', 'CodeQL · Code Quality', 'dynamic/github-code-quality/codeql', 'every push'),
+    ('canary', 'System Libraries Canary', 'system-libs-canary.yml', 'pushes touching src/ · tests/ + daily'),
+    ('sanitizers', 'Sanitizers', 'sanitizers.yml', 'weekly · Sat 09:00 UTC'),
+]
+_main_ci_jobs_cache = {}    # run_id -> jobs list (completed runs only)
+_main_ci_tests_cache = {}   # job_id -> {'issue': N|None, 'tests': [...]}
+_main_ci_wf_ids = {}        # dynamic workflow path -> numeric id
+_FAILED_TEST_RE = re.compile(r'^\s*\d+\s+-\s+([A-Za-z0-9_.\-]+)\s+\(([^)]+)\)')
+
+def _parse_failed_tests(text, cap=60):
+    """ctest's 'The following tests FAILED:' block -> [{'name','status'}]."""
+    out, inside = [], False
+    for line in (text or '').splitlines():
+        if 'The following tests FAILED:' in line:
+            inside, out = True, []
+            continue
+        if inside:
+            m = _FAILED_TEST_RE.match(line)
+            if m:
+                if len(out) < cap:
+                    out.append({'name': m.group(1), 'status': m.group(2)})
+            elif line.strip():
+                break
+    return out
+
+def _main_ci_get(opener, hdrs, path):
+    import urllib.request
+    url = path if path.startswith('https://') else f'https://api.github.com/repos/{MAIN_CI_REPO}/{path}'
+    with opener.open(urllib.request.Request(url, headers=hdrs), timeout=15) as r:
+        return json.loads(r.read().decode())
+
+def _main_ci_failed_tests(opener, hdrs, job_id, run_id, run_created):
+    """Failed test names for one job, from the tracking issue it opened or
+    appended to. Cached per job once resolved (or once known to have none)."""
+    if job_id in _main_ci_tests_cache:
+        return _main_ci_tests_cache[job_id]
+    res = {'issue': None, 'tests': []}
+    anns = _main_ci_get(opener, hdrs, f'check-runs/{job_id}/annotations?per_page=50')
+    num = None
+    for a in anns or []:
+        m = re.search(r'(?:Opened|Appended to) #(\d+)', a.get('message') or '')
+        if m:
+            num = int(m.group(1))
+            break
+    if num:
+        res['issue'] = num
+        marker = f'/actions/runs/{run_id}'
+        issue = _main_ci_get(opener, hdrs, f'issues/{num}')
+        text = issue.get('body') or ''
+        if marker not in text:
+            text = ''
+            comments = _main_ci_get(opener, hdrs,
+                                    f'issues/{num}/comments?per_page=100&since={run_created}')
+            for c in comments or []:
+                if marker in (c.get('body') or ''):
+                    text = c['body']
+                    break
+        res['tests'] = _parse_failed_tests(text)
+    _main_ci_tests_cache[job_id] = res
+    return res
+
+def _main_ci_run(opener, hdrs, w):
+    """Compact run record with jobs (and failed tests for failed jobs)."""
+    rid = w['id']
+    done = w.get('status') == 'completed'
+    jobs = _main_ci_jobs_cache.get(rid) if done else None
+    if jobs is None:
+        raw = _main_ci_get(opener, hdrs, f'actions/runs/{rid}/jobs?per_page=100').get('jobs', [])
+        jobs, complete = [], True
+        for j in raw:
+            failed_step = next((s.get('name') for s in (j.get('steps') or [])
+                                if s.get('conclusion') in ('failure', 'timed_out', 'cancelled')), None)
+            rec = {'id': j.get('id'), 'name': j.get('name', ''),
+                   'status': j.get('status', ''), 'conclusion': j.get('conclusion'),
+                   'url': j.get('html_url', ''), 'failed_step': failed_step,
+                   'started_at': j.get('started_at'), 'completed_at': j.get('completed_at')}
+            if j.get('conclusion') == 'failure' and j.get('status') == 'completed':
+                try:
+                    ft = _main_ci_failed_tests(opener, hdrs, j['id'], rid, w.get('created_at', ''))
+                    rec['issue'] = ft['issue']
+                    rec['failed_tests'] = ft['tests']
+                except Exception as _e:
+                    complete = False  # retry next poll rather than cache a gap
+                    _log_exc('main_ci_failed_tests', _e)
+            jobs.append(rec)
+        if done and complete:
+            _main_ci_jobs_cache[rid] = jobs
+    return {'id': rid, 'sha': (w.get('head_sha') or '')[:7],
+            'title': (w.get('display_title') or '')[:100],
+            'event': w.get('event', ''), 'status': w.get('status', ''),
+            'conclusion': w.get('conclusion'), 'created_at': w.get('created_at', ''),
+            'updated_at': w.get('updated_at', ''), 'url': w.get('html_url', ''),
+            'jobs': jobs}
+
+def fetch_main_ci(opener, hdrs):
+    out = {'repo': MAIN_CI_REPO, 'fetched_at': now_utc_iso(), 'workflows': []}
+    try:
+        b = _main_ci_get(opener, hdrs, 'branches/main')
+        c = b.get('commit') or {}
+        out['head'] = {'sha': (c.get('sha') or '')[:7],
+                       'title': ((c.get('commit') or {}).get('message') or '').split('\n')[0][:100],
+                       'date': ((c.get('commit') or {}).get('committer') or {}).get('date', ''),
+                       'url': f"https://github.com/{MAIN_CI_REPO}/commit/{c.get('sha', '')}"}
+    except Exception as _e:
+        _log_exc('main_ci_head', _e)
+    if any(p.startswith('dynamic/') and p not in _main_ci_wf_ids for _, _, p, _ in MAIN_CI_WORKFLOWS):
+        try:
+            for wf in _main_ci_get(opener, hdrs, 'actions/workflows?per_page=100').get('workflows', []):
+                _main_ci_wf_ids[wf.get('path')] = wf.get('id')
+        except Exception as _e:
+            _log_exc('main_ci_workflows', _e)
+    keep_runs = set()
+    for key, label, path, cadence in MAIN_CI_WORKFLOWS:
+        rec = {'key': key, 'name': label, 'cadence': cadence, 'latest': None, 'last_completed': None}
+        try:
+            wid = _main_ci_wf_ids.get(path) if path.startswith('dynamic/') else path
+            if wid is None:
+                raise ValueError(f'workflow id unresolved for {path}')
+            runs = _main_ci_get(opener, hdrs,
+                                f'actions/workflows/{wid}/runs?branch=main&per_page=10').get('workflow_runs', [])
+            # A cancelled/skipped run is not a verdict on main; prefer the
+            # newest run that actually concluded success or failure.
+            latest = runs[0] if runs else None
+            completed = next((r for r in runs if r.get('status') == 'completed'
+                              and r.get('conclusion') not in ('cancelled', 'skipped')), None)
+            if latest:
+                rec['latest'] = _main_ci_run(opener, hdrs, latest)
+                keep_runs.add(latest['id'])
+            if completed and completed is not latest:
+                rec['last_completed'] = _main_ci_run(opener, hdrs, completed)
+                keep_runs.add(completed['id'])
+            elif completed is latest:
+                rec['last_completed'] = rec['latest']
+        except Exception as _e:
+            rec['error'] = str(_e)[:120]
+            _log_exc(f'main_ci_{key}', _e)
+        out['workflows'].append(rec)
+    # Bound the caches to what is on screen.
+    for rid in [k for k in _main_ci_jobs_cache if k not in keep_runs]:
+        _main_ci_jobs_cache.pop(rid, None)
+    live_jobs = {j['id'] for w in out['workflows'] for r in (w['latest'], w['last_completed'])
+                 if r for j in r['jobs']}
+    for jid in [k for k in _main_ci_tests_cache if k not in live_jobs]:
+        _main_ci_tests_cache.pop(jid, None)
+    return out
+
+def main_ci_poller():
+    import urllib.request
+    while True:
+        try:
+            token = sh('HTTPS_PROXY=http://127.0.0.1:8888 /Users/aetherclaude/bin/github-app-token.sh')
+            if token:
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({'https': 'http://127.0.0.1:8888'}))
+                hdrs = {'Authorization': f'token {token}', 'Accept': 'application/vnd.github+json',
+                        'User-Agent': 'AetherClaude-Dashboard'}
+                ring_stats['main_ci'] = fetch_main_ci(opener, hdrs)
+        except Exception as _e:
+            _log_exc('main_ci_poller', _e)
+        time.sleep(MAIN_CI_POLL_SECS)
+
 def scan_rings():
     """Periodically refresh ring status from system state."""
     while True:
@@ -2067,7 +2243,7 @@ def scan_rings():
                                     'conclusion': w.get('conclusion'),
                                     'created_at': w.get('created_at', ''),
                                     'url': w.get('html_url', ''),
-                                } for w in wf[:30]]
+                                } for w in wf if w.get('event') != 'workflow_run'][:30]
                                 _ci_last_fetch[0] = time.time()
                             except: pass
                 except: pass
@@ -3933,6 +4109,23 @@ body.view-ops #view-exec{display:none}
 .x-rows .x-row{display:flex;align-items:center;gap:10px;padding:6px 2px;border-bottom:1px solid var(--line);font-size:12px}
 .x-rows .x-row:last-child{border-bottom:none}
 .x-rows .tm{color:var(--muted-dim);font-size:11px;width:88px;flex:0 0 auto;font-family:var(--mono)}
+.x-mci-sum{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;color:var(--muted)}
+.x-mci-sum a{color:var(--accent-bright);text-decoration:none;font-family:var(--mono)}
+.x-mci-row{display:grid;grid-template-columns:96px minmax(150px,210px) 1fr auto;gap:12px;align-items:start;padding:8px 2px;border-bottom:1px solid var(--line);font-size:12px}
+.x-mci-row:last-child{border-bottom:none}
+.x-mci-pill{font-weight:700;font-size:11px;letter-spacing:.3px;white-space:nowrap}
+.x-mci-nm{color:var(--ink-soft);font-weight:600}
+.x-mci-nm .cad{display:block;color:var(--muted-dim);font-weight:400;font-size:10px;margin-top:2px}
+.x-mci-jobs{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+.x-mci-job{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:100px;border:1px solid var(--line-hi);font-size:11px;color:var(--ink-soft);text-decoration:none;white-space:nowrap}
+.x-mci-job .d{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.x-mci-fail{flex-basis:100%;font-size:11px;color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
+.x-mci-fail code{font-family:var(--mono);color:var(--crit);background:rgba(232,80,106,.08);border-radius:4px;padding:0 4px;margin:0 4px 2px 0;display:inline-block}
+.x-mci-fail a{color:var(--accent-bright);text-decoration:none}
+.x-mci-meta{color:var(--muted-dim);font-size:11px;text-align:right;white-space:nowrap}
+.x-mci-meta a{color:var(--accent-bright);text-decoration:none}
+.x-mci-run{display:block;color:var(--accent);font-size:10px;margin-top:2px}
+@media (max-width:760px){.x-mci-row{grid-template-columns:86px 1fr}.x-mci-jobs,.x-mci-meta{grid-column:1/-1;text-align:left}}
 .x-rows a{color:var(--ink-soft);text-decoration:none}
 .x-rows a:hover{color:var(--accent-bright)}
 #x-tt{position:fixed;display:none;background:var(--bg-2);border:1px solid var(--line-hi);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--ink-soft);pointer-events:none;z-index:500;white-space:nowrap}
@@ -3987,6 +4180,13 @@ body.view-ops #view-exec{display:none}
 </div>
 
 <div class="x-kpis" id="x-kpis"></div>
+
+<!-- State of main: latest verdict of every workflow that guards main
+     (ring_stats.main_ci, refreshed ~90s server-side). -->
+<div class="x-panel" id="x-mci">
+  <div class="x-ph"><span>State of main &middot; CI, tests, CodeQL, sanitizers</span><span id="x-mci-fetched" style="text-transform:none;letter-spacing:0;font-weight:400"></span></div>
+  <div id="x-mci-body"><p style="color:var(--muted);font-size:12px">Waiting for the first GitHub Actions fetch&hellip;</p></div>
+</div>
 
 <div class="x-panel">
   <div class="x-ph"><span><span id="x-act-label">Activity &middot; last 24 hours</span><button id="x-zoom-back" onclick="drawActivity(null,null)" style="display:none;margin-left:10px;background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:6px;padding:1px 8px;font-size:10px;cursor:pointer;vertical-align:middle">&#8592; back to 24h</button></span><span id="x-trend-total" style="text-transform:none;letter-spacing:0"></span></div>
@@ -4344,8 +4544,62 @@ const X_STATUS={green:{col:'var(--good)',glyph:'●',word:'Strong'},
                 red:{col:'var(--crit)',glyph:'✖',word:'At risk'}};
 let lastTrends=null;
 let lastKpisHtml='';
+// State of main panel. The verdict per workflow is its newest COMPLETED run
+// on main (a run still in progress shows alongside as "running on <sha>"),
+// so the panel never reads as unknown for the ~10-60 min after each push.
+let lastMciKey='';
+function mciAgo(s){const t=new Date(s).getTime();if(!s||isNaN(t))return '';const m=Math.round((Date.now()-t)/60000);
+  return m<1?'just now':m<60?m+'m ago':m<2880?Math.round(m/60)+'h ago':Math.round(m/1440)+'d ago'}
+const MCI_ST={success:['&#9679; PASS','var(--good)'],failure:['&#10008; FAIL','var(--crit)'],timed_out:['&#10008; TIMEOUT','var(--crit)'],
+  cancelled:['&#8856; CANCELLED','var(--muted-dim)'],skipped:['&#8856; SKIPPED','var(--muted-dim)'],action_required:['&#9650; ACTION','var(--warn)'],
+  startup_failure:['&#10008; STARTUP','var(--crit)']};
+function mciSt(run){if(!run)return ['&mdash; NO RUNS','var(--muted-dim)'];
+  if(run.status!=='completed')return ['&#9711; RUNNING','var(--accent)'];
+  return MCI_ST[run.conclusion]||['&#9650; '+esc(String(run.conclusion||'?').toUpperCase()),'var(--warn)']}
+function renderMainCi(m){
+  const body=document.getElementById('x-mci-body');if(!body)return;
+  if(!m||!m.workflows)return;
+  const key=JSON.stringify(m)+'|'+Math.floor(Date.now()/60000);
+  if(key===lastMciKey)return;lastMciKey=key;
+  document.getElementById('x-mci-fetched').textContent=m.fetched_at?'updated '+mciAgo(m.fetched_at):'';
+  const U=s=>esc(String(s||'')).replace(/"/g,'&quot;');
+  let red=0,green=0,running=0,h='';
+  for(const w of m.workflows){
+    const v=w.last_completed,l=w.latest,live=l&&l.status!=='completed';
+    if(live)running++;
+    const st=v?mciSt(v):(live?mciSt(l):mciSt(null));
+    if(v&&v.conclusion==='success')green++;else if(v&&['failure','timed_out','startup_failure'].includes(v.conclusion))red++;
+    const shown=v||l;
+    let jobs='',fails='';
+    for(const j of (shown&&shown.jobs)||[]){
+      const js=j.status!=='completed'?['','var(--accent)']:(MCI_ST[j.conclusion]||['','var(--warn)']);
+      jobs+=`<a class="x-mci-job" href="${U(j.url)}" target="_blank" title="${U(j.name)}: ${U(j.status==='completed'?j.conclusion:j.status)}"><span class="d" style="background:${js[1]}"></span>${esc(String(j.name))}</a>`;
+      if(j.status==='completed'&&j.conclusion&&j.conclusion!=='success'&&j.conclusion!=='skipped'){
+        const ft=j.failed_tests||[];
+        fails+=`<div class="x-mci-fail"><b style="color:var(--ink-soft)">${esc(String(j.name))}</b>`+
+          (ft.length?` &middot; ${ft.length} test${ft.length===1?'':'s'} failed: `+ft.map(t=>`<code title="${U(t.status)}">${esc(t.name)}${t.status&&t.status!=='Failed'?' ('+esc(t.status)+')':''}</code>`).join('')
+                    :(j.failed_step?` &middot; failed at step <i>${esc(String(j.failed_step))}</i>`:` &middot; ${esc(String(j.conclusion))}`))+
+          (j.issue?` &middot; <a href="https://github.com/${U(m.repo)}/issues/${j.issue}" target="_blank">#${j.issue} &#x2197;</a>`:'')+`</div>`;
+      }
+    }
+    if(!jobs&&w.error)jobs=`<span style="color:var(--warn)">fetch error: ${esc(w.error)}</span>`;
+    const meta=shown?`<a href="${U(shown.url)}" target="_blank" title="${U(shown.title)}">${esc(shown.sha)}</a> &middot; ${mciAgo(shown.updated_at||shown.created_at)}${shown.event&&shown.event!=='push'?' &middot; '+esc(shown.event):''}`:'';
+    const runNote=live&&l!==v?`<span class="x-mci-run">&#9711; running on <a href="${U(l.url)}" target="_blank" style="color:var(--accent)">${esc(l.sha)}</a> &middot; ${(l.jobs||[]).filter(j=>j.status==='completed').length}/${(l.jobs||[]).length} jobs done</span>`:'';
+    h+=`<div class="x-mci-row"><span class="x-mci-pill" style="color:${st[1]}">${st[0]}</span>`+
+       `<span class="x-mci-nm">${esc(w.name)}<span class="cad">${esc(w.cadence||'')}</span></span>`+
+       `<div class="x-mci-jobs">${jobs}${fails}</div>`+
+       `<span class="x-mci-meta">${meta}${runNote}</span></div>`;
+  }
+  const hd=m.head;
+  let sum=`<span class="x-chip" style="color:${red?'var(--crit)':'var(--good)'};border-color:${red?'var(--crit)':'var(--good)'}">${red?'&#10008; '+red+' failing':'&#9679; all green'}</span>`+
+    `<span>${green} passing${running?` &middot; ${running} running`:''}</span>`;
+  if(hd&&hd.sha)sum+=`<span>main @ <a href="${U(hd.url)}" target="_blank">${esc(hd.sha)}</a> ${esc(hd.title||'')} &middot; ${mciAgo(hd.date)}</span>`;
+  body.innerHTML=`<div class="x-mci-sum">${sum}</div>${h}`;
+  document.getElementById('x-mci').style.borderColor=red?'var(--crit)':'';
+}
 function renderExec(d){
   const s=d.stats||{},r=d.rings||{},t=(s.tokens)||{},p=r.posture;
+  renderMainCi(r.main_ci);
   // Hero — score, delta, status chip, reasons from non-green controls
   if(p){
     document.getElementById('x-gauge').innerHTML=svgRingGauge(p.score);
@@ -11110,6 +11364,7 @@ def main():
         threading.Thread(target=fn,args=(target,),daemon=True).start()
     threading.Thread(target=scan_tokens,daemon=True).start()
     threading.Thread(target=scan_rings,daemon=True).start()
+    threading.Thread(target=main_ci_poller,daemon=True).start()
     threading.Thread(target=_operating_notes_loop,daemon=True).start()
     threading.Thread(target=db_batch_writer,daemon=True).start()
     threading.Thread(target=db_pruner,daemon=True).start()
