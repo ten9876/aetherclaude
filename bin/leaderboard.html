@@ -12,15 +12,16 @@ h1{font-size:20px;font-weight:400;color:var(--accent-bright);letter-spacing:.5px
 .tabs{display:flex;gap:6px;margin:18px 0 14px;flex-wrap:wrap}
 .tab{background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12px}
 .tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
-.hero{display:grid;grid-template-columns:64px minmax(0,1fr) auto;grid-template-areas:"img t t" "img n p" "img d d";column-gap:18px;row-gap:2px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px 22px;margin-bottom:14px}
+.hero{display:grid;grid-template-columns:64px minmax(0,1fr) auto;grid-template-areas:"img t t" "img n p" "img d p";column-gap:18px;row-gap:2px;align-items:center;align-content:start;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px 22px;margin-bottom:14px}
 .hero img{grid-area:img;width:64px;height:64px;border-radius:50%;border:2px solid var(--gold)}
-/* Same rows on every card (title; name and score; detail) so the three
-   cards line up; the title and detail span the name and score columns. */
+/* Same rows on every card (title; name; detail) so the three cards line
+   up; the title spans the card, and the score (the number, with "points"
+   beneath it) is right-aligned beside the name and detail rows. */
 .hero .t{grid-area:t;font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--gold);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hero .n{grid-area:n;font-size:30px;line-height:1.15;color:var(--ink);font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.hero .p{grid-area:p;font-size:30px;line-height:1.15;color:var(--ink);font-weight:600;text-align:right}
-.hero .d{grid-area:d;min-width:0;min-height:1.35em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hero .p small{font-size:13px;font-weight:400;color:var(--muted);margin-left:5px}
+.hero .p{grid-area:p;align-self:start;font-size:30px;line-height:1.15;color:var(--ink);font-weight:600;text-align:right;white-space:nowrap}
+.hero .d{grid-area:d;min-width:0;min-height:1.35em}
+.hero .p small{display:block;font-size:13px;line-height:1.35;font-weight:400;color:var(--muted)}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px 16px;margin-bottom:14px;overflow-x:auto}
 .ph{font-size:12px;font-weight:600;letter-spacing:.4px;color:var(--muted);text-transform:uppercase;margin-bottom:10px;display:flex;justify-content:space-between}
 table{width:100%;border-collapse:collapse;min-width:860px}
