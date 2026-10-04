@@ -18,6 +18,8 @@
 ^productionresultssa[0-9][0-9]*\.blob\.core\.windows\.net$
 # Open Collective public API: financial contributions for the contributor leaderboard.
 ^api\.opencollective\.com$
+# The public contributor-leaderboard mirror: the dashboard asks it to sync and checks it for drift.
+^contributors\.aethersdr\.com$
 
 # pip endpoints — added 2026-05-07 to allow mcp-scanner / Cisco AI scanners upgrades
 ^pypi\.org$

@@ -231,6 +231,25 @@ Collection is incremental from a `since` cursor and throttled so it never uses
 more than a fixed share of the hourly API budget. Inline review comments are
 fetched only to classify reviews; they never score on their own.
 
+## Public mirror
+
+**contributors.aethersdr.com** is a Cloudflare Worker (in the
+`aethersdr/aetherweb` repo) that copies `/leaderboard` and
+`/api/leaderboard` into its own store and serves only that copy, so it stays
+up when this host is unreachable. To keep the two from drifting:
+
+- The standings carry a content hash and the hash of the page they render
+  with; the mirror's `/healthz` reports the hashes it copied, when it synced
+  and why, warnings, and the commit it was deployed from.
+- The dashboard asks the mirror to sync (`POST /sync`, shared token) as soon
+  as its standings change; the mirror's 15-minute cron is the fallback.
+- Every 5 minutes the dashboard compares the mirror's `/healthz` with its own
+  hashes. A mirror more than 30 minutes behind, serving a different page or
+  different standings once a sync has had 20 minutes to land, reporting a
+  warning, or unreachable raises a dashboard alert.
+- The Worker is deployed only from CI, which stamps the version with the
+  commit and checks the mirror reports it.
+
 ## Page
 
 `/leaderboard` on the dashboard: tabs for this week, the last releases and all

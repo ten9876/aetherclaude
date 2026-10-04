@@ -2228,6 +2228,87 @@ def _contributor_points():
         _contributor_mod.append(mod)
     return _contributor_mod[0]
 
+def _leaderboard_page():
+    return open(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'leaderboard.html'), 'rb').read()
+
+# ── Public mirror (contributors.aethersdr.com) ──────────────────────────
+# A Cloudflare Worker copies /leaderboard and /api/leaderboard into its own
+# store. This watcher asks it to sync as soon as the standings change, and
+# every few minutes checks its /healthz against the source: the mirror must
+# serve the same page and the same standings (allowing for a sync in flight)
+# and must have synced recently. Drift raises a dashboard alert.
+MIRROR_URL = 'https://contributors.aethersdr.com'
+MIRROR_CHECK_SECS = 300
+MIRROR_MAX_LAG = 1800          # seconds a mirror may trail before it's drift
+MIRROR_SYNC_GRACE = 1200       # a hash this recent may still be syncing
+MIRROR_REALERT_SECS = 6 * 3600
+
+def _mirror_request(path, method='GET', headers=None):
+    import urllib.request
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({'https': 'http://127.0.0.1:8888'}))
+    req = urllib.request.Request(MIRROR_URL + path, method=method, data=b'' if method == 'POST' else None,
+                                 headers={'User-Agent': 'AetherClaude-Dashboard', **(headers or {})})
+    with opener.open(req, timeout=20) as r:
+        return r.status, r.read().decode('utf-8', 'replace')
+
+def mirror_watch():
+    token = os.environ.get('CONTRIBUTORS_SYNC_TOKEN', '')
+    seen = {}                      # content_hash -> first time seen here
+    page_seen = {}                 # page_sha256 -> first time seen here
+    pushed, last_check, alerted = None, 0.0, {'reason': None, 'at': 0.0}
+    while True:
+        try:
+            d = leaderboard_data()
+            h, ph, now = d.get('content_hash'), d.get('page_sha256'), time.time()
+            seen.setdefault(h, now)
+            page_seen.setdefault(ph, now)
+            for book in (seen, page_seen):
+                for k in [k for k, t in book.items() if now - t > 2 * MIRROR_MAX_LAG and k not in (h, ph)]:
+                    book.pop(k, None)
+            # Push: ask the mirror to sync when the standings changed.
+            if token and h != pushed:
+                try:
+                    _mirror_request('/sync', 'POST', {'X-Sync-Token': token})
+                    pushed = h
+                except Exception as _e:
+                    _log_exc('mirror_push', _e, every=600)
+            # Drift check.
+            if now - last_check >= MIRROR_CHECK_SECS:
+                last_check = now
+                reason, m = None, {}
+                try:
+                    _, body = _mirror_request('/healthz')
+                    m = json.loads(body)
+                    age = m.get('age_seconds')
+                    mh, mph = m.get('content_hash'), m.get('page_sha256')
+                    if age is None or age > MIRROR_MAX_LAG:
+                        reason = f"last synced {round((age or 0) / 60)} min ago" if age is not None else 'has never synced'
+                        if m.get('last_error'):
+                            reason += f" ({m['last_error'][:80]})"
+                    # A mismatch is drift only once the source's current
+                    # version has had time to reach the mirror.
+                    elif mph != ph and now - page_seen.get(ph, now) > MIRROR_SYNC_GRACE:
+                        reason = 'is serving a different version of the leaderboard page'
+                    elif mh != h and now - seen.get(h, now) > MIRROR_SYNC_GRACE:
+                        reason = 'is serving different standings than the dashboard'
+                    elif m.get('warnings'):
+                        reason = 'warns: ' + '; '.join(m['warnings'])[:120]
+                except Exception as _e:
+                    reason = f'is unreachable ({str(_e)[:60]})'
+                ring_stats['contributors_mirror'] = {
+                    'status': 'drift' if reason else 'ok', 'reason': reason, 'checked_at': now_utc_iso(),
+                    'synced_at': m.get('synced_at'), 'trigger': m.get('trigger'),
+                    'version': m.get('version'), 'content_hash': h, 'mirror_content_hash': m.get('content_hash')}
+                if reason and (reason != alerted['reason'] or now - alerted['at'] > MIRROR_REALERT_SECS):
+                    stats['alerts'].append({'time': now_utc_iso(), 'severity': 'high',
+                                            'msg': f'CONTRIBUTORS MIRROR: contributors.aethersdr.com {reason}'})
+                    alerted = {'reason': reason, 'at': now}
+                elif not reason:
+                    alerted = {'reason': None, 'at': 0.0}
+        except Exception as _e:
+            _log_exc('mirror_watch', _e, every=600)
+        time.sleep(60)
+
 def _store_webhook(delivery, event, body):
     """Store a verified webhook in the contributor database and apply it.
     Failures are logged; the hourly collector applies anything stored but
@@ -2274,6 +2355,14 @@ def leaderboard_data():
                               for k, v in cp.RULES.items()},
                     'windows': [dict(w, standings=cp.standings(db, led, w['start'], w['end'])) for w in ws],
                     'all_time': all_time, 'breaks': breaks}
+            # Fingerprints the public mirror reports back, so drift is
+            # detectable: the standings' content (not when they were built)
+            # and the page they render with.
+            import hashlib
+            data['content_hash'] = hashlib.sha256(json.dumps(
+                {k: v for k, v in data.items() if k != 'generated_at'}, sort_keys=True, default=str
+            ).encode()).hexdigest()[:16]
+            data['page_sha256'] = hashlib.sha256(_leaderboard_page()).hexdigest()
         finally:
             db.close()
         _leaderboard_cache.update(key=key, ts=time.time(), data=data)
@@ -9448,7 +9537,7 @@ class H(BaseHTTPRequestHandler):
             # Contributor standings page; read from disk per request so a
             # page edit needs no restart.
             try:
-                page = open(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'leaderboard.html'), 'rb').read()
+                page = _leaderboard_page()
                 self.send_response(200); self.send_header('Content-Type', 'text/html')
                 # Always revalidate: the page changes with each deploy.
                 self.send_header('Cache-Control', 'no-cache'); self.end_headers()
@@ -12143,6 +12232,7 @@ def main():
     threading.Thread(target=scan_tokens,daemon=True).start()
     threading.Thread(target=scan_rings,daemon=True).start()
     threading.Thread(target=main_ci_poller,daemon=True).start()
+    threading.Thread(target=mirror_watch,daemon=True).start()
     threading.Thread(target=_operating_notes_loop,daemon=True).start()
     threading.Thread(target=db_batch_writer,daemon=True).start()
     threading.Thread(target=db_pruner,daemon=True).start()
