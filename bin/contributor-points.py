@@ -70,10 +70,10 @@ RULES = {
     'release_published':   (15, 'stewardship'),
     'main_fixed':          (15, 'main'),
     'revert_merged':       (3, 'main'),
-    'break_approver':      (-20, 'penalties'),
-    'break_author':        (-15, 'penalties'),
-    'break_merger':        (-10, 'penalties'),
-    'break_self_fix':      (5, 'penalties'),
+    'break_approver':      (-60, 'penalties'),
+    'break_author':        (-45, 'penalties'),
+    'break_merger':        (-30, 'penalties'),
+    'break_self_fix':      (15, 'penalties'),
     'spam':                (-3, 'penalties'),
 }
 CAP_COMMENT_PER_THREAD_DAY = 1

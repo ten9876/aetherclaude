@@ -92,8 +92,8 @@ Totals: Alice 11, Bob 52, Carol 31 (all of Carol's are steward points). Bob's
 PR alone is worth 50 (25 without the one-time first-PR bonus). Carol's two
 reviews both score only because they were on different days. Merging usually
 happens this way: the approver arms auto-merge, and GitHub credits them with
-the merge. If the PR had broken `main`, Carol would lose 20 (approved and
-merged; only the largest penalty counts) and Bob 15, with 5 back for fixing
+the merge. If the PR had broken `main`, Carol would lose 60 (approved and
+merged; only the largest penalty counts) and Bob 45, with 15 back for fixing
 it within 24 hours; anyone else who turned `main` green would earn 15.
 
 The rules popup on the page builds this example from the live point values.
@@ -102,10 +102,10 @@ The rules popup on the page builds this example from the live point values.
 
 | Role in the PR that broke `main` | Points |
 |---|---|
-| Approved it | −20 |
-| Authored it | −15 |
-| Merged it | −10 |
-| Author fixes their own break within 24 hours | +5 back |
+| Approved it | −60 |
+| Authored it | −45 |
+| Merged it | −30 |
+| Author fixes their own break within 24 hours | +15 back |
 | Issue or PR labelled `spam` or `invalid` | −3 (and no points for opening it) |
 
 - A **break** is the first failed `CI` or `Full Suite` run on `main` after a
