@@ -1888,7 +1888,12 @@ def _main_ci_run(opener, hdrs, w):
             'updated_at': w.get('updated_at', ''), 'url': w.get('html_url', ''),
             'jobs': jobs}
 
-def fetch_main_ci(opener, hdrs):
+def fetch_main_ci(opener, hdrs, publish=None, prev=None):
+    """Two phases: workflow/job status first (published straight away via
+    `publish`, carrying the previous poll's build stats), then build times,
+    compiler-cache stats and Actions cache storage, which can take minutes
+    to backfill after a restart."""
+    prev_wf = {w.get('key'): w for w in ((prev or {}).get('workflows') or [])}
     out = {'repo': MAIN_CI_REPO, 'fetched_at': now_utc_iso(), 'workflows': []}
     try:
         b = _main_ci_get(opener, hdrs, 'branches/main')
@@ -1907,10 +1912,9 @@ def fetch_main_ci(opener, hdrs):
             _log_exc('main_ci_workflows', _e)
     keep_runs, keep_perf = set(), set()
     log_budget = [MAIN_CI_LOGS_PER_POLL]
-    try:
-        out['actions_cache'] = _main_ci_actions_cache(opener, hdrs)
-    except Exception as _e:
-        _log_exc('main_ci_actions_cache', _e)
+    runs_by_key = {}
+    if (prev or {}).get('actions_cache'):
+        out['actions_cache'] = prev['actions_cache']
     for key, label, path, cadence in MAIN_CI_WORKFLOWS:
         rec = {'key': key, 'name': label, 'cadence': cadence, 'latest': None, 'last_completed': None}
         try:
@@ -1937,11 +1941,9 @@ def fetch_main_ci(opener, hdrs):
                 keep_runs.add(completed['id'])
             elif completed is latest:
                 rec['last_completed'] = rec['latest']
-            try:
-                rec['perf'] = _main_ci_perf_summary(opener, hdrs, key, runs, log_budget)
-                keep_perf.update(r['id'] for r in runs)
-            except Exception as _e:
-                _log_exc(f'main_ci_perf_{key}', _e)
+            runs_by_key[key] = runs
+            if prev_wf.get(key, {}).get('perf'):
+                rec['perf'] = prev_wf[key]['perf']
         except Exception as _e:
             rec['error'] = str(_e)[:120]
             _log_exc(f'main_ci_{key}', _e)
@@ -1953,6 +1955,21 @@ def fetch_main_ci(opener, hdrs):
                  if r for j in r['jobs']}
     for jid in [k for k in _main_ci_tests_cache if k not in live_jobs]:
         _main_ci_tests_cache.pop(jid, None)
+    if publish:
+        publish(dict(out))
+    try:
+        out['actions_cache'] = _main_ci_actions_cache(opener, hdrs)
+    except Exception as _e:
+        _log_exc('main_ci_actions_cache', _e)
+    for rec in out['workflows']:
+        runs = runs_by_key.get(rec['key'])
+        if runs is None:
+            continue
+        try:
+            rec['perf'] = _main_ci_perf_summary(opener, hdrs, rec['key'], runs, log_budget)
+            keep_perf.update(r['id'] for r in runs)
+        except Exception as _e:
+            _log_exc(f"main_ci_perf_{rec['key']}", _e)
     _main_ci_family_hit_rates(out)
     for rid in [k for k in _main_ci_perf if k not in keep_perf]:
         _main_ci_perf.pop(rid, None)
@@ -1963,8 +1980,28 @@ def fetch_main_ci(opener, hdrs):
         _main_ci_log_failures.pop(jid, None)
     return out
 
+MAIN_CI_SNAPSHOT = '/Users/aetherclaude/state/main-ci.json'
+
+def _main_ci_save(data):
+    try:
+        tmp = MAIN_CI_SNAPSHOT + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(data, f)
+        os.replace(tmp, MAIN_CI_SNAPSHOT)
+    except Exception as _e:
+        _log_exc('main_ci_save', _e)
+
 def main_ci_poller():
     import urllib.request
+    # Serve the last known state (flagged stale) until the first poll lands,
+    # so a dashboard restart never shows an empty row.
+    try:
+        with open(MAIN_CI_SNAPSHOT) as f:
+            snap = json.load(f)
+        snap['stale'] = True
+        ring_stats.setdefault('main_ci', snap)
+    except Exception:
+        pass
     while True:
         try:
             token = sh('HTTPS_PROXY=http://127.0.0.1:8888 /Users/aetherclaude/bin/github-app-token.sh')
@@ -1972,7 +2009,11 @@ def main_ci_poller():
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({'https': 'http://127.0.0.1:8888'}))
                 hdrs = {'Authorization': f'token {token}', 'Accept': 'application/vnd.github+json',
                         'User-Agent': 'AetherClaude-Dashboard'}
-                ring_stats['main_ci'] = fetch_main_ci(opener, hdrs)
+                def _publish(d):
+                    ring_stats['main_ci'] = d
+                ring_stats['main_ci'] = fetch_main_ci(opener, hdrs, publish=_publish,
+                                                      prev=ring_stats.get('main_ci'))
+                _main_ci_save(ring_stats['main_ci'])
         except Exception as _e:
             _log_exc('main_ci_poller', _e)
         time.sleep(MAIN_CI_POLL_SECS)
@@ -4367,6 +4408,11 @@ body.view-ops #view-exec{display:none}
 .x-rows .x-row:last-child{border-bottom:none}
 .x-rows .tm{color:var(--muted-dim);font-size:11px;width:88px;flex:0 0 auto;font-family:var(--mono)}
 .x-mci-jobs{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+.x-mci-ph{cursor:default}
+.x-mci-ph .val{color:var(--muted-dim)}
+.x-mci-ph .spark{border-radius:4px;background:linear-gradient(90deg,var(--bg-2) 0%,var(--bg-3) 50%,var(--bg-2) 100%);background-size:200% 100%;animation:mciShimmer 1.4s linear infinite;width:110px;height:22px;margin-top:12px}
+@keyframes mciShimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+@media (prefers-reduced-motion:reduce){.x-mci-ph .spark{animation:none}}
 .x-mci-job{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:100px;border:1px solid var(--line-hi);font-size:11px;color:var(--ink-soft);text-decoration:none;white-space:nowrap}
 .x-mci-job .d{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
 .x-mci-fail{flex-basis:100%;font-size:11px;color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
@@ -4430,7 +4476,15 @@ body.view-ops #view-exec{display:none}
 <!-- State of main: latest verdict of every workflow that guards main
      (ring_stats.main_ci, refreshed ~90s server-side), one tile per workflow
      in the same grid as the agent KPI tiles; click for jobs + failed tests. -->
-<div class="x-kpis" id="x-mci"></div>
+<div class="x-kpis" id="x-mci">
+  <!-- Placeholders until the first /api/events payload carries main_ci. -->
+  <div class="x-tile x-mci-ph"><div class="lbl">CI</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
+  <div class="x-tile x-mci-ph"><div class="lbl">Full Suite</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
+  <div class="x-tile x-mci-ph"><div class="lbl">CodeQL</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
+  <div class="x-tile x-mci-ph"><div class="lbl">CodeQL &middot; Code Quality</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
+  <div class="x-tile x-mci-ph"><div class="lbl">System Libraries Canary</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
+  <div class="x-tile x-mci-ph"><div class="lbl">Sanitizers</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
+</div>
 
 <div class="x-panel">
   <div class="x-ph"><span><span id="x-act-label">Activity &middot; last 24 hours</span><button id="x-zoom-back" onclick="drawActivity(null,null)" style="display:none;margin-left:10px;background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:6px;padding:1px 8px;font-size:10px;cursor:pointer;vertical-align:middle">&#8592; back to 24h</button></span><span id="x-trend-total" style="text-transform:none;letter-spacing:0"></span></div>
@@ -4830,6 +4884,7 @@ function renderMainCi(m){
     let sub=shown?(red?`<span style="color:var(--crit)">${mciFailSummary(v)}</span> &middot; `:'')+`${esc(shown.sha)} &middot; ${mciAgo(shown.updated_at||shown.created_at)}`
                  :(w.error?'fetch error':'no runs on main');
     if(live&&l!==v)sub+=` &middot; <span style="color:var(--accent)">&#9711; running</span>`;
+    if(m.stale)sub+=` &middot; <span style="color:var(--muted-dim)" title="Last known state from before the dashboard restarted; refreshing">refreshing&hellip;</span>`;
     return `<div class="x-tile" onclick="showMainCiCheck(${i})"${red?' style="border-color:var(--crit)"':''} title="${mciU(w.cadence)}">`+
       `<div class="lbl">${esc(w.name)}</div><div class="val" style="color:${st[1]}">${st[0]}</div>`+
       `<div class="sub" style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sub}</div>`+
