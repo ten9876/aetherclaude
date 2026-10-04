@@ -1589,7 +1589,10 @@ def _iso_secs(a, b):
     except Exception:
         return None
 
-_LOG_TS_RE = re.compile(r'^\d{4}-\d\d-\d\dT[\d:.]+Z ?')
+# bin/ helpers (ci_diagnose) resolve from this file's real directory, however
+# the dashboard is started (launchd runs the script; tests import it).
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from ci_diagnose import _LOG_TS_RE  # noqa: E402
 _SIZE_RE = re.compile(r'([\d.]+)\s*(B|KiB|MiB|GiB|TiB|KB|MB|GB|TB)\b')
 _SIZE_MULT = {'B': 1e-9, 'KB': 1e-6, 'MB': 1e-3, 'GB': 1, 'TB': 1e3,
               'KiB': 1024 / 1e9, 'MiB': 1024**2 / 1e9, 'GiB': 1024**3 / 1e9, 'TiB': 1024**4 / 1e9}
@@ -1861,91 +1864,9 @@ _main_ci_diag = {}
 _main_ci_diag_failures = defaultdict(int)
 MAIN_CI_DIAG_PER_POLL = 6
 _main_ci_last_green = {}    # workflow key -> (fetched_ts, run summary | None)
-_SRC_RE = r'([\w./+-]+\.(?:cpp|cc|cxx|c|h|hpp|mm|m))'
-
-def _diagnose_log(log):
-    """Most likely cause of a failed job, from its log. Infrastructure
-    failures (disk, memory, time, runner) outrank code errors because they
-    produce misleading secondary errors (a full disk shows up as missing
-    object files)."""
-    lines = [_LOG_TS_RE.sub('', l).rstrip() for l in (log or '').splitlines()]
-    text = '\n'.join(lines)
-    def file_near(i):
-        for k in range(i, max(-1, i - 40), -1):
-            m = re.search(r'FAILED: \S*?(src/[\w./+-]+?)\.o\b', lines[k]) or re.search(_SRC_RE + r':\d+', lines[k])
-            if m:
-                return m.group(1)
-        return None
-    def first(pat):
-        rx = re.compile(pat)
-        for i, l in enumerate(lines):
-            m = rx.search(l)
-            if m:
-                return i, m
-        return None, None
-    i, m = first(r'No space left on device')
-    if m:
-        return {'kind': 'disk', 'summary': 'runner out of disk', 'file': file_near(i),
-                'detail': lines[i].strip()[:240]}
-    i, m = first(r'Killed signal terminated program (\S+)|fatal error: Killed|virtual memory exhausted|Cannot allocate memory')
-    if m:
-        return {'kind': 'oom', 'summary': 'out of memory (compiler killed)', 'file': file_near(i),
-                'detail': lines[i].strip()[:240]}
-    i, m = first(r'has exceeded the maximum execution time|The job was canceled because .*timeout|timed out after')
-    if m:
-        return {'kind': 'timeout', 'summary': 'timed out', 'file': None, 'detail': lines[i].strip()[:240]}
-    i, m = first(r'lost communication with the server|The runner has received a shutdown signal|runner .* did not respond')
-    if m:
-        return {'kind': 'runner', 'summary': 'runner lost', 'file': None, 'detail': lines[i].strip()[:240]}
-    i, m = first(r'internal compiler error')
-    if m:
-        return {'kind': 'ice', 'summary': 'internal compiler error', 'file': file_near(i),
-                'detail': lines[i].strip()[:240]}
-    i, m = first(_SRC_RE + r':(\d+)(?::\d+)?: (?:fatal )?error: (.*)')
-    if m:
-        return {'kind': 'compile', 'summary': 'compile error', 'file': f'{m.group(1)}:{m.group(2)}',
-                'detail': m.group(3).strip()[:240]}
-    i, m = first(r'([\w.:\\/+-]+\.(?:cpp|cc|cxx|c|h|hpp))\((\d+)(?:,\d+)?\): (?:fatal )?error (C\d+): (.*)')
-    if m:
-        return {'kind': 'compile', 'summary': f'compile error {m.group(3)}', 'file': f'{m.group(1)}:{m.group(2)}',
-                'detail': m.group(4).strip()[:240]}
-    i, m = first(r'([\w.:\\/+-]+\.obj) : error (LNK\d+): (.*)|LINK : fatal error (LNK\d+)')
-    if m:
-        return {'kind': 'link', 'summary': 'link error', 'file': None, 'detail': lines[i].strip()[:240]}
-    i, m = first(r'undefined reference to [`\'](.+?)\'|ld(?:\.\w+)?: error: (.*)|collect2: error')
-    if m:
-        return {'kind': 'link', 'summary': 'link error', 'file': None, 'detail': lines[i].strip()[:240]}
-    i, m = first(r'CMake Error at (\S+)')
-    if m:
-        nxt = next((l.strip() for l in lines[i + 1:i + 6] if l.strip()), '')
-        return {'kind': 'configure', 'summary': 'CMake configure error', 'file': m.group(1).rstrip(':'),
-                'detail': nxt[:240]}
-    i, m = first(r'(?:ERROR: (AddressSanitizer|ThreadSanitizer|LeakSanitizer|MemorySanitizer)|WARNING: (ThreadSanitizer)): ?(.*)')
-    if m:
-        san = m.group(1) or m.group(2)
-        return {'kind': 'sanitizer', 'summary': f'{san} report', 'file': file_near(i),
-                'detail': (m.group(3) or '').strip()[:240]}
-    i, m = first(_SRC_RE + r':(\d+):\d+: runtime error: (.*)')
-    if m:
-        return {'kind': 'sanitizer', 'summary': 'UBSan runtime error', 'file': f'{m.group(1)}:{m.group(2)}',
-                'detail': m.group(3).strip()[:240]}
-    i, m = first(r'(\d+)% tests passed, ([1-9]\d*) tests? failed out of (\d+)')
-    if m:
-        return {'kind': 'tests', 'summary': f'{m.group(2)} of {m.group(3)} tests failed', 'file': None,
-                'detail': ''}
-    errs = [l for l in lines if l.startswith('##[error]')]
-    if errs:
-        return {'kind': 'other', 'summary': errs[0][9:].strip()[:120] or 'failed', 'file': None, 'detail': ''}
-    return None
-
-def _diagnose_log_clean(log):
-    """_diagnose_log with runner workspace prefixes trimmed from paths."""
-    d = _diagnose_log(log)
-    if d:
-        for k in ('file', 'detail'):
-            if d.get(k):
-                d[k] = re.sub(r'(?:[A-Za-z]:)?[/\\][^\s:]*?[/\\](?=(?:src|tests|tools|third_party|CMakeLists)\b)', '', d[k])
-    return d
+# The failure classifier lives in bin/ci_diagnose.py, shared with the
+# contributor scorer (bin/contributor-points.py).
+from ci_diagnose import _diagnose_log, _diagnose_log_clean  # noqa: E402
 
 def _main_ci_failed_tests(opener, hdrs, job_id, run_id, run_created):
     """Failed test names for one job, from the tracking issue it opened or
@@ -2285,6 +2206,54 @@ def main_ci_poller():
         except Exception as _e:
             _log_exc('main_ci_poller', _e)
         time.sleep(MAIN_CI_POLL_SECS)
+
+# ── Contributor leaderboard (/leaderboard) ───────────────────────────────
+# Standings are scored from the facts bin/contributor-points.py collects
+# (hourly, com.aetherclaude.contributors) into CONTRIBUTOR_DB. Scoring is a
+# pure function of that database, cached until it changes or for 5 minutes.
+CONTRIBUTOR_DB = '/Users/aetherclaude/data/contributors.db'
+LEADERBOARD_WINDOWS = 6            # most recent release weeks offered as tabs
+LEADERBOARD_EVENTS_ALL_TIME = 200  # newest ledger rows per person on All time
+_leaderboard_cache = {'key': None, 'ts': 0.0, 'data': None}
+_leaderboard_lock = threading.Lock()
+_contributor_mod = []
+
+def _contributor_points():
+    if not _contributor_mod:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'contributor-points.py')
+        spec = importlib.util.spec_from_file_location('contributor_points', path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _contributor_mod.append(mod)
+    return _contributor_mod[0]
+
+def leaderboard_data():
+    st = os.stat(CONTRIBUTOR_DB)
+    key = (st.st_mtime, st.st_size)
+    with _leaderboard_lock:
+        c = _leaderboard_cache
+        if c['data'] is not None and c['key'] == key and time.time() - c['ts'] < 300:
+            return c['data']
+        cp = _contributor_points()
+        db = cp.db_open(CONTRIBUTOR_DB)   # applies any pending schema migrations
+        try:
+            led, breaks = cp.score(db)
+            ws = cp.windows(db)[-LEADERBOARD_WINDOWS:]
+            all_time = cp.standings(db, led)
+            for r in all_time:
+                r['event_count'] = len(r['events'])
+                r['events'] = r['events'][:LEADERBOARD_EVENTS_ALL_TIME]
+            cur = db.execute("SELECT value FROM state WHERE name='cursor'").fetchone()
+            data = {'generated_at': now_utc_iso(), 'collected_at': cur[0] if cur else None,
+                    'repo': cp.REPO,
+                    'rules': {k: {'points': v[0], 'category': v[1]} for k, v in cp.RULES.items()},
+                    'windows': [dict(w, standings=cp.standings(db, led, w['start'], w['end'])) for w in ws],
+                    'all_time': all_time, 'breaks': breaks}
+        finally:
+            db.close()
+        _leaderboard_cache.update(key=key, ts=time.time(), data=data)
+        return data
 
 def scan_rings():
     """Periodically refresh ring status from system state."""
@@ -4726,6 +4695,7 @@ body.view-ops #view-exec{display:none}
     <summary>Links &#9662;</summary>
     <div class="hmenu-list">
       <a href="/agent-walk" target="_blank">Agent Walk &#x2197;</a>
+      <a href="/leaderboard" target="_blank">Contributor Standings &#x2197;</a>
       <a href="/codegraph" target="_blank">Codegraph &#x2197;</a>
       <a href="/cartographer" target="_blank">Cartographer &#x2197;</a>
       <a href="#" onclick="openOperatorTui();document.getElementById('hmenu').removeAttribute('open');return false">Operator TUI &#x2197;</a>
@@ -9450,6 +9420,25 @@ class H(BaseHTTPRequestHandler):
             # Point the static "Galileo console" links at the configured instance
             # (the per-trace deep-links already resolve via GALILEO_CONSOLE).
             self.wfile.write(HTML.replace('https://app.galileo.ai/', GALILEO_CONSOLE + '/').encode())
+        elif self.path == '/leaderboard' or self.path.startswith('/leaderboard?'):
+            # Contributor standings page; read from disk per request so a
+            # page edit needs no restart.
+            try:
+                page = open(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'leaderboard.html'), 'rb').read()
+                self.send_response(200); self.send_header('Content-Type', 'text/html'); self.end_headers()
+                self.wfile.write(page)
+            except OSError:
+                self.send_response(404); self.end_headers()
+        elif self.path == '/api/leaderboard':
+            try:
+                body = json.dumps(leaderboard_data()).encode()
+                self.send_response(200)
+            except Exception as _e:
+                _log_exc('api_leaderboard', _e)
+                body = json.dumps({'error': 'standings unavailable'}).encode()
+                self.send_response(503)
+            self.send_header('Content-Type', 'application/json'); self.end_headers()
+            self.wfile.write(body)
         elif self.path == '/agent-walk' or self.path.startswith('/agent-walk?'):
             self.send_response(200); self.send_header('Content-Type', 'text/html'); self.end_headers()
             self.wfile.write(AGENT_WALK_HTML.encode())

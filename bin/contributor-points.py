@@ -1,0 +1,747 @@
+#!/usr/bin/env python3
+"""Contributor points for aethersdr/AetherSDR.
+
+Collects immutable GitHub facts (issues, PRs, comments, reviews, labels,
+discussions, releases, main-branch CI breaks) into SQLite, then rebuilds the
+points ledger from those facts on every run. Rules live in RULES below; a
+rule change or a revocation (spam label, dismissed approval, a re-run that
+went green) needs no migration, only a re-score.
+
+Points depend on the kind of action, never on its size.
+
+Collection is incremental: a cursor in the database remembers where the last
+run stopped, PR details are refetched only when the PR changed after they
+were fetched, completed CI runs and commit->PR lookups are never refetched,
+and fixed-URL responses are cached with their ETag so an unchanged answer
+comes back as a 304, which GitHub does not charge against the rate limit.
+Progress is committed in batches, so an interrupted backfill resumes.
+
+Usage:
+  contributor-points.py collect                 # since the stored cursor (first run: full backfill)
+  contributor-points.py collect --since 2026-09-20T00:00:00Z
+  contributor-points.py score --json out.json
+"""
+import argparse, json, os, re, sqlite3, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import ci_diagnose  # noqa: E402
+
+REPO = 'aethersdr/AetherSDR'
+REPO_START = '2026-03-12T00:00:00Z'   # first backfill starts here
+CURSOR_OVERLAP = timedelta(minutes=10)
+OWNER, NAME = REPO.split('/')
+DB_PATH = os.environ.get('CONTRIBUTOR_DB', '/Users/aetherclaude/data/contributors.db')
+MAINTAINERS = {'ten9876'}           # scored and shown, never eligible to win
+BOTS = {'aethersdr-agent[bot]', 'aethersdr-agent', 'dependabot[bot]', 'dependabot',
+        'Copilot', 'copilot-pull-request-reviewer[bot]', 'github-actions[bot]'}
+BREAK_WORKFLOWS = ('ci.yml', 'full-suite.yml')   # run on every push to main
+INFRA_CAUSES = {'disk', 'oom', 'timeout', 'runner'}
+CONFIRM_LABELS = {'bug', 'enhancement'}
+SPAM_LABELS = {'spam', 'invalid'}
+TRIVIAL_COMMENT = re.compile(r'^\W*(\+1|thanks?( you)?|thx|ty|lgtm|same( here)?|bump|me too)\W*$', re.I)
+MIN_COMMENT_CHARS = 15              # a floor, not a scale
+
+# rule -> (points, category). Categories drive the page's breakdown columns.
+RULES = {
+    'discussion_comment':  (1, 'comments'),
+    'issue_comment':       (1, 'comments'),
+    'pr_comment':          (1, 'comments'),
+    'discussion_open':     (2, 'discussions'),
+    'discussion_answer':   (4, 'discussions'),
+    'issue_open':          (2, 'issues'),
+    'issue_confirmed':     (2, 'issues'),
+    'issue_fixed':         (2, 'issues'),
+    'pr_open':             (2, 'prs'),
+    'pr_merged':           (6, 'prs'),
+    'pr_closes_issue':     (2, 'prs'),
+    'pr_tests':            (2, 'prs'),
+    'first_merged_pr':     (5, 'prs'),
+    'review_approve':      (4, 'reviews'),
+    'review_changes':      (4, 'reviews'),
+    'review_comment':      (2, 'reviews'),
+    'merge_other':         (2, 'merges'),
+    'main_fixed':          (5, 'main'),
+    'revert_merged':       (3, 'main'),
+    'break_approver':      (-10, 'penalties'),
+    'break_author':        (-8, 'penalties'),
+    'break_merger':        (-4, 'penalties'),
+    'break_self_fix':      (4, 'penalties'),
+    'spam':                (-3, 'penalties'),
+}
+CAP_COMMENT_PER_THREAD_DAY = 1
+CAP_OWN_PR_REPLIES = 2
+CAP_COMMENTS_PER_DAY = 10
+CAP_ISSUE_OPENS_PER_DAY = 4
+SELF_FIX_WINDOW = timedelta(hours=24)
+
+
+# ── GitHub access ────────────────────────────────────────────────────────
+class GH:
+    def __init__(self, token, proxy=None, max_per_hour=1000, db=None):
+        self.db = db
+        self.not_modified = 0
+        self.proxy = urllib.request.ProxyHandler({'https': proxy} if proxy else {})
+        self.opener = urllib.request.build_opener(self.proxy)
+        self.hdrs = {'Authorization': f'token {token}', 'Accept': 'application/vnd.github+json',
+                     'User-Agent': 'AetherClaude-Contributors'}
+        self.min_gap = 3600.0 / max_per_hour   # leave the agent its share of the budget
+        self.last = 0.0
+        self.calls = 0
+
+    def _open(self, req, timeout=30):
+        wait = self.min_gap - (time.time() - self.last)
+        if wait > 0:
+            time.sleep(wait)
+        self.last = time.time()
+        self.calls += 1
+        return self.opener.open(req, timeout=timeout)
+
+    def get(self, path):
+        url = path if path.startswith('https://') else f'https://api.github.com/{path}'
+        # Fixed URLs (a PR, its reviews, its files, the releases) are cached
+        # with their ETag; `since=` feeds and searches change every run.
+        cacheable = self.db is not None and not any(k in url for k in ('since=', 'created=', '/search/'))
+        hdrs = dict(self.hdrs)
+        cached = None
+        if cacheable:
+            cached = self.db.execute('SELECT etag, body, link FROM http_cache WHERE url=?', (url,)).fetchone()
+            if cached and cached[0]:
+                hdrs['If-None-Match'] = cached[0]
+        try:
+            with self._open(urllib.request.Request(url, headers=hdrs)) as r:
+                text = r.read().decode()
+                link = r.headers.get('Link') or ''
+                etag = r.headers.get('ETag')
+            if cacheable and etag:
+                self.db.execute('INSERT OR REPLACE INTO http_cache VALUES(?,?,?,?,?)',
+                                (url, etag, text, link, datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')))
+            body = json.loads(text)
+        except urllib.error.HTTPError as e:
+            if e.code != 304 or not cached:
+                raise
+            self.not_modified += 1
+            body, link = json.loads(cached[1]), cached[2] or ''
+        nxt = re.search(r'<([^>]+)>;\s*rel="next"', link)
+        return body, (nxt.group(1) if nxt else None)
+
+    def pages(self, path, stop=None):
+        url = path
+        while url:
+            body, url = self.get(url)
+            items = body if isinstance(body, list) else next(
+                (body[k] for k in ('items', 'workflow_runs', 'jobs', 'actions_caches') if k in body), [])
+            for it in items:
+                if stop and stop(it):
+                    return
+                yield it
+
+    def graphql(self, query, variables):
+        data = json.dumps({'query': query, 'variables': variables}).encode()
+        req = urllib.request.Request('https://api.github.com/graphql', data=data, headers=self.hdrs)
+        with self._open(req) as r:
+            out = json.loads(r.read().decode())
+        if out.get('errors'):
+            raise RuntimeError(out['errors'])
+        return out['data']
+
+    def job_log(self, job_id):
+        """Job log text; the API redirects to a pre-signed storage URL that
+        must be fetched without the GitHub Authorization header."""
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):
+                return None
+        url = f'https://api.github.com/repos/{REPO}/actions/jobs/{job_id}/logs'
+        op = urllib.request.build_opener(urllib.request.ProxyHandler(self.proxy.proxies), NoRedirect())
+        try:
+            self.calls += 1
+            op.open(urllib.request.Request(url, headers=self.hdrs), timeout=30)
+            return ''
+        except urllib.error.HTTPError as e:
+            loc = e.headers.get('Location')
+            if not loc:
+                return ''
+        with self.opener.open(urllib.request.Request(loc, headers={'User-Agent': 'AetherClaude-Contributors'}),
+                              timeout=60) as r:
+            return r.read(24 * 1024 * 1024).decode('utf-8', 'replace')
+
+
+# ── Storage ──────────────────────────────────────────────────────────────
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS people(login TEXT PRIMARY KEY, kind TEXT, role TEXT, avatar TEXT);
+CREATE TABLE IF NOT EXISTS items(type TEXT, number INTEGER, author TEXT, created_at TEXT,
+  closed_at TEXT, state_reason TEXT, labels TEXT, title TEXT,
+  merged_at TEXT, merged_by TEXT, head_sha TEXT, merge_sha TEXT,
+  closes TEXT, touches_tests INTEGER, PRIMARY KEY(type, number));
+CREATE TABLE IF NOT EXISTS comments(id TEXT PRIMARY KEY, type TEXT, number INTEGER,
+  login TEXT, created_at TEXT, substantive INTEGER);
+CREATE TABLE IF NOT EXISTS reviews(id INTEGER PRIMARY KEY, pr INTEGER, login TEXT, state TEXT,
+  commit_id TEXT, submitted_at TEXT);
+CREATE TABLE IF NOT EXISTS labels(number INTEGER, label TEXT, actor TEXT, at TEXT,
+  PRIMARY KEY(number, label, at));
+CREATE TABLE IF NOT EXISTS answers(number INTEGER PRIMARY KEY, login TEXT, at TEXT);
+CREATE TABLE IF NOT EXISTS releases(tag TEXT PRIMARY KEY, published_at TEXT, prerelease INTEGER);
+CREATE TABLE IF NOT EXISTS runs(id INTEGER PRIMARY KEY, workflow TEXT, sha TEXT, created_at TEXT,
+  conclusion TEXT, url TEXT, cause TEXT);
+CREATE TABLE IF NOT EXISTS first_merges(login TEXT PRIMARY KEY, number INTEGER, merged_at TEXT);
+CREATE TABLE IF NOT EXISTS state(name TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS review_comments(id INTEGER PRIMARY KEY, pr INTEGER, review_id INTEGER,
+  login TEXT, in_reply_to INTEGER, created_at TEXT);
+CREATE TABLE IF NOT EXISTS http_cache(url TEXT PRIMARY KEY, etag TEXT, body TEXT, link TEXT, fetched_at TEXT);
+"""
+# Columns added after the first schema; applied to existing databases.
+MIGRATIONS = [
+    'ALTER TABLE items ADD COLUMN updated_at TEXT',   # from the issues feed
+    'ALTER TABLE items ADD COLUMN detail_at TEXT',    # when PR details were last fetched
+    'ALTER TABLE reviews ADD COLUMN body_len INTEGER',  # summary text present (0 = none)
+    'ALTER TABLE items ADD COLUMN reviews_v INTEGER',   # review data version stored for this PR
+    'ALTER TABLE runs ADD COLUMN sig TEXT',             # failure signature: failing tests / errors
+]
+REVIEWS_V = 2   # 2 = reviews with body_len + inline review comments
+
+
+def db_open(path):
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    c = sqlite3.connect(path)
+    c.execute('PRAGMA journal_mode=WAL')
+    c.executescript(SCHEMA)
+    for m in MIGRATIONS:
+        try:
+            c.execute(m)
+        except sqlite3.OperationalError:
+            pass   # already applied
+    c.commit()
+    return c
+
+
+def get_state(db, name, default=None):
+    row = db.execute('SELECT value FROM state WHERE name=?', (name,)).fetchone()
+    return row[0] if row else default
+
+
+def set_state(db, name, value):
+    db.execute('INSERT OR REPLACE INTO state VALUES(?,?)', (name, value))
+
+
+def role_of(login, user_type=None):
+    if not login:
+        return 'ghost'
+    if user_type == 'Bot' or login in BOTS or login.endswith('[bot]'):
+        return 'bot'
+    return 'maintainer' if login in MAINTAINERS else 'contributor'
+
+
+def collect_reviews(gh, db, n):
+    """A PR's reviews plus its inline review comments. GitHub stores each
+    reply in an inline thread as its own review object, so the scorer needs
+    the inline comments to tell a new review from a thread reply."""
+    for rv in gh.pages(f'repos/{REPO}/pulls/{n}/reviews?per_page=100'):
+        note_person(db, rv.get('user'))
+        db.execute('INSERT OR REPLACE INTO reviews(id,pr,login,state,commit_id,submitted_at,body_len) VALUES(?,?,?,?,?,?,?)',
+                   (rv['id'], n, (rv.get('user') or {}).get('login'), rv['state'],
+                    rv.get('commit_id'), rv.get('submitted_at'), len((rv.get('body') or '').strip())))
+    for c in gh.pages(f'repos/{REPO}/pulls/{n}/comments?per_page=100'):
+        db.execute('INSERT OR REPLACE INTO review_comments VALUES(?,?,?,?,?,?)',
+                   (c['id'], n, c.get('pull_request_review_id'), (c.get('user') or {}).get('login'),
+                    c.get('in_reply_to_id'), c.get('created_at')))
+    db.execute('UPDATE items SET reviews_v=? WHERE type="pr" AND number=?', (REVIEWS_V, n))
+
+
+def note_person(db, user):
+    if not user or not user.get('login'):
+        return
+    db.execute('INSERT OR IGNORE INTO people VALUES(?,?,?,?)',
+               (user['login'], user.get('type', 'User'), role_of(user['login'], user.get('type')),
+                user.get('avatar_url', '')))
+
+
+def substantive(body):
+    b = (body or '').strip()
+    return int(len(b) >= MIN_COMMENT_CHARS and not TRIVIAL_COMMENT.match(b))
+
+
+# ── Collection ───────────────────────────────────────────────────────────
+def collect(gh, db, since):
+    q = urllib.parse.quote
+    run_start = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    # Releases: the weekly windows run between non-prerelease tags.
+    for r in gh.pages(f'repos/{REPO}/releases?per_page=100'):
+        db.execute('INSERT OR REPLACE INTO releases VALUES(?,?,?)',
+                   (r['tag_name'], r.get('published_at'), int(bool(r.get('prerelease')))))
+
+    # Issues and PRs (one feed), updated since the cursor.
+    prs = []
+    for it in gh.pages(f'repos/{REPO}/issues?state=all&sort=updated&direction=desc&per_page=100&since={q(since)}'):
+        note_person(db, it.get('user'))
+        is_pr = 'pull_request' in it
+        t = 'pr' if is_pr else 'issue'
+        # Upsert the feed's columns only; PR details stay as fetched.
+        db.execute('INSERT INTO items(type,number,author,created_at,closed_at,state_reason,labels,title,updated_at)'
+                   ' VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(type,number) DO UPDATE SET author=excluded.author,'
+                   ' closed_at=excluded.closed_at, state_reason=excluded.state_reason, labels=excluded.labels,'
+                   ' title=excluded.title, updated_at=excluded.updated_at',
+                   (t, it['number'], (it.get('user') or {}).get('login'), it['created_at'], it.get('closed_at'),
+                    it.get('state_reason'), json.dumps([l['name'] for l in it.get('labels') or []]),
+                    (it.get('title') or '')[:200], it.get('updated_at')))
+        if is_pr:
+            det = db.execute('SELECT detail_at FROM items WHERE type="pr" AND number=?', (it['number'],)).fetchone()
+            if not det or not det[0] or (it.get('updated_at') or '') > det[0]:
+                prs.append(it['number'])
+    db.commit()
+    print(f'  {len(prs)} PRs changed since their details were fetched', file=sys.stderr)
+
+    # PR details: merger, head, linked issues, tests touched, reviews.
+    for i, n in enumerate(prs):
+        p, _ = gh.get(f'repos/{REPO}/pulls/{n}')
+        note_person(db, p.get('merged_by'))
+        closes, tests = [], 0
+        had = db.execute('SELECT merged_by, closes, touches_tests FROM items WHERE type="pr" AND number=?', (n,)).fetchone()
+        if p.get('merged_at') and had and had[0] and had[1] is not None:
+            closes, tests = json.loads(had[1]), had[2] or 0   # fixed at merge; never refetched
+        elif p.get('merged_at'):
+            d = gh.graphql('query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n)'
+                           '{closingIssuesReferences(first:20){nodes{number}}}}}', {'o': OWNER, 'r': NAME, 'n': n})
+            closes = [x['number'] for x in d['repository']['pullRequest']['closingIssuesReferences']['nodes']]
+            tests = int(any(f['filename'].startswith('tests/') for f in gh.pages(f'repos/{REPO}/pulls/{n}/files?per_page=100')))
+        db.execute('UPDATE items SET merged_at=?, merged_by=?, head_sha=?, merge_sha=?, closes=?, touches_tests=?'
+                   ' WHERE type="pr" AND number=?',
+                   (p.get('merged_at'), (p.get('merged_by') or {}).get('login'), p['head']['sha'],
+                    p.get('merge_commit_sha'), json.dumps(closes), tests, n))
+        collect_reviews(gh, db, n)
+        db.execute('UPDATE items SET detail_at=? WHERE type="pr" AND number=?', (run_start, n))
+        if i % 25 == 24:
+            db.commit()   # resumable: a restart skips PRs already done
+        if i % 100 == 99:
+            print(f'  PR details {i + 1}/{len(prs)} ({gh.calls} calls)', file=sys.stderr, flush=True)
+    db.commit()
+
+    # PRs whose stored reviews predate the current review data version get
+    # their reviews and inline comments refreshed (no other PR calls).
+    stale = [n for (n,) in db.execute('SELECT number FROM items WHERE type="pr" AND detail_at IS NOT NULL'
+                                      ' AND IFNULL(reviews_v,0)<?', (REVIEWS_V,))]
+    if stale:
+        print(f'  refreshing review data for {len(stale)} PRs', file=sys.stderr)
+    for i, n in enumerate(stale):
+        collect_reviews(gh, db, n)
+        if i % 25 == 24:
+            db.commit()
+    db.commit()
+
+    print(f'  step: issue and pr conversation comments ({gh.calls} calls)', file=sys.stderr, flush=True)
+    # Issue and PR conversation comments (inline review comments are part of
+    # the review and are not fetched).
+    types = dict(db.execute('SELECT number, type FROM items'))
+    for c in gh.pages(f'repos/{REPO}/issues/comments?sort=created&direction=asc&per_page=100&since={q(since)}'):
+        note_person(db, c.get('user'))
+        n = int(c['issue_url'].rsplit('/', 1)[1])
+        db.execute('INSERT OR REPLACE INTO comments VALUES(?,?,?,?,?,?)',
+                   (f"ic{c['id']}", types.get(n, 'issue'), n, (c.get('user') or {}).get('login'),
+                    c['created_at'], substantive(c.get('body'))))
+
+    print(f'  step: label events ({gh.calls} calls)', file=sys.stderr, flush=True)
+    # Label events (maintainer confirmation, spam).
+    for ev in gh.pages(f'repos/{REPO}/issues/events?per_page=100',
+                       stop=lambda e: e['created_at'] < since):
+        if ev.get('event') == 'labeled' and ev.get('label'):
+            db.execute('INSERT OR IGNORE INTO labels VALUES(?,?,?,?)',
+                       ((ev.get('issue') or {}).get('number'), ev['label']['name'],
+                        (ev.get('actor') or {}).get('login'), ev['created_at']))
+
+    print(f'  step: discussions ({gh.calls} calls)', file=sys.stderr, flush=True)
+    # Discussions (GraphQL only): open, comments, replies, accepted answers.
+    cursor = None
+    while True:
+        d = gh.graphql('query($o:String!,$r:String!,$c:String){repository(owner:$o,name:$r){discussions(first:25,after:$c,'
+                       'orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{number updatedAt '
+                       'createdAt title author{login avatarUrl __typename} answer{author{login}} answerChosenAt '
+                       'comments(first:50){nodes{id createdAt bodyText author{login avatarUrl __typename} '
+                       'replies(first:50){nodes{id createdAt bodyText author{login avatarUrl __typename}}}}}}}}}',
+                       {'o': OWNER, 'r': NAME, 'c': cursor})['repository']['discussions']
+        done = False
+        for x in d['nodes']:
+            if x['updatedAt'] < since:
+                done = True
+                break
+            a = x.get('author') or {}
+            note_person(db, {'login': a.get('login'), 'type': a.get('__typename'), 'avatar_url': a.get('avatarUrl')})
+            db.execute('INSERT INTO items(type,number,author,created_at,title,updated_at) VALUES("discussion",?,?,?,?,?)'
+                       ' ON CONFLICT(type,number) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at',
+                       (x['number'], a.get('login'), x['createdAt'], (x.get('title') or '')[:200], x['updatedAt']))
+            if x.get('answer') and x.get('answerChosenAt'):
+                db.execute('INSERT OR REPLACE INTO answers VALUES(?,?,?)',
+                           (x['number'], x['answer']['author']['login'], x['answerChosenAt']))
+            for c in x['comments']['nodes']:
+                for node in [c] + c['replies']['nodes']:
+                    ca = node.get('author') or {}
+                    note_person(db, {'login': ca.get('login'), 'type': ca.get('__typename'),
+                                     'avatar_url': ca.get('avatarUrl')})
+                    db.execute('INSERT OR REPLACE INTO comments VALUES(?,?,?,?,?,?)',
+                               (f"dc{node['id']}", 'discussion', x['number'], ca.get('login'),
+                                node['createdAt'], substantive(node.get('bodyText'))))
+        if done or not d['pageInfo']['hasNextPage']:
+            break
+        cursor = d['pageInfo']['endCursor']
+
+    print(f'  step: main-branch ci verdicts ({gh.calls} calls)', file=sys.stderr, flush=True)
+    # Main-branch CI verdicts (the break detector), with the cause of each
+    # failure so infrastructure failures can be excluded.
+    lookback = (datetime.fromisoformat(since.replace('Z', '+00:00')) - timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    for wf in BREAK_WORKFLOWS:
+        for r in gh.pages(f'repos/{REPO}/actions/workflows/{wf}/runs?branch=main&event=push&per_page=100'
+                          f'&created=%3E%3D{q(lookback)}'):
+            if r.get('status') != 'completed':
+                continue
+            known = db.execute('SELECT cause, sig FROM runs WHERE id=?', (r['id'],)).fetchone()
+            cause, sig = known if known else (None, None)
+            if r['conclusion'] == 'failure' and sig is None:
+                # Cause (first non-infrastructure one) and the failure
+                # signature: the failing tests, else the failing file or kind.
+                # A later run in a red stretch is a new break only if its
+                # signature has something the stretch has not had yet.
+                cause, elems = 'unknown', set()
+                for j in gh.pages(f"repos/{REPO}/actions/runs/{r['id']}/jobs?per_page=100"):
+                    if j.get('conclusion') != 'failure':
+                        continue
+                    try:
+                        log = gh.job_log(j['id'])
+                    except Exception:
+                        log = ''
+                    dg = ci_diagnose._diagnose_log_clean(log) or {}
+                    kind = dg.get('kind') or 'unknown'
+                    if cause in ('unknown',) or cause in INFRA_CAUSES:
+                        cause = kind
+                    tests = ci_diagnose.failed_tests_from_log(log)
+                    if tests:
+                        elems.update('test:' + t for t in tests)
+                    elif kind in ('compile', 'link', 'configure', 'ice') and dg.get('file'):
+                        elems.add(f"{kind}:{dg['file'].rsplit(':', 1)[0]}")
+                    else:
+                        elems.add(f"{kind}:{j.get('name', '')}")
+                sig = json.dumps(sorted(elems))
+            db.execute('INSERT OR REPLACE INTO runs(id,workflow,sha,created_at,conclusion,url,cause,sig)'
+                       ' VALUES(?,?,?,?,?,?,?,?)',
+                       (r['id'], wf, r['head_sha'], r['created_at'], r['conclusion'], r['html_url'], cause, sig))
+        db.commit()
+
+    print(f'  step: prs behind the commits ({gh.calls} calls)', file=sys.stderr, flush=True)
+    # PRs behind the commits that broke or fixed main.
+    # Only the failing runs and the green run that follows each red stretch
+    # matter, so only those commits are looked up.
+    needed = set()
+    for wf in BREAK_WORKFLOWS:
+        prev = None
+        for sha, concl in db.execute('SELECT sha, conclusion FROM runs WHERE workflow=? ORDER BY created_at', (wf,)):
+            if concl == 'failure' or (concl == 'success' and prev == 'failure'):
+                needed.add(sha)
+            if concl in ('success', 'failure'):
+                prev = concl
+    for sha in sorted(needed):
+        if db.execute('SELECT 1 FROM state WHERE name=?', ('pr_of:' + sha,)).fetchone():
+            continue
+        prl, _ = gh.get(f'repos/{REPO}/commits/{sha}/pulls')
+        num = next((p['number'] for p in prl if p.get('merged_at')), None)
+        db.execute('INSERT OR REPLACE INTO state VALUES(?,?)', ('pr_of:' + sha, str(num or '')))
+        if num and not db.execute('SELECT merged_by FROM items WHERE type="pr" AND number=?', (num,)).fetchone():
+            p, _ = gh.get(f'repos/{REPO}/pulls/{num}')
+            note_person(db, p.get('user'))
+            db.execute('INSERT INTO items(type,number,author,created_at,closed_at,labels,title,merged_at,'
+                       'merged_by,head_sha,merge_sha) VALUES("pr",?,?,?,?,?,?,?,?,?,?) ON CONFLICT(type,number) DO UPDATE SET'
+                       ' merged_at=excluded.merged_at, merged_by=excluded.merged_by, head_sha=excluded.head_sha,'
+                       ' merge_sha=excluded.merge_sha',
+                       (num, p['user']['login'], p['created_at'], p.get('closed_at'), '[]', p['title'][:200],
+                        p.get('merged_at'), (p.get('merged_by') or {}).get('login'), p['head']['sha'],
+                        p.get('merge_commit_sha')))
+            collect_reviews(gh, db, num)
+
+    print(f'  step: first merged pr ever ({gh.calls} calls)', file=sys.stderr, flush=True)
+    # First merged PR ever, per person seen merging a PR since the cursor.
+    # With the full history stored it is a lookup; until then, a search.
+    if since <= REPO_START:
+        set_state(db, 'history_complete_pending', '1')
+    full = get_state(db, 'history_complete') == '1'
+    for (login,) in db.execute('SELECT DISTINCT author FROM items WHERE type="pr" AND merged_at>=?', (since,)).fetchall():
+        if db.execute('SELECT 1 FROM first_merges WHERE login=?', (login,)).fetchone() or role_of(login) == 'bot':
+            continue
+        if full:
+            row = db.execute('SELECT number, merged_at FROM items WHERE type="pr" AND author=? AND merged_at IS NOT NULL'
+                             ' ORDER BY merged_at LIMIT 1', (login,)).fetchone()
+            if row:
+                db.execute('INSERT OR REPLACE INTO first_merges VALUES(?,?,?)', (login, row[0], row[1]))
+            continue
+        time.sleep(2.1)   # search API: 30 requests a minute
+        body, _ = gh.get('search/issues?q=' + q(f'repo:{REPO} type:pr is:merged author:{login}') +
+                         '&sort=created&order=asc&per_page=1')
+        first = (body.get('items') or [None])[0]
+        if first:
+            p, _ = gh.get(f'repos/{REPO}/pulls/{first["number"]}')
+            db.execute('INSERT OR REPLACE INTO first_merges VALUES(?,?,?)', (login, first['number'], p.get('merged_at')))
+    # Only a complete run advances the cursor; an interrupted one re-reads
+    # its feeds next time but skips the PRs it already finished.
+    set_state(db, 'cursor', run_start)
+    if get_state(db, 'history_complete_pending') == '1':
+        set_state(db, 'history_complete', '1')
+        db.execute("DELETE FROM state WHERE name='history_complete_pending'")
+        # Full history stored: first merges come from it, replacing any
+        # search results (one source of truth).
+        db.execute('DELETE FROM first_merges')
+        db.execute('INSERT INTO first_merges SELECT author, number, MIN(merged_at) FROM items'
+                   ' WHERE type="pr" AND merged_at IS NOT NULL GROUP BY author')
+    db.commit()
+
+
+# ── Scoring (pure function of the stored facts) ──────────────────────────
+def score(db):
+    led = []   # (login, rule, at, ref, note)
+
+    def add(login, rule, at, ref, note=''):
+        if login and role_of(login, (db.execute('SELECT kind FROM people WHERE login=?', (login,)).fetchone() or [None])[0]) != 'bot':
+            led.append((login, rule, at, ref, note))
+
+    items = {(t, n): dict(zip(('author', 'created_at', 'closed_at', 'state_reason', 'labels', 'title', 'merged_at',
+                               'merged_by', 'head_sha', 'merge_sha', 'closes', 'touches_tests'), rest))
+             for t, n, *rest in db.execute('SELECT type, number, author, created_at, closed_at, state_reason, labels,'
+                                           ' title, merged_at, merged_by, head_sha, merge_sha, closes, touches_tests FROM items')}
+    labels = defaultdict(list)
+    for n, lab, actor, at in db.execute('SELECT number, label, actor, at FROM labels'):
+        labels[n].append((lab, actor, at))
+
+    spam = set()
+    for (t, n), it in items.items():
+        labs = set(json.loads(it['labels'] or '[]'))
+        if labs & SPAM_LABELS:
+            spam.add((t, n))
+            add(it['author'], 'spam', it['closed_at'] or it['created_at'], f'{t}#{n}')
+            continue
+        if t == 'issue':
+            add(it['author'], 'issue_open', it['created_at'], f'issue#{n}')
+            conf = sorted((at, actor) for lab, actor, at in labels[n]
+                          if lab in CONFIRM_LABELS and actor and actor != it['author'] and role_of(actor) != 'bot')
+            if conf:
+                add(it['author'], 'issue_confirmed', conf[0][0], f'issue#{n}', f'labelled by {conf[0][1]}')
+        elif t == 'discussion':
+            add(it['author'], 'discussion_open', it['created_at'], f'discussion#{n}')
+        elif t == 'pr':
+            add(it['author'], 'pr_open', it['created_at'], f'pr#{n}')
+            if it['merged_at']:
+                add(it['author'], 'pr_merged', it['merged_at'], f'pr#{n}')
+                closes = json.loads(it['closes'] or '[]')
+                if closes:
+                    add(it['author'], 'pr_closes_issue', it['merged_at'], f'pr#{n}', 'closes ' + ', '.join(f'#{c}' for c in closes))
+                    for c in closes:
+                        iss = items.get(('issue', c))
+                        if iss and iss['author'] != it['author'] and iss['state_reason'] == 'completed':
+                            add(iss['author'], 'issue_fixed', it['merged_at'], f'issue#{c}', f'by PR #{n}')
+                if it['touches_tests']:
+                    add(it['author'], 'pr_tests', it['merged_at'], f'pr#{n}')
+                if it['merged_by'] and it['merged_by'] != it['author']:
+                    add(it['merged_by'], 'merge_other', it['merged_at'], f'pr#{n}')
+                if (it['title'] or '').startswith('Revert '):
+                    add(it['author'], 'revert_merged', it['merged_at'], f'pr#{n}')
+
+    for login, num, at in db.execute('SELECT login, number, merged_at FROM first_merges'):
+        add(login, 'first_merged_pr', at, f'pr#{num}')
+
+    for n, login, at in db.execute('SELECT number, login, at FROM answers'):
+        add(login, 'discussion_answer', at, f'discussion#{n}')
+
+    # Reviews: one scored review per reviewer per PR per day, the best state
+    # that day; the PR author's own thread replies are not reviews.
+    # A comment-only review whose inline comments are all replies to existing
+    # threads is a thread reply, not a new review: it joins the comment
+    # stream below (1 point, under the comment caps) instead.
+    threads = defaultdict(lambda: [0, 0])   # review_id -> [new threads, replies]
+    for rid, reply in db.execute('SELECT review_id, in_reply_to FROM review_comments'):
+        threads[rid][1 if reply else 0] += 1
+    best, replies = {}, []
+    for rid, pr, login, state, commit_id, at, body_len in db.execute(
+            'SELECT id, pr, login, state, commit_id, submitted_at, body_len FROM reviews'):
+        it = items.get(('pr', pr))
+        if not at or not it or state in ('PENDING', 'DISMISSED'):
+            continue
+        new, rep_n = threads[rid]
+        if state == 'COMMENTED' and body_len is not None and not body_len and not new:
+            if rep_n:
+                replies.append((f'rv{rid}', 'pr', pr, login, at, 1))
+            continue
+        if login == it['author']:
+            continue
+        rule = {'APPROVED': 'review_approve', 'CHANGES_REQUESTED': 'review_changes'}.get(state, 'review_comment')
+        key = (login, pr, at[:10])
+        if key not in best or RULES[rule][0] > RULES[best[key][0]][0]:
+            best[key] = (rule, at)
+    for (login, pr, _), (rule, at) in best.items():
+        add(login, rule, at, f'pr#{pr}')
+
+    # Comments, with caps applied in time order.
+    thread_day, own_pr, per_day = defaultdict(int), defaultdict(int), defaultdict(int)
+    # A reviewer whose review scored on a PR that day gets nothing more for
+    # commenting or replying on that PR the same day.
+    for (login, pr, day) in best:
+        thread_day[(login, 'pr', pr, day)] = CAP_COMMENT_PER_THREAD_DAY
+    stream = sorted(list(db.execute('SELECT id, type, number, login, created_at, substantive FROM comments')) + replies,
+                    key=lambda c: c[4] or '')
+    for cid, t, n, login, at, subst in stream:
+        it = items.get((t, n))
+        if not subst or not login or (t, n) in spam:
+            continue
+        rule = {'discussion': 'discussion_comment', 'pr': 'pr_comment'}.get(t, 'issue_comment')
+        day = at[:10]
+        if thread_day[(login, t, n, day)] >= CAP_COMMENT_PER_THREAD_DAY or per_day[(login, day)] >= CAP_COMMENTS_PER_DAY:
+            continue
+        if t == 'pr' and it and it['author'] == login:
+            if own_pr[(login, n)] >= CAP_OWN_PR_REPLIES:
+                continue
+            own_pr[(login, n)] += 1
+        thread_day[(login, t, n, day)] += 1
+        per_day[(login, day)] += 1
+        add(login, rule, at, f'{t}#{n}')
+
+    # Issue opens per day cap: drop opens past the cap (oldest kept).
+    opens = defaultdict(int)
+    kept = []
+    for e in sorted(led, key=lambda e: e[2] or ''):
+        if e[1] == 'issue_open':
+            opens[(e[0], (e[2] or '')[:10])] += 1
+            if opens[(e[0], (e[2] or '')[:10])] > CAP_ISSUE_OPENS_PER_DAY:
+                continue
+        kept.append(e)
+    led = kept
+
+    # Breaking main, per workflow in push order. The first failure after a
+    # green run is a break; while main stays red, a later run is a break too
+    # if it fails something new: a test (or error) not already failing at any
+    # point since main went red. Infrastructure failures are skipped. A
+    # commit that breaks both workflows counts once.
+    runs = db.execute('SELECT id, workflow, sha, created_at, conclusion, url, cause, sig FROM runs'
+                      ' ORDER BY created_at').fetchall()
+    pr_of = {k[6:]: v for k, v in db.execute("SELECT name, value FROM state WHERE name LIKE 'pr_of:%'")}
+    breaks = []
+    for wf in BREAK_WORKFLOWS:
+        stretch, open_breaks, seen_green = set(), [], False
+        for rid, w, sha, at, concl, url, cause, sig in [r for r in runs if r[1] == wf]:
+            if concl not in ('success', 'failure') or (concl == 'failure' and cause in INFRA_CAUSES):
+                continue
+            if concl == 'success':
+                for ob in open_breaks:
+                    ob['fixed_sha'], ob['fixed_at'] = sha, at
+                    ob['fixed_pr'] = int(pr_of.get(sha) or 0) or None
+                stretch, open_breaks, seen_green = set(), [], True
+                continue
+            elems = set(json.loads(sig or '[]')) or {f'{cause}:'}
+            new = elems - stretch
+            if seen_green and new:
+                b = {'sha': sha, 'at': at, 'url': url, 'workflow': wf, 'cause': cause,
+                     'pr': int(pr_of.get(sha) or 0) or None, 'first': not stretch,
+                     'new': sorted(x.split(':', 1)[1] or x for x in new)[:10]}
+                breaks.append(b)
+                open_breaks.append(b)
+            stretch |= elems
+    seen, fix_credit = set(), set()
+    for b in sorted(breaks, key=lambda b: b['at']):
+        if b['sha'] in seen or not b['pr']:
+            continue
+        seen.add(b['sha'])
+        it = items.get(('pr', b['pr'])) or {}
+        ref = f"pr#{b['pr']}"
+        what = ', '.join(b['new'][:3]) + (f" +{len(b['new']) - 3} more" if len(b['new']) > 3 else '')
+        note = (f"{b['workflow'].replace('.yml', '')} red at {b['sha'][:7]}" if b['first']
+                else f"{b['workflow'].replace('.yml', '')} new failure at {b['sha'][:7]} while red") + f": {what}"
+        roles = defaultdict(set)
+        if it.get('author'):
+            roles[it['author']].add('break_author')
+        if it.get('merged_by'):
+            roles[it['merged_by']].add('break_merger')
+        for login, state, commit_id in db.execute('SELECT login, state, commit_id FROM reviews WHERE pr=?', (b['pr'],)):
+            if state == 'APPROVED' and commit_id == it.get('head_sha') and login != it.get('author'):
+                roles[login].add('break_approver')
+        for login, rs in roles.items():
+            worst = min(rs, key=lambda r: RULES[r][0])    # one penalty per person, the largest
+            add(login, worst, b['at'], ref, note)
+        fx = items.get(('pr', b.get('fixed_pr'))) if b.get('fixed_pr') else None
+        if fx and fx.get('author'):
+            fixed_quick = b.get('fixed_at') and (datetime.fromisoformat(b['fixed_at'].replace('Z', '+00:00')) -
+                                                 datetime.fromisoformat(b['at'].replace('Z', '+00:00'))) <= SELF_FIX_WINDOW
+            if fx['author'] == it.get('author'):
+                if fixed_quick:
+                    add(fx['author'], 'break_self_fix', b['fixed_at'], f"pr#{b['fixed_pr']}", f"fixed own break {b['sha'][:7]}")
+            elif b['fixed_pr'] != b['pr'] and (fx['author'], b['fixed_pr']) not in fix_credit:
+                # One "fixed main" per green run, however many breaks it closed.
+                fix_credit.add((fx['author'], b['fixed_pr']))
+                add(fx['author'], 'main_fixed', b['fixed_at'], f"pr#{b['fixed_pr']}", f"main green after {b['sha'][:7]}")
+    return led, breaks
+
+
+def windows(db):
+    rel = [(t, p) for t, p, pre in db.execute('SELECT tag, published_at, prerelease FROM releases ORDER BY published_at')
+           if not pre and p]
+    out = [{'tag': t, 'start': rel[i - 1][1] if i else None, 'end': p} for i, (t, p) in enumerate(rel)]
+    out.append({'tag': 'current', 'start': rel[-1][1] if rel else None, 'end': None})
+    return out
+
+
+def standings(db, led, start=None, end=None):
+    people = {l: (k, r, a) for l, k, r, a in db.execute('SELECT login, kind, role, avatar FROM people')}
+    rows = defaultdict(lambda: {'points': 0, 'cats': defaultdict(int), 'events': []})
+    for login, rule, at, ref, note in led:
+        if (start and (at or '') < start) or (end and (at or '') >= end):
+            continue
+        pts, cat = RULES[rule]
+        r = rows[login]
+        r['points'] += pts
+        r['cats'][cat] += pts
+        r['events'].append({'rule': rule, 'points': pts, 'at': at, 'ref': ref, 'note': note})
+    out = []
+    for login, r in rows.items():
+        kind, role, avatar = people.get(login, ('User', role_of(login), ''))
+        out.append({'login': login, 'role': role, 'eligible': role == 'contributor', 'avatar': avatar,
+                    'points': r['points'], 'cats': dict(r['cats']),
+                    'events': sorted(r['events'], key=lambda e: e['at'] or '', reverse=True)})
+    out.sort(key=lambda r: (-r['points'], -r['cats'].get('prs', 0), -r['cats'].get('reviews', 0), r['login'].lower()))
+    rank = 0
+    for r in out:
+        if r['eligible']:
+            rank += 1
+            r['rank'] = rank
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest='cmd', required=True)
+    c = sub.add_parser('collect')
+    c.add_argument('--since', help='default: the stored cursor, or a full backfill on the first run')
+    c.add_argument('--max-per-hour', type=int, default=1000)
+    s = sub.add_parser('score')
+    s.add_argument('--json', default='-')
+    s.add_argument('--windows', type=int, default=3, help='recent release windows to include')
+    a = ap.parse_args()
+    db = db_open(DB_PATH)
+    if a.cmd == 'collect':
+        token = os.environ.get('GH_TOKEN') or subprocess.check_output(
+            ['/Users/aetherclaude/bin/github-app-token.sh'], text=True).strip()
+        gh = GH(token, os.environ.get('HTTPS_PROXY'), a.max_per_hour, db)
+        since = a.since
+        if not since:
+            cur = get_state(db, 'cursor')
+            since = ((datetime.fromisoformat(cur.replace('Z', '+00:00')) - CURSOR_OVERLAP).strftime('%Y-%m-%dT%H:%M:%SZ')
+                     if cur else REPO_START)
+        collect(gh, db, since)
+        print(f'collected since {since}: {gh.calls} API calls, {gh.not_modified} answered 304 (free)', file=sys.stderr)
+        return
+    led, breaks = score(db)
+    ws = windows(db)[-a.windows:]
+    out = {'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'repo': REPO,
+           'rules': {k: {'points': v[0], 'category': v[1]} for k, v in RULES.items()},
+           'windows': [dict(w, standings=standings(db, led, w['start'], w['end'])) for w in ws],
+           'all_time': standings(db, led),
+           'breaks': breaks}
+    txt = json.dumps(out, indent=1)
+    if a.json == '-':
+        print(txt)
+    else:
+        open(a.json, 'w').write(txt)
+
+
+if __name__ == '__main__':
+    main()

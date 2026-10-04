@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aetherclaude.contributors</string>
+
+  <!--
+    Hourly incremental collection of AetherSDR contributor activity into
+    /Users/aetherclaude/data/contributors.db, read by the dashboard's
+    /leaderboard page. Each run picks up where the last one stopped (a
+    cursor in the database), so a normal hour costs a few dozen GitHub API
+    calls; the script throttles itself to at most 1,000 calls an hour so
+    the agent keeps the rest of the App's budget.
+  -->
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/Shared/aetherclaude/.venv/bin/python3</string>
+    <string>/Users/aetherclaude/bin/contributor-points.py</string>
+    <string>collect</string>
+  </array>
+
+  <key>UserName</key>
+  <string>aetherclaude</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <!-- Direct egress is pf-blocked for this uid; GitHub goes through
+         tinyproxy like the dashboard's calls. -->
+    <key>HTTPS_PROXY</key>
+    <string>http://127.0.0.1:8888</string>
+    <key>HTTP_PROXY</key>
+    <string>http://127.0.0.1:8888</string>
+    <key>NO_PROXY</key>
+    <string>127.0.0.1,localhost,::1</string>
+  </dict>
+
+  <key>StartInterval</key>
+  <integer>3600</integer>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/aetherclaude/logs/contributors.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/aetherclaude/logs/contributors.log</string>
+
+  <!-- A periodic one-shot, not KeepAlive. -->
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+</dict>
+</plist>

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Contributor Standings</title>
+<style>
+:root{--bg:#060b13;--bg-1:#0a121e;--bg-2:#0e1a2a;--bg-3:#12233a;--panel:rgba(18,34,56,.55);--ink:#eaf2fb;--ink-soft:#c4d4e8;--muted:#8598b4;--muted-dim:#5f708a;--line:rgba(120,165,210,.12);--line-hi:rgba(120,190,230,.28);--accent:#3aa7ff;--accent-bright:#5de3ff;--good:#27a86f;--warn:#b3831c;--crit:#e8506a;--gold:#e0b84a;--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,sans-serif;--mono:'SF Mono','JetBrains Mono','Fira Code',ui-monospace,Menlo,monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink-soft);font-family:var(--sans);font-size:13px;padding:24px 16px}
+.wrap{max-width:1200px;margin:0 auto}
+a{color:var(--accent-bright);text-decoration:none}
+h1{font-size:20px;font-weight:400;color:var(--accent-bright);letter-spacing:.5px}
+.sub{color:var(--muted);margin-top:4px}
+.tabs{display:flex;gap:6px;margin:18px 0 14px;flex-wrap:wrap}
+.tab{background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12px}
+.tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.hero{display:flex;gap:16px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px 20px;margin-bottom:14px}
+.hero img{width:56px;height:56px;border-radius:50%;border:2px solid var(--gold)}
+.hero .t{font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--gold);font-weight:600}
+.hero .n{font-size:22px;color:var(--ink);font-weight:600;margin-top:2px}
+.hero .p{margin-left:auto;text-align:right}
+.hero .p b{font-size:28px;color:var(--ink);font-weight:600;display:block}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px 16px;margin-bottom:14px;overflow-x:auto}
+.ph{font-size:12px;font-weight:600;letter-spacing:.4px;color:var(--muted);text-transform:uppercase;margin-bottom:10px;display:flex;justify-content:space-between}
+table{width:100%;border-collapse:collapse;min-width:860px}
+th{font-size:11px;font-weight:500;color:var(--muted-dim);text-align:right;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+th:nth-child(-n+2){text-align:left}
+td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:right;font-family:var(--mono);font-size:12px;white-space:nowrap}
+td:nth-child(-n+2){text-align:left;font-family:var(--sans)}
+tr.row{cursor:pointer}
+tr.row:hover td{background:var(--bg-2)}
+tr.lead td{background:rgba(224,184,74,.07)}
+.who{display:flex;align-items:center;gap:8px}
+.who img{width:22px;height:22px;border-radius:50%}
+.who b{color:var(--ink);font-weight:600}
+.badge{font-size:10px;font-weight:700;letter-spacing:.3px;border:1px solid var(--muted);color:var(--muted);border-radius:4px;padding:0 5px;font-family:var(--sans)}
+.pts{font-weight:700;color:var(--ink);font-size:13px}
+.neg{color:var(--crit)!important}
+.zero{color:var(--muted-dim)}
+.rank{color:var(--muted);width:44px}
+.gold{color:var(--gold);font-weight:700}
+tr.ev td{background:var(--bg-1);padding:0}
+.evs{display:grid;grid-template-columns:120px 170px 46px minmax(0,1fr);column-gap:12px;row-gap:2px;padding:8px 12px 10px 60px;font-size:11px;text-align:left}
+.evs span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dim{color:var(--muted)}
+.rules{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:2px 24px;font-size:12px}
+.rules div{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:3px 0}
+.brk{display:grid;grid-template-columns:90px 70px minmax(0,1fr) 140px;column-gap:12px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px}
+.brk span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+</style></head><body><div class="wrap">
+<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap">
+<h1>Contributor Standings</h1><a href="/" style="font-size:12px">&larr; Dashboard</a></div>
+<div class="sub" id="sub">Loading standings&hellip;</div>
+<div class="tabs" id="tabs"></div>
+<div id="hero"></div>
+<div class="panel"><div class="ph"><span id="tbl-title">Standings</span><span class="dim" style="text-transform:none;letter-spacing:0;font-weight:400">Click a row for the point-by-point breakdown</span></div>
+<table><thead><tr><th>#</th><th>Contributor</th><th>Points</th><th>Comments</th><th>Discussions</th><th>Issues</th><th>PRs</th><th>Reviews</th><th>Merges</th><th>Main health</th><th>Penalties</th></tr></thead><tbody id="tb"></tbody></table></div>
+<div class="panel" id="breaks"></div>
+<div class="panel"><div class="ph"><span>How points work</span></div><div class="rules" id="rules"></div>
+<p class="dim" style="margin-top:10px;font-size:11px">Points depend on the kind of action, never on its size. Comments score at most once per thread per day (10 a day), replies on your own PR at most twice per PR, one review per reviewer per PR per day. Breaking main is the first red CI or Full Suite run after a green one, or, while main is already red, a run that fails a test that wasn't already failing; runner failures (disk, memory, timeouts) and failures that pass on re-run don't count. Each person takes only their largest penalty per break. The maintainer is scored but can't win; bots aren't ranked.</p></div>
+</div>
+<script>
+let D=null,views=[],cur=null;
+const CATS=['comments','discussions','issues','prs','reviews','merges','main','penalties'];
+const LABEL={discussion_comment:'Discussion comment',issue_comment:'Issue comment',pr_comment:'PR comment',discussion_open:'Started discussion',discussion_answer:'Accepted answer',issue_open:'Opened issue',issue_confirmed:'Issue confirmed',issue_fixed:'Issue fixed',pr_open:'Opened PR',pr_merged:'PR merged',pr_closes_issue:'PR closes issue',pr_tests:'PR adds tests',first_merged_pr:'First merged PR',review_approve:'Approved',review_changes:'Requested changes',review_comment:'Review comments',merge_other:'Merged a PR',main_fixed:'Fixed main',revert_merged:'Revert merged',break_approver:'Approved a break',break_author:'Broke main',break_merger:'Merged a break',break_self_fix:'Fixed own break',spam:'Spam/invalid'};
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const refUrl=r=>{const [t,n]=r.split('#');return `https://github.com/${D.repo}/${t==='pr'?'pull':t==='discussion'?'discussions':'issues'}/${n}`};
+const fmtD=s=>s?new Date(s).toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+new Date(s).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}):'';
+function start(data){
+  D=data;
+  views=[...D.windows.slice().reverse().map(w=>({key:w.tag,name:w.tag==='current'?'This week':w.tag,w})),{key:'all',name:'All time',w:{standings:D.all_time,all:true}}];
+  if(!views.some(v=>v.key===cur))cur=views[0].key;
+  document.getElementById('rules').innerHTML=Object.entries(D.rules).map(([k,v])=>`<div><span>${esc(LABEL[k]||k)}</span><b class="${v.points<0?'neg':''}" style="font-family:var(--mono)">${v.points>0?'+':''}${v.points}</b></div>`).join('');
+  render();
+}
+function num(v){return v>0?`<span>${v}</span>`:v<0?`<span class="neg">${v}</span>`:'<span class="zero">·</span>'}
+function render(){
+  const v=views.find(x=>x.key===cur),w=v.w,st=w.standings;
+  document.getElementById('tabs').innerHTML=views.map(x=>`<span class="tab${x.key===cur?' on':''}" onclick="cur='${x.key}';render()">${esc(x.name)}</span>`).join('');
+  const span=w.start||w.end?`${w.start?fmtD(w.start):'start'} &rarr; ${w.end?fmtD(w.end):'now'}`:'all collected history';
+  document.getElementById('sub').innerHTML=`${esc(D.repo)} &middot; ${span} &middot; GitHub data as of ${fmtD(D.collected_at||D.generated_at)}`;
+  const top=st.find(r=>r.eligible);
+  const title=w.tag==='current'?'Leading this week':w.tag?`Contributor of the week &middot; ${esc(w.tag)}`:'All-time leader';
+  document.getElementById('hero').innerHTML=top?`<div class="hero"><img src="${esc(top.avatar||`https://github.com/${top.login}.png`)}" alt=""><div><div class="t">${title}</div><div class="n">${esc(top.login)}</div>`+
+    `<div class="dim" style="margin-top:2px">${CATS.filter(c=>top.cats[c]).map(c=>`${c==='prs'?'PRs':c} ${top.cats[c]}`).join(' &middot; ')}</div></div><div class="p"><b>${top.points}</b><span class="dim">points</span></div></div>`:'';
+  document.getElementById('tbl-title').innerHTML=`Standings &middot; ${esc(v.name)}`;
+  let h='';
+  st.forEach((r,i)=>{
+    const lead=top&&r.login===top.login;
+    h+=`<tr class="row${lead?' lead':''}" onclick="tog(${i})"><td class="rank">${r.eligible?(lead?'<span class="gold">1</span>':r.rank):'&mdash;'}</td>`+
+      `<td><div class="who"><img src="${esc(r.avatar||`https://github.com/${r.login}.png`)}" alt="" loading="lazy"><b>${esc(r.login)}</b>${r.eligible?'':`<span class="badge" title="Scored and shown, but not eligible to win">MAINTAINER &middot; NOT ELIGIBLE</span>`}</div></td>`+
+      `<td class="pts${r.points<0?' neg':''}">${r.points}</td>`+CATS.map(c=>`<td>${num(r.cats[c]||0)}</td>`).join('')+`</tr>`+
+      `<tr class="ev" id="ev${i}" style="display:none"><td colspan="11"><div class="evs">`+
+      (r.event_count>r.events.length?`<span class="dim" style="grid-column:1/-1">Newest ${r.events.length} of ${r.event_count} entries</span>`:'')+r.events.map(e=>`<span class="dim">${fmtD(e.at)}</span><span>${esc(LABEL[e.rule]||e.rule)}</span><span style="text-align:right" class="${e.points<0?'neg':''}">${e.points>0?'+':''}${e.points}</span>`+
+        `<span><a href="${refUrl(e.ref)}" target="_blank">${esc(e.ref.replace('discussion','disc'))}</a> <span class="dim">${esc(e.note||'')}</span></span>`).join('')+`</div></td></tr>`;
+  });
+  document.getElementById('tb').innerHTML=h||'<tr><td colspan="11" class="dim" style="text-align:left">No activity in this window yet.</td></tr>';
+  const brks=(D.breaks||[]).filter(b=>(!w.start||b.at>=w.start)&&(!w.end||b.at<w.end)&&b.pr).slice().reverse();
+  document.getElementById('breaks').innerHTML=`<div class="ph"><span>Main breaks in this window</span><span class="dim" style="text-transform:none;letter-spacing:0;font-weight:400">${brks.length} counted</span></div>`+
+    (brks.length?brks.map(b=>`<div class="brk"><span class="dim">${fmtD(b.at)}</span><a href="${refUrl('pr#'+b.pr)}" target="_blank">#${b.pr}</a><span title="${esc((b.new||[]).join(', '))}">${esc(b.workflow.replace('.yml',''))} ${b.first===false?'new failure while red':'red'} at <a href="${esc(b.url)}" target="_blank">${esc(b.sha.slice(0,7))}</a> <span class="dim">${esc((b.new||[]).slice(0,3).join(', ')||b.cause)}${(b.new||[]).length>3?` +${b.new.length-3} more`:''}</span></span><span class="dim">${b.fixed_at?'green again '+fmtD(b.fixed_at):'still red'}</span></div>`).join(''):'<p class="dim">None. Main stayed green.</p>');
+}
+function tog(i){const e=document.getElementById('ev'+i);e.style.display=e.style.display==='none'?'':'none'}
+function load(){
+  fetch('/api/leaderboard').then(r=>r.ok?r.json():Promise.reject(r.status)).then(start).catch(()=>{
+    if(!D)document.getElementById('sub').textContent='Standings are unavailable right now. Try again in a few minutes.'});
+}
+load();
+setInterval(load,5*60*1000);
+</script></body></html>

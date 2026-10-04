@@ -1,0 +1,144 @@
+# Contributor leaderboard
+
+A points system for contributions to [aethersdr/AetherSDR](https://github.com/aethersdr/AetherSDR).
+Each weekly release names the top contributor of the week. Points reward
+taking part in as many ways as possible; they depend on the **kind** of action,
+never its size, so a longer comment or a bigger PR earns nothing extra.
+Breaking `main` costs points, and costs the reviewer who approved it most.
+
+## Who is ranked
+
+| Who | Shown | Can win |
+|---|---|---|
+| Community contributors and org members | yes | yes |
+| Maintainer (`ten9876`) | yes, scored like everyone else, penalties included | no |
+| Bots (the AetherClaude agent App, Dependabot, Copilot) | no | no |
+
+A bot's action still counts for the humans involved: merging an agent PR earns
+merge points, and an agent PR that breaks `main` still costs its approvers and
+merger.
+
+## Points
+
+| Action | Points |
+|---|---|
+| Comment on a discussion, issue or PR | 1 |
+| Start a discussion · open an issue · open a PR | 2 |
+| Your discussion answer is accepted | 4 |
+| Your issue is confirmed (labelled `bug`/`enhancement` by someone else) | +2 |
+| Your issue is fixed by a merged PR | +2 |
+| Your PR is merged | +6 |
+| Your merged PR closes a linked issue · adds or changes tests | +2 · +2 |
+| First merged PR ever | +5 |
+| Review that approves or requests changes | 4 |
+| Comment-only review | 2 |
+| Merge someone else's PR | 2 |
+| Your merged PR turns a red `main` green | +5 |
+| Your revert is merged | +3 |
+
+### Breaking main
+
+| Role in the PR that broke `main` | Points |
+|---|---|
+| Approved it | −10 |
+| Authored it | −8 |
+| Merged it | −4 |
+| Author fixes their own break within 24 hours | +4 back |
+| Issue or PR labelled `spam` or `invalid` | −3 (and no points for opening it) |
+
+- A **break** is the first failed `CI` or `Full Suite` run on `main` after a
+  green one; both run on every push, so the commit is attributable. The PR is
+  the one that commit came from.
+- While `main` is already red, a later commit is a break too if its run fails
+  something **new**: a test (or, for build failures, a file) that has not
+  failed at any point since `main` went red. Landing into a red `main`
+  without breaking anything further costs nothing, and a test that flips
+  between runs during the stretch is not counted twice.
+- Whoever turns `main` green again earns "fixed main" once per green run,
+  however many breaks it closes.
+- Failures caused by the runner rather than the code (out of disk, out of
+  memory, timeout, lost runner) don't count, and neither do failures that pass
+  when re-run (a re-run that passes replaces the failure).
+- Only approvals of the commit that was merged count; an approval of an
+  earlier push, or one GitHub dismissed, does not.
+- Every approver pays. A person with several roles in the same PR takes only
+  their largest penalty.
+
+### Anti-farming rules
+
+- Comments must be at least 15 characters and not just `+1`/`thanks`/`LGTM`.
+- At most 1 comment point per person per thread per day, 10 per day overall.
+- Replies on your own PR: at most 2 points per PR.
+- One scored review per reviewer per PR per day (the strongest state that day).
+- A comment counts once, however it is threaded. GitHub stores each reply in
+  an inline review thread as a review of its own; a comment-only review that
+  has no summary and opens no new thread is a **reply**, scored as a PR comment
+  (1 point, under the comment caps), not as another review. Inline comments
+  are part of their review and never score separately, and a discussion
+  comment and its replies share the thread's daily cap.
+- Once a reviewer's review scores on a PR, their other comments and replies on
+  that PR the same day add nothing.
+- A PR author's replies on their own PR are comments, capped as above, never
+  reviews.
+- At most 4 issue opens score per person per day.
+
+## Weekly windows
+
+A week runs from one non-prerelease AetherSDR release to the next, so the
+winner is known when the release is published. The current week is shown as
+"leading" until the next release lands. Ties break on more PR points, then
+more review points.
+
+## Data model
+
+`bin/contributor-points.py` stores **facts** from GitHub and rebuilds the
+**ledger** from them on every run. Facts never change once written; a rule
+change or a revocation (a spam label, a dismissed approval, a re-run that went
+green) is just a re-score, and the all-time board stays consistent.
+
+| Table | Holds |
+|---|---|
+| `people` | login, user/bot, role (maintainer, contributor, bot), avatar |
+| `items` | issues, PRs and discussions: author, created/closed, close reason, labels, title; for PRs merged at/by, head and merge commits, linked issues closed, whether `tests/` changed |
+| `comments` | issue, PR and discussion comments and replies: who, when, whether substantive (length floor only) |
+| `reviews` | reviewer, state, commit reviewed, when, whether it has a summary |
+| `review_comments` | inline review comments: which review, and whether each is a reply to an existing thread |
+| `labels` | who added which label when (confirmation, spam) |
+| `answers` | accepted discussion answers |
+| `releases` | tags and publish times (the weekly windows) |
+| `runs` | `CI`/`Full Suite` runs on `main`: commit, result, failure cause, and the failure signature (failing tests, else the failing file) |
+| `first_merges` | each person's first merged PR |
+| `state` | collection cursors and commit → PR lookups |
+
+The scorer turns facts into ledger entries `(login, rule, points, when,
+item, note)`, applying the caps in time order, and the page groups them by
+window and by category.
+
+## Collection
+
+| Fact | Source |
+|---|---|
+| Issues and PRs | `GET /repos/{repo}/issues?state=all&since=…` (one feed for both) |
+| PR merger, head commit | `GET /pulls/{n}` |
+| Linked issues closed | GraphQL `pullRequest.closingIssuesReferences` |
+| Tests changed | `GET /pulls/{n}/files` |
+| Reviews | `GET /pulls/{n}/reviews` |
+| Inline review comments (to tell replies from reviews) | `GET /pulls/{n}/comments` |
+| Comments | `GET /repos/{repo}/issues/comments?since=…` (issue and PR conversation) |
+| Labels | `GET /repos/{repo}/issues/events` (`labeled`) |
+| Discussions, replies, answers | GraphQL `repository.discussions` |
+| Releases | `GET /repos/{repo}/releases` |
+| Breaks | `GET /actions/workflows/{ci,full-suite}.yml/runs?branch=main`, the failed job's log (cause), `GET /commits/{sha}/pulls` |
+| First merged PR | search `is:pr is:merged author:{login}` |
+
+Collection is incremental from a `since` cursor and throttled so it never uses
+more than a fixed share of the hourly API budget. Inline review comments are
+fetched only to classify reviews; they never score on their own.
+
+## Page
+
+`/leaderboard` on the dashboard: tabs for this week, the last releases and all
+time; the leader (or the week's winner) at the top; a row per person with
+points by category, the maintainer in score order but unranked and marked
+**not eligible**; each row expands into the point-by-point ledger; the main
+breaks in the window; and the rules.
