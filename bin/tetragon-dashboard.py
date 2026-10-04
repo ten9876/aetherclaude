@@ -2265,11 +2265,11 @@ def mirror_watch():
             for book in (seen, page_seen):
                 for k in [k for k, t in book.items() if now - t > 2 * MIRROR_MAX_LAG and k not in (h, ph)]:
                     book.pop(k, None)
-            # Push: ask the mirror to sync when the standings changed.
-            if token and h != pushed:
+            # Push: ask the mirror to sync when the standings or the page changed.
+            if token and (h, ph) != pushed:
                 try:
                     _mirror_request('/sync', 'POST', {'X-Sync-Token': token})
-                    pushed = h
+                    pushed = (h, ph)
                 except Exception as _e:
                     _log_exc('mirror_push', _e, every=600)
             # Drift check.

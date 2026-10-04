@@ -12,11 +12,13 @@ h1{font-size:20px;font-weight:400;color:var(--accent-bright);letter-spacing:.5px
 .tabs{display:flex;gap:6px;margin:18px 0 14px;flex-wrap:wrap}
 .tab{background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12px}
 .tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
-.hero{display:flex;gap:16px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px 20px;margin-bottom:14px}
-.hero img{width:56px;height:56px;border-radius:50%;border:2px solid var(--gold)}
-.hero .t{font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--gold);font-weight:600}
-.hero .n{font-size:22px;color:var(--ink);font-weight:600;margin-top:2px}
-.hero .p{margin-left:auto;text-align:right}
+.hero{display:grid;grid-template-columns:56px minmax(0,1fr) auto;grid-template-areas:"img t t" "img n p" "img d p";column-gap:16px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px 20px;margin-bottom:14px}
+.hero img{grid-area:img;width:56px;height:56px;border-radius:50%;border:2px solid var(--gold)}
+/* The award title spans the name and points columns so it stays on one line. */
+.hero .t{grid-area:t;font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--gold);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hero .n{grid-area:n;font-size:22px;color:var(--ink);font-weight:600;margin-top:2px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hero .d{grid-area:d;margin-top:2px;min-width:0}
+.hero .p{grid-area:p;text-align:right;align-self:center}
 .hero .p b{font-size:28px;color:var(--ink);font-weight:600;display:block}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px 16px;margin-bottom:14px;overflow-x:auto}
 .ph{font-size:12px;font-weight:600;letter-spacing:.4px;color:var(--muted);text-transform:uppercase;margin-bottom:10px;display:flex;justify-content:space-between}
@@ -147,8 +149,8 @@ function render(){
   const stew=st.filter(r=>r.steward_rank).sort((a,b)=>a.steward_rank-b.steward_rank)[0];
   const back=st.filter(r=>r.backer_rank).sort((a,b)=>a.backer_rank-b.backer_rank)[0];
   const isCur=w.tag==='current',all=!w.tag;
-  const card=(r,title,val,unit,detail)=>`<div class="hero"><img src="${esc(avatarOf(r))}" alt=""><div style="min-width:0"><div class="t">${title}</div><div class="n">${esc(r.name||r.login)}</div>`+
-    `<div class="dim" style="margin-top:2px">${detail}</div></div><div class="p"><b>${val}</b><span class="dim">${unit}</span></div></div>`;
+  const card=(r,title,val,unit,detail)=>`<div class="hero"><img src="${esc(avatarOf(r))}" alt=""><div class="t">${title}</div><div class="n">${esc(r.name||r.login)}</div>`+
+    `<div class="d dim">${detail}</div><div class="p"><b>${val}</b><span class="dim">${unit}</span></div></div>`;
   const catLine=(r,cats)=>cats.filter(c=>r.cats[c]).map(c=>`${c==='prs'?'PRs':c==='main'?'main health':c==='cpenalties'?'penalties':c} ${r.cats[c]}`).join(' &middot; ');
   document.getElementById('hero').innerHTML='<div class="heroes">'+
     (top?card(top,isCur?'Leading contributor this week':all?'All-time contributor':`Contributor of the week &middot; ${esc(w.tag)}`,top.points,'contributor points',catLine(top,C_CATS)):'')+
