@@ -181,7 +181,16 @@ green) is just a re-score, and the all-time board stays consistent.
 | `pr_commits` | the commits on each merged PR and who authored them (shepherding) |
 | `runs` | `CI`/`Full Suite` runs on `main`: commit, result, failure cause, and the failure signature (failing tests, else the failing file) |
 | `first_merges` | each person's first merged PR |
+| `ci_logs` | every failed CI job's log (zlib-compressed), with workflow, branch, commit, cause and failing tests |
+| `http_cache` | raw GitHub responses for fixed URLs (PRs with their diffs, reviews, inline comments, commits, issue events), kept with their ETags |
 | `state` | collection cursors and commit → PR lookups |
+
+Beyond what scoring needs, the database keeps the raw text: issue, PR and
+discussion descriptions, every comment and reply, review summaries, inline
+review comments with their file and line, and the logs of failed CI jobs.
+GitHub deletes Actions logs after 90 days, so these copies are the lasting
+record. The collector makes a compressed backup of the database once a day,
+keeping the last seven.
 
 The scorer turns facts into ledger entries `(login, rule, points, when,
 item, note)`, applying the caps in time order, and the page groups them by

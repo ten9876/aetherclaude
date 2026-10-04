@@ -21,7 +21,7 @@ Usage:
   contributor-points.py collect --since 2026-09-20T00:00:00Z
   contributor-points.py score --json out.json
 """
-import argparse, json, os, re, sqlite3, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, gzip, json, os, re, shutil, sqlite3, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, zlib
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -172,6 +172,10 @@ class GH:
                 return None
         url = f'https://api.github.com/repos/{REPO}/actions/jobs/{job_id}/logs'
         op = urllib.request.build_opener(urllib.request.ProxyHandler(self.proxy.proxies), NoRedirect())
+        wait = self.min_gap - (time.time() - self.last)
+        if wait > 0:
+            time.sleep(wait)   # the same throttle as every other API call
+        self.last = time.time()
         try:
             self.calls += 1
             op.open(urllib.request.Request(url, headers=self.hdrs), timeout=30)
@@ -210,6 +214,11 @@ CREATE TABLE IF NOT EXISTS closes(id INTEGER PRIMARY KEY, number INTEGER, actor 
   state_reason TEXT, commit_id TEXT);
 CREATE TABLE IF NOT EXISTS pr_commits(pr INTEGER, sha TEXT, author TEXT, committer TEXT, at TEXT,
   PRIMARY KEY(pr, sha));
+CREATE TABLE IF NOT EXISTS ci_logs(job_id INTEGER PRIMARY KEY, run_id INTEGER, workflow TEXT, branch TEXT,
+  event TEXT, sha TEXT, job_name TEXT, conclusion TEXT, created_at TEXT, cause TEXT, failed_tests TEXT,
+  log_bytes INTEGER, log BLOB);
+CREATE TABLE IF NOT EXISTS webhook_events(delivery TEXT PRIMARY KEY, event TEXT, action TEXT,
+  received_at TEXT, payload TEXT, applied INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS http_cache(url TEXT PRIMARY KEY, etag TEXT, body TEXT, link TEXT, fetched_at TEXT);
 """
 # Columns added after the first schema; applied to existing databases.
@@ -221,14 +230,33 @@ MIGRATIONS = [
     'ALTER TABLE runs ADD COLUMN sig TEXT',             # failure signature: failing tests / errors
     'ALTER TABLE releases ADD COLUMN author TEXT',      # who published it
     'ALTER TABLE items ADD COLUMN commits_v INTEGER',   # PR commits stored (shepherding)
+    # Raw text kept for analysis (patterns, regressions, bugs), not scoring.
+    'ALTER TABLE items ADD COLUMN body TEXT',
+    'ALTER TABLE comments ADD COLUMN body TEXT',
+    'ALTER TABLE reviews ADD COLUMN body TEXT',
+    'ALTER TABLE review_comments ADD COLUMN body TEXT',
+    'ALTER TABLE review_comments ADD COLUMN path TEXT',
+    'ALTER TABLE review_comments ADD COLUMN line INTEGER',
+    'ALTER TABLE items ADD COLUMN webhook_at TEXT',     # PR state last delivered by a webhook
 ]
+BODIES_V = 1    # 1 = item, comment, review and discussion bodies stored
+LOGS_V = 1      # 1 = failed-job logs kept back to GitHub's 90-day retention
+# Webhooks keep the data live between collections; the collector trusts them
+# for PR state, except once a day when it re-checks every changed PR.
+FULL_RECONCILE_EVERY = timedelta(hours=24)
+LOG_RETENTION = timedelta(days=90)   # GitHub keeps Actions logs this long
+# Failed-job logs are kept for every workflow, on any branch.
+LOG_WORKFLOWS = ('ci.yml', 'full-suite.yml', 'codeql.yml', 'sanitizers.yml', 'system-libs-canary.yml',
+                 'static-checks.yml')
+BACKUP_DIR = os.path.join(os.path.dirname(DB_PATH), 'backups')
+BACKUP_KEEP = 7
 EVENTS_V = 2    # 2 = issue events include closes (1 = labels only)
 REVIEWS_V = 2   # 2 = reviews with body_len + inline review comments
 
 
 def db_open(path):
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
-    c = sqlite3.connect(path)
+    c = sqlite3.connect(path, timeout=30)   # the dashboard writes webhooks concurrently
     c.execute('PRAGMA journal_mode=WAL')
     c.executescript(SCHEMA)
     for m in MIGRATIONS:
@@ -263,14 +291,201 @@ def collect_reviews(gh, db, n):
     the inline comments to tell a new review from a thread reply."""
     for rv in gh.pages(f'repos/{REPO}/pulls/{n}/reviews?per_page=100'):
         note_person(db, rv.get('user'))
-        db.execute('INSERT OR REPLACE INTO reviews(id,pr,login,state,commit_id,submitted_at,body_len) VALUES(?,?,?,?,?,?,?)',
+        db.execute('INSERT OR REPLACE INTO reviews(id,pr,login,state,commit_id,submitted_at,body_len,body)'
+                   ' VALUES(?,?,?,?,?,?,?,?)',
                    (rv['id'], n, (rv.get('user') or {}).get('login'), rv['state'],
-                    rv.get('commit_id'), rv.get('submitted_at'), len((rv.get('body') or '').strip())))
+                    rv.get('commit_id'), rv.get('submitted_at'), len((rv.get('body') or '').strip()), rv.get('body')))
     for c in gh.pages(f'repos/{REPO}/pulls/{n}/comments?per_page=100'):
-        db.execute('INSERT OR REPLACE INTO review_comments VALUES(?,?,?,?,?,?)',
-                   (c['id'], n, c.get('pull_request_review_id'), (c.get('user') or {}).get('login'),
-                    c.get('in_reply_to_id'), c.get('created_at')))
+        store_review_comment(db, n, c)
     db.execute('UPDATE items SET reviews_v=? WHERE type="pr" AND number=?', (REVIEWS_V, n))
+
+
+def store_review_comment(db, pr, c):
+    db.execute('INSERT OR REPLACE INTO review_comments(id,pr,review_id,login,in_reply_to,created_at,body,path,line)'
+               ' VALUES(?,?,?,?,?,?,?,?,?)',
+               (c['id'], pr, c.get('pull_request_review_id'), (c.get('user') or {}).get('login'),
+                c.get('in_reply_to_id'), c.get('created_at'), c.get('body'), c.get('path'),
+                c.get('line') or c.get('original_line')))
+
+
+def store_ci_log(db, run, job, log, dg=None, tests=None):
+    """Keep a failed job's log (zlib-compressed) with its context: GitHub
+    deletes Actions logs after 90 days, so this is the only lasting copy."""
+    raw = (log or '').encode('utf-8', 'replace')
+    if dg is None:
+        dg = ci_diagnose._diagnose_log_clean(log) or {}
+    if tests is None:
+        tests = ci_diagnose.failed_tests_from_log(log)
+    db.execute('INSERT OR REPLACE INTO ci_logs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+               (job['id'], run['id'], (run.get('path') or '').rsplit('/', 1)[-1] or run.get('name'),
+                run.get('head_branch'), run.get('event'), run.get('head_sha'), job.get('name'),
+                job.get('conclusion'), job.get('completed_at') or run.get('created_at'),
+                dg.get('kind'), json.dumps(tests), len(raw), zlib.compress(raw, 9)))
+
+
+def fill_from_cache(db):
+    """One-off: copy review, inline-comment and PR bodies out of responses
+    already in http_cache, so stored history gains its text without calls."""
+    n = 0
+    for url, body in db.execute("SELECT url, body FROM http_cache WHERE url LIKE '%/pulls/%'").fetchall():
+        m = re.search(r'/pulls/(\d+)(/reviews|/comments)?(?:\?|$)', url)
+        if not m:
+            continue
+        pr, kind = int(m.group(1)), m.group(2)
+        try:
+            data = json.loads(body)
+        except ValueError:
+            continue
+        if kind == '/reviews':
+            for rv in data:
+                db.execute('UPDATE reviews SET body=? WHERE id=?', (rv.get('body'), rv['id']))
+                n += 1
+        elif kind == '/comments':
+            for c in data:
+                store_review_comment(db, pr, c)
+                n += 1
+        elif isinstance(data, dict) and data.get('number') == pr:
+            db.execute('UPDATE items SET body=? WHERE type="pr" AND number=?', (data.get('body'), pr))
+            n += 1
+    db.commit()
+    return n
+
+
+def backup(db_path=None):
+    """Daily compressed copy of the database (SQLite online backup, so safe
+    while the collector writes), keeping the newest BACKUP_KEEP."""
+    db_path = db_path or DB_PATH
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    day = datetime.now(timezone.utc).strftime('%Y%m%d')
+    dest = os.path.join(BACKUP_DIR, f'contributors-{day}.db.gz')
+    if os.path.exists(dest):
+        return None
+    tmp = os.path.join(BACKUP_DIR, f'.contributors-{day}.db')
+    src = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+    dst = sqlite3.connect(tmp)
+    src.backup(dst)
+    dst.close()
+    src.close()
+    with open(tmp, 'rb') as f, gzip.open(dest + '.part', 'wb', compresslevel=6) as g:
+        shutil.copyfileobj(f, g, 1 << 20)
+    os.replace(dest + '.part', dest)
+    os.remove(tmp)
+    for old in sorted(f for f in os.listdir(BACKUP_DIR) if f.startswith('contributors-') and f.endswith('.db.gz'))[:-BACKUP_KEEP]:
+        os.remove(os.path.join(BACKUP_DIR, old))
+    return dest
+
+
+def _upsert_issue_like(db, t, obj, extra=None):
+    """Upsert an issue or PR row from a webhook object (same columns as the
+    issues feed, plus PR state when present)."""
+    db.execute('INSERT INTO items(type,number,author,created_at,closed_at,state_reason,labels,title,updated_at,body)'
+               ' VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(type,number) DO UPDATE SET author=excluded.author,'
+               ' closed_at=excluded.closed_at, state_reason=excluded.state_reason, labels=excluded.labels,'
+               ' title=excluded.title, updated_at=excluded.updated_at, body=excluded.body',
+               (t, obj['number'], (obj.get('user') or {}).get('login'), obj.get('created_at'), obj.get('closed_at'),
+                obj.get('state_reason'), json.dumps([l['name'] for l in obj.get('labels') or []]),
+                (obj.get('title') or '')[:200], obj.get('updated_at'), obj.get('body')))
+    if extra:
+        db.execute('UPDATE items SET ' + ', '.join(f'{k}=?' for k in extra) + ' WHERE type=? AND number=?',
+                   (*extra.values(), t, obj['number']))
+
+
+def apply_webhook(db, event, payload):
+    """Apply one verified webhook payload to the fact tables. Idempotent: a
+    later REST collection of the same objects writes the same rows. Label
+    and close history still come from the issue-events feed, which carries
+    event ids; CI runs and logs from the Actions API."""
+    if ((payload.get('repository') or {}).get('full_name') or '').lower() != REPO.lower():
+        return False
+    note_person(db, payload.get('sender'))
+    action = payload.get('action')
+    if event == 'issues' and payload.get('issue'):
+        note_person(db, payload['issue'].get('user'))
+        _upsert_issue_like(db, 'issue', payload['issue'])
+    elif event == 'issue_comment' and payload.get('comment'):
+        iss, c = payload['issue'], payload['comment']
+        t = 'pr' if 'pull_request' in iss else 'issue'   # key present on PR comments, like the REST feed
+        note_person(db, c.get('user'))
+        _upsert_issue_like(db, t, iss)
+        if action == 'deleted':
+            db.execute('DELETE FROM comments WHERE id=?', (f"ic{c['id']}",))
+        else:
+            db.execute('INSERT OR REPLACE INTO comments(id,type,number,login,created_at,substantive,body)'
+                       ' VALUES(?,?,?,?,?,?,?)',
+                       (f"ic{c['id']}", t, iss['number'], (c.get('user') or {}).get('login'), c.get('created_at'),
+                        substantive(c.get('body')), c.get('body')))
+    elif event in ('pull_request', 'pull_request_review', 'pull_request_review_comment') and payload.get('pull_request'):
+        pr = payload['pull_request']
+        note_person(db, pr.get('user'))
+        note_person(db, pr.get('merged_by'))
+        extra = {'webhook_at': pr.get('updated_at')}
+        if event == 'pull_request':
+            # The full PR object: its state is current as of this delivery.
+            extra.update(merged_at=pr.get('merged_at'), merged_by=(pr.get('merged_by') or {}).get('login'),
+                         head_sha=(pr.get('head') or {}).get('sha'), merge_sha=pr.get('merge_commit_sha'))
+        _upsert_issue_like(db, 'pr', pr, extra)
+        if event == 'pull_request_review' and payload.get('review'):
+            rv = payload['review']
+            note_person(db, rv.get('user'))
+            db.execute('INSERT OR REPLACE INTO reviews(id,pr,login,state,commit_id,submitted_at,body_len,body)'
+                       ' VALUES(?,?,?,?,?,?,?,?)',
+                       (rv['id'], pr['number'], (rv.get('user') or {}).get('login'), (rv.get('state') or '').upper(),
+                        rv.get('commit_id'), rv.get('submitted_at'), len((rv.get('body') or '').strip()), rv.get('body')))
+        elif event == 'pull_request_review_comment' and payload.get('comment'):
+            if action == 'deleted':
+                db.execute('DELETE FROM review_comments WHERE id=?', (payload['comment']['id'],))
+            else:
+                store_review_comment(db, pr['number'], payload['comment'])
+    elif event in ('discussion', 'discussion_comment') and payload.get('discussion'):
+        d = payload['discussion']
+        note_person(db, d.get('user'))
+        db.execute('INSERT INTO items(type,number,author,created_at,title,updated_at,body) VALUES("discussion",?,?,?,?,?,?)'
+                   ' ON CONFLICT(type,number) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at,'
+                   ' body=excluded.body',
+                   (d['number'], (d.get('user') or {}).get('login'), d.get('created_at'), (d.get('title') or '')[:200],
+                    d.get('updated_at'), d.get('body')))
+        if event == 'discussion' and action == 'answered' and payload.get('answer'):
+            db.execute('INSERT OR REPLACE INTO answers VALUES(?,?,?)',
+                       (d['number'], (payload['answer'].get('user') or {}).get('login'),
+                        d.get('answer_chosen_at') or payload['answer'].get('updated_at')))
+        elif event == 'discussion' and action == 'unanswered':
+            db.execute('DELETE FROM answers WHERE number=?', (d['number'],))
+        elif event == 'discussion_comment' and payload.get('comment'):
+            c = payload['comment']
+            note_person(db, c.get('user'))
+            cid = f"dc{c.get('node_id')}"
+            if action == 'deleted':
+                db.execute('DELETE FROM comments WHERE id=?', (cid,))
+            else:
+                db.execute('INSERT OR REPLACE INTO comments(id,type,number,login,created_at,substantive,body)'
+                           ' VALUES(?,?,?,?,?,?,?)',
+                           (cid, 'discussion', d['number'], (c.get('user') or {}).get('login'), c.get('created_at'),
+                            substantive(c.get('body')), c.get('body')))
+    elif event == 'release' and payload.get('release'):
+        r = payload['release']
+        if action == 'deleted':
+            db.execute('DELETE FROM releases WHERE tag=?', (r['tag_name'],))
+        else:
+            db.execute('INSERT OR REPLACE INTO releases(tag,published_at,prerelease,author) VALUES(?,?,?,?)',
+                       (r['tag_name'], r.get('published_at'), int(bool(r.get('prerelease'))),
+                        (r.get('author') or {}).get('login')))
+    return True
+
+
+def record_webhook(db, delivery, event, body):
+    """Store a verified webhook's raw payload and apply it. Returns True if
+    it was new. The raw payload is kept whether or not it maps to a table."""
+    payload = json.loads(body)
+    cur = db.execute('INSERT OR IGNORE INTO webhook_events(delivery,event,action,received_at,payload)'
+                     ' VALUES(?,?,?,?,?)',
+                     (delivery, event, payload.get('action'), datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                      body if isinstance(body, str) else body.decode('utf-8', 'replace')))
+    if not cur.rowcount:
+        return False   # a redelivery we already have
+    apply_webhook(db, event, payload)
+    db.execute('UPDATE webhook_events SET applied=1 WHERE delivery=?', (delivery,))
+    db.commit()
+    return True
 
 
 def note_person(db, user):
@@ -290,6 +505,25 @@ def substantive(body):
 def collect(gh, db, since):
     q = urllib.parse.quote
     run_start = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    # Webhooks the dashboard stored but could not apply (e.g. it restarted).
+    pending = db.execute('SELECT delivery, event, payload FROM webhook_events WHERE applied=0').fetchall()
+    for delivery, event, payload in pending:
+        try:
+            apply_webhook(db, event, json.loads(payload))
+        except Exception as e:
+            print(f'  webhook {delivery} ({event}) not applied: {str(e)[:80]}', file=sys.stderr)
+        db.execute('UPDATE webhook_events SET applied=1 WHERE delivery=?', (delivery,))
+    db.commit()
+    if pending:
+        print(f'  applied {len(pending)} stored webhooks', file=sys.stderr, flush=True)
+    last_full = get_state(db, 'full_reconcile_at')
+    full = not last_full or (datetime.now(timezone.utc) -
+                             datetime.fromisoformat(last_full.replace('Z', '+00:00'))) >= FULL_RECONCILE_EVERY
+    # Databases from before bodies were stored re-read the item and comment
+    # feeds once from the start, and copy what the cache already holds.
+    text_since = since if int(get_state(db, 'bodies_v', '0')) >= BODIES_V else REPO_START
+    if text_since != since:
+        print(f'  copied {fill_from_cache(db)} bodies from cached responses', file=sys.stderr, flush=True)
     # Releases: the weekly windows run between non-prerelease tags.
     for r in gh.pages(f'repos/{REPO}/releases?per_page=100'):
         db.execute('INSERT OR REPLACE INTO releases(tag,published_at,prerelease,author) VALUES(?,?,?,?)',
@@ -298,21 +532,30 @@ def collect(gh, db, since):
 
     # Issues and PRs (one feed), updated since the cursor.
     prs = []
-    for it in gh.pages(f'repos/{REPO}/issues?state=all&sort=updated&direction=desc&per_page=100&since={q(since)}'):
+    for it in gh.pages(f'repos/{REPO}/issues?state=all&sort=updated&direction=desc&per_page=100&since={q(text_since)}'):
         note_person(db, it.get('user'))
         is_pr = 'pull_request' in it
         t = 'pr' if is_pr else 'issue'
         # Upsert the feed's columns only; PR details stay as fetched.
-        db.execute('INSERT INTO items(type,number,author,created_at,closed_at,state_reason,labels,title,updated_at)'
-                   ' VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(type,number) DO UPDATE SET author=excluded.author,'
+        db.execute('INSERT INTO items(type,number,author,created_at,closed_at,state_reason,labels,title,updated_at,body)'
+                   ' VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(type,number) DO UPDATE SET author=excluded.author,'
                    ' closed_at=excluded.closed_at, state_reason=excluded.state_reason, labels=excluded.labels,'
-                   ' title=excluded.title, updated_at=excluded.updated_at',
+                   ' title=excluded.title, updated_at=excluded.updated_at, body=excluded.body',
                    (t, it['number'], (it.get('user') or {}).get('login'), it['created_at'], it.get('closed_at'),
                     it.get('state_reason'), json.dumps([l['name'] for l in it.get('labels') or []]),
-                    (it.get('title') or '')[:200], it.get('updated_at')))
+                    (it.get('title') or '')[:200], it.get('updated_at'), it.get('body')))
         if is_pr:
-            det = db.execute('SELECT detail_at FROM items WHERE type="pr" AND number=?', (it['number'],)).fetchone()
-            if not det or not det[0] or (it.get('updated_at') or '') > det[0]:
+            det = db.execute('SELECT detail_at, webhook_at, merged_at, closes FROM items WHERE type="pr" AND number=?',
+                             (it['number'],)).fetchone()
+            upd = it.get('updated_at') or ''
+            stale = not det or not det[0] or upd > det[0]
+            # A webhook already delivered this PR's latest state: skip the
+            # refetch, except on the daily full reconcile (a missed webhook
+            # can't leave a gap for more than a day) and for a merged PR whose
+            # linked issues and tests (REST only) aren't recorded yet.
+            needs_merge_detail = det and det[2] and det[3] is None
+            covered = det and det[1] and det[1] >= upd and not full and not needs_merge_detail
+            if stale and not covered:
                 prs.append(it['number'])
     db.commit()
     print(f'  {len(prs)} PRs changed since their details were fetched', file=sys.stderr)
@@ -376,12 +619,12 @@ def collect(gh, db, since):
     # Issue and PR conversation comments (inline review comments are part of
     # the review and are not fetched).
     types = dict(db.execute('SELECT number, type FROM items'))
-    for c in gh.pages(f'repos/{REPO}/issues/comments?sort=created&direction=asc&per_page=100&since={q(since)}'):
+    for c in gh.pages(f'repos/{REPO}/issues/comments?sort=created&direction=asc&per_page=100&since={q(text_since)}'):
         note_person(db, c.get('user'))
         n = int(c['issue_url'].rsplit('/', 1)[1])
-        db.execute('INSERT OR REPLACE INTO comments VALUES(?,?,?,?,?,?)',
+        db.execute('INSERT OR REPLACE INTO comments(id,type,number,login,created_at,substantive,body) VALUES(?,?,?,?,?,?,?)',
                    (f"ic{c['id']}", types.get(n, 'issue'), n, (c.get('user') or {}).get('login'),
-                    c['created_at'], substantive(c.get('body'))))
+                    c['created_at'], substantive(c.get('body')), c.get('body')))
 
     print(f'  step: label events ({gh.calls} calls)', file=sys.stderr, flush=True)
     # Issue events: labels (triage, confirmation, spam) and closes (cleanup).
@@ -405,20 +648,22 @@ def collect(gh, db, since):
     while True:
         d = gh.graphql('query($o:String!,$r:String!,$c:String){repository(owner:$o,name:$r){discussions(first:25,after:$c,'
                        'orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{number updatedAt '
-                       'createdAt title author{login avatarUrl __typename} answer{author{login}} answerChosenAt '
+                       'createdAt title bodyText author{login avatarUrl __typename} answer{author{login}} answerChosenAt '
                        'comments(first:50){nodes{id createdAt bodyText author{login avatarUrl __typename} '
                        'replies(first:50){nodes{id createdAt bodyText author{login avatarUrl __typename}}}}}}}}}',
                        {'o': OWNER, 'r': NAME, 'c': cursor})['repository']['discussions']
         done = False
         for x in d['nodes']:
-            if x['updatedAt'] < since:
+            if x['updatedAt'] < text_since:
                 done = True
                 break
             a = x.get('author') or {}
             note_person(db, {'login': a.get('login'), 'type': a.get('__typename'), 'avatar_url': a.get('avatarUrl')})
-            db.execute('INSERT INTO items(type,number,author,created_at,title,updated_at) VALUES("discussion",?,?,?,?,?)'
-                       ' ON CONFLICT(type,number) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at',
-                       (x['number'], a.get('login'), x['createdAt'], (x.get('title') or '')[:200], x['updatedAt']))
+            db.execute('INSERT INTO items(type,number,author,created_at,title,updated_at,body) VALUES("discussion",?,?,?,?,?,?)'
+                       ' ON CONFLICT(type,number) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at,'
+                       ' body=excluded.body',
+                       (x['number'], a.get('login'), x['createdAt'], (x.get('title') or '')[:200], x['updatedAt'],
+                        x.get('bodyText')))
             if x.get('answer') and x.get('answerChosenAt'):
                 db.execute('INSERT OR REPLACE INTO answers VALUES(?,?,?)',
                            (x['number'], x['answer']['author']['login'], x['answerChosenAt']))
@@ -427,9 +672,10 @@ def collect(gh, db, since):
                     ca = node.get('author') or {}
                     note_person(db, {'login': ca.get('login'), 'type': ca.get('__typename'),
                                      'avatar_url': ca.get('avatarUrl')})
-                    db.execute('INSERT OR REPLACE INTO comments VALUES(?,?,?,?,?,?)',
+                    db.execute('INSERT OR REPLACE INTO comments(id,type,number,login,created_at,substantive,body)'
+                               ' VALUES(?,?,?,?,?,?,?)',
                                (f"dc{node['id']}", 'discussion', x['number'], ca.get('login'),
-                                node['createdAt'], substantive(node.get('bodyText'))))
+                                node['createdAt'], substantive(node.get('bodyText')), node.get('bodyText')))
         if done or not d['pageInfo']['hasNextPage']:
             break
         cursor = d['pageInfo']['endCursor']
@@ -475,6 +721,8 @@ def collect(gh, db, since):
                     if cause in ('unknown',) or cause in INFRA_CAUSES:
                         cause = kind
                     tests = ci_diagnose.failed_tests_from_log(log)
+                    if log:
+                        store_ci_log(db, r, j, log, dg, tests)
                     if tests:
                         elems.update('test:' + t for t in tests)
                     elif kind in ('compile', 'link', 'configure', 'ice') and dg.get('file'):
@@ -486,6 +734,35 @@ def collect(gh, db, since):
                        ' VALUES(?,?,?,?,?,?,?,?)',
                        (r['id'], wf, r['head_sha'], r['created_at'], r['conclusion'], r['html_url'], cause, sig))
         db.commit()
+
+    print(f'  step: failed ci job logs ({gh.calls} calls)', file=sys.stderr, flush=True)
+    # Failed-job logs from every workflow on every branch, while GitHub still
+    # has them (90 days). Stored compressed with their cause and failing tests.
+    oldest = datetime.now(timezone.utc) - LOG_RETENTION
+    log_from = max(datetime.fromisoformat(since.replace('Z', '+00:00')) - timedelta(days=2), oldest)
+    if int(get_state(db, 'logs_v', '0')) < LOGS_V:
+        log_from = oldest   # first run: everything GitHub still has
+    have = {jid for (jid,) in db.execute('SELECT job_id FROM ci_logs')}
+    kept = 0
+    for wf in LOG_WORKFLOWS:
+        span = f"{log_from.strftime('%Y-%m-%dT%H:%M:%SZ')}..{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+        for r in gh.pages(f'repos/{REPO}/actions/workflows/{wf}/runs?status=failure&per_page=100&created={q(span)}'):
+            for j in gh.pages(f"repos/{REPO}/actions/runs/{r['id']}/jobs?per_page=100"):
+                if j.get('conclusion') not in ('failure', 'timed_out') or j['id'] in have:
+                    continue
+                try:
+                    log = gh.job_log(j['id'])
+                except Exception as e:
+                    print(f'    log {j["id"]} unavailable: {str(e)[:80]}', file=sys.stderr)
+                    continue
+                if log:
+                    store_ci_log(db, r, j, log)
+                    have.add(j['id'])
+                    kept += 1
+                    if kept % 25 == 0:
+                        db.commit()
+                        print(f'    {kept} logs kept ({gh.calls} calls)', file=sys.stderr, flush=True)
+    db.commit()
 
     print(f'  step: prs behind the commits ({gh.calls} calls)', file=sys.stderr, flush=True)
     # PRs behind the commits that broke or fixed main.
@@ -542,6 +819,10 @@ def collect(gh, db, since):
     # Only a complete run advances the cursor; an interrupted one re-reads
     # its feeds next time but skips the PRs it already finished.
     set_state(db, 'cursor', run_start)
+    if full:
+        set_state(db, 'full_reconcile_at', run_start)
+    set_state(db, 'bodies_v', str(BODIES_V))
+    set_state(db, 'logs_v', str(LOGS_V))
     if get_state(db, 'history_complete_pending') == '1':
         set_state(db, 'history_complete', '1')
         db.execute("DELETE FROM state WHERE name='history_complete_pending'")
@@ -858,6 +1139,10 @@ def main():
                      if cur else REPO_START)
         collect(gh, db, since)
         print(f'collected since {since}: {gh.calls} API calls, {gh.not_modified} answered 304 (free)', file=sys.stderr)
+        db.close()
+        made = backup()
+        if made:
+            print(f'backup: {made}', file=sys.stderr)
         return
     led, breaks = score(db)
     ws = windows(db)[-a.windows:]

@@ -2228,12 +2228,30 @@ def _contributor_points():
         _contributor_mod.append(mod)
     return _contributor_mod[0]
 
+def _store_webhook(delivery, event, body):
+    """Store a verified webhook in the contributor database and apply it.
+    Failures are logged; the hourly collector applies anything stored but
+    not applied, and its REST pass fills anything never stored."""
+    try:
+        cp = _contributor_points()
+        db = cp.db_open(CONTRIBUTOR_DB)
+        try:
+            cp.record_webhook(db, delivery, event, body)
+        finally:
+            db.close()
+    except Exception as _e:
+        _log_exc('store_webhook', _e)
+
 def leaderboard_data():
     st = os.stat(CONTRIBUTOR_DB)
-    key = (st.st_mtime, st.st_size)
+    try:   # webhook writes land in the WAL first
+        wal = os.stat(CONTRIBUTOR_DB + '-wal')
+        key = (st.st_mtime, st.st_size, wal.st_mtime, wal.st_size)
+    except OSError:
+        key = (st.st_mtime, st.st_size)
     with _leaderboard_lock:
         c = _leaderboard_cache
-        if c['data'] is not None and c['key'] == key and time.time() - c['ts'] < 300:
+        if c['data'] is not None and c['key'] == key and time.time() - c['ts'] < 60:
             return c['data']
         cp = _contributor_points()
         db = cp.db_open(CONTRIBUTOR_DB)   # applies any pending schema migrations
@@ -11842,6 +11860,10 @@ a{{color:#0a6aba}}
             except:
                 self.send_response(400); self.end_headers(); self.wfile.write(b'Bad JSON'); return
             action = payload.get('action', '')
+            # Keep the verified raw payload and apply it to the contributor
+            # data, off the request thread so the reply isn't delayed.
+            threading.Thread(target=_store_webhook, daemon=True,
+                             args=(self.headers.get('X-GitHub-Delivery') or str(uuid.uuid4()), event_type, body)).start()
             # Compute lock_key — 'issue-N' / 'pr-N' / 'disc-N' / 'global'.
             # Webhooks for the same lock_key serialize via per-issue
             # lockfile in run-agent.sh; webhooks for different keys run
