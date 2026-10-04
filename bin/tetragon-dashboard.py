@@ -4924,16 +4924,16 @@ function mciPerfHtml(w,m){
     h+='</div>';
     const cj=p.jobs.filter(j=>j.cache);
     if(cj.length){
-      const cols2='grid-template-columns:minmax(110px,1.4fr) 64px 70px 70px 100px 90px';
+      const cols2='grid-template-columns:minmax(100px,1.2fr) 60px 64px 64px 100px 120px';
       h+=`<div style="${MCI_SEC}"><div style="${MCI_HDR}">COMPILER CACHE &middot; newest run, and average hit rate over the last ${Math.max(...cj.map(j=>j.cache_n))} runs</div>`;
-      h+=`<div style="${MCI_ROW};${cols2};color:#5f708a"><span>job</span><span>tool</span><span>hit rate</span><span>average</span><span>hits / misses</span><span>cache usage</span></div>`;
+      h+=`<div style="${MCI_ROW};${cols2};color:#5f708a"><span>job</span><span>tool</span><span>hit rate</span><span>average</span><span>hits / misses</span><span>size / usage</span></div>`;
       for(const j of cj){const c=j.cache,hp=c.hit_pct;
         const hc=hp==null?'inherit':hp>=90?'var(--good)':hp>=70?'var(--warn)':'var(--crit)';
         const full=c.size_gb!=null&&c.max_gb?c.size_gb/c.max_gb:null;
         h+=`<div style="${MCI_ROW};${cols2}" title="${mciU(c.restored?'restored from '+c.restored:'no compiler-cache restore line in the log')}"><span>${esc(j.name)}</span><span style="color:#8598b4">${esc(c.tool)}</span>`+
           `<span style="font-weight:600;color:${hc}">${hp==null?'—':hp+'%'}</span><span>${j.cache_avg_hit_pct==null?'—':j.cache_avg_hit_pct+'%'}</span>`+
           `<span style="font-family:var(--mono)">${c.hits??'—'} / ${c.misses??'—'}</span>`+
-          `<span style="color:${full!=null&&full>=0.95?'var(--warn)':'inherit'}" title="${mciU(c.size_gb!=null&&c.max_gb!=null?`${c.size_gb.toFixed(2)} of ${c.max_gb.toFixed(2)} GB`+(c.cleanups?` · ${c.cleanups} cleanups`:''):'')}">${full!=null?Math.round(full*100)+'%':'—'}</span></div>`;
+          `<span style="color:${full!=null&&full>=0.95?'var(--warn)':'inherit'}" title="${mciU(c.size_gb!=null&&c.max_gb!=null?`${c.size_gb.toFixed(2)} of ${c.max_gb.toFixed(2)} GB`+(c.cleanups?` · ${c.cleanups} cleanups`:''):'')}">${c.size_gb!=null?c.size_gb.toFixed(2)+' GB':'—'} / ${full!=null?Math.round(full*100)+'%':'—'}</span></div>`;
       }
       h+=`<div style="font-size:10px;color:#5f708a;margin-top:6px">From each job's <code>ccache -s</code> / <code>sccache --show-stats</code> output. A cache at its max size evicts entries (cleanups), which lowers the next build's hit rate.</div></div>`;
     }
