@@ -29,10 +29,8 @@ th{font-size:11px;font-weight:500;color:var(--muted-dim);text-align:right;paddin
 th:nth-child(-n+3){text-align:left}
 td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:right;font-family:var(--mono);font-size:12px;white-space:nowrap}
 td:nth-child(-n+3){text-align:left;font-family:var(--sans)}
-th.ic,td.ic{width:44px;padding-left:4px;padding-right:4px;white-space:nowrap}
-td.ic .slot{display:inline-flex;justify-content:center;vertical-align:middle}
-td.ic .s-core{width:16px;margin-right:4px}
-td.ic .s-first{width:22px}
+th.ic,td.ic{width:48px;padding-left:4px;padding-right:4px;white-space:nowrap;text-align:left}
+td.ic>span{vertical-align:middle;margin-right:4px}
 tr.row{cursor:pointer}
 tr.row:hover td{background:var(--bg-2)}
 tr.lead td{background:rgba(224,184,74,.07)}
@@ -199,9 +197,9 @@ function render(){
   rows.forEach((r,i)=>{
     const lead=r.login===leadLogin,rk=rankBy==='steward'?r.steward_rank:rankBy==='backer'?r.backer_rank:rankBy==='total'?totRank[r.login]:r.rank;
     h+=`<tr class="row${lead?' lead':''}" onclick="tog(${i})"><td class="rank">${r.eligible&&rk?(lead?'<span class="gold">1</span>':rk):'&mdash;'}</td>`+
-      // Icon badges share one column, each in a fixed slot (core shield,
-      // then 1st) so they line up; the text labels stay beside the name.
-      `<td class="ic"><span class="slot s-core">${r.core?CORE_ICON:''}</span><span class="slot s-first">${firstIcon(r)}</span></td>`+
+      // Icon badges share one column, flowing from its left edge (core
+      // shield, then 1st); the text labels stay beside the name.
+      `<td class="ic">${r.core?CORE_ICON:''}${firstIcon(r)}</td>`+
       `<td><div class="who"><img src="${esc(avatarOf(r))}" alt="" loading="lazy"><b>${esc(r.name||r.login)}</b>${backers.has(r.login)?`<span class="badge backer" title="${r.login.startsWith('oc:')?'Supports AetherSDR on Open Collective (no linked GitHub account)':'Supports AetherSDR on Open Collective'}">BACKER</span>`:''}${r.eligible?'':`<span class="badge" title="Maintainer: scored and shown, but not eligible to win">MAINTAINER</span>`}</div></td>`+
       `<td class="pts${tot(r)<0?' neg':''}${rankBy==='total'?'':' soft'}">${tot(r)}</td>`+
       `<td class="pts${r.points<0?' neg':''}${rankBy==='contributor'?'':' soft'}">${r.points}</td><td class="pts${r.steward<0?' neg':''}${rankBy==='steward'?'':' soft'}">${r.steward||'<span class="zero">·</span>'}</td>`+
