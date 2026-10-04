@@ -22,7 +22,7 @@ merger.
 
 | Action | Points |
 |---|---|
-| Comment on a discussion | 1 |
+| Comment on a discussion | 2 |
 | Comment on an issue | 2 |
 | Comment on a PR (or reply in a review thread) | 3 |
 | Start a discussion | 2 |
@@ -30,17 +30,42 @@ merger.
 | Open an issue | 4 |
 | Your issue is confirmed (labelled `bug`/`enhancement` by someone else) | +2 |
 | Your issue is fixed by a merged PR | +5 |
-| Open a PR | 6 |
-| Your PR is merged | +10 |
+| Open a PR | 3 |
+| Your PR is merged | +13 |
 | Your merged PR closes a linked issue | +5 |
 | Your merged PR adds or changes tests | +2 |
 | First merged PR ever | +25 |
 | Review that approves | 10 |
 | Review that requests changes | 8 |
 | Comment-only review | 6 |
-| Merge someone else's PR | 5 |
+| Merge someone else's PR | 8 |
 | Your merged PR turns a red `main` green | +15 |
 | Your revert is merged | +3 |
+
+### Stewardship
+
+The work that keeps other people's contributions moving, and is easy to
+overlook:
+
+| Action | Points |
+|---|---|
+| Triage someone else's issue: the first label anyone but its author (and not a bot) puts on it | 2 |
+| Close someone else's issue by hand: duplicate, not planned, or already fixed (not closes done by a merged PR) | 2 |
+| Shepherd someone else's PR: push commits to it (rebase, conflicts, finishing touches) before it merges | 5 |
+| Give a PR its first review within 24 hours of it opening | 3 |
+| Publish an AetherSDR release | 15 |
+
+Opening a PR pays 3 and the rest of its value (13) on merge, so a merged PR
+is worth the same as before while one that never merges earns little.
+
+### Steward of the week
+
+Alongside the contributor of the week (most points overall), each release
+names a **steward of the week**: the most steward points, counting reviews,
+merges, stewardship, fixing main and reverts, less the approver and merger
+penalties. It recognises the people whose reviewing, merging and admin get
+other people's PRs over the line. The page shows each person's steward points
+and can rank by them.
 
 ### How points stack: from issue to merged PR
 
@@ -51,24 +76,25 @@ Points add up along the way, and several people earn from the same fix:
 | Alice | opens an issue describing the bug | +4 | 4 |
 | Alice | a maintainer labels it `bug` | +2 | 6 |
 | Bob | comments on the issue with a reproduction | +2 | 2 |
-| Bob | opens a PR that fixes it and links the issue | +6 | 8 |
+| Bob | opens a PR that fixes it and links the issue | +3 | 5 |
 | Carol | reviews the PR and requests changes | +8 | 8 |
-| Bob | replies on the PR after pushing the fix | +3 | 11 |
-| Carol | approves the updated PR (on a later day) | +10 | 18 |
-| Carol | arms auto-merge, so the PR merges once checks pass | +5 | 23 |
-| Bob | his PR is merged | +10 | 21 |
+| Carol | that was the PR's first review, within 24 hours of it opening | +3 | 11 |
+| Bob | replies on the PR after pushing the fix | +3 | 8 |
+| Carol | approves the updated PR (on a later day) | +10 | 21 |
+| Carol | arms auto-merge, so the PR merges once checks pass | +8 | 29 |
+| Bob | his PR is merged | +13 | 21 |
 | Bob | the merged PR closes the linked issue | +5 | 26 |
 | Bob | the PR added a test | +2 | 28 |
 | Bob | it was his first merged PR ever | +25 | 53 |
 | Alice | her issue is fixed by the merged PR | +5 | 11 |
 
-Totals: Alice 11, Bob 53, Carol 23. Bob's PR alone is worth 51 (26
-without the one-time first-PR bonus). Carol's two reviews both score only
-because they were on different days. Merging usually happens this way: the
-approver arms auto-merge, and GitHub credits them with the merge. If the PR
-had broken `main`, Carol would lose 20 (approved and merged; only the
-largest penalty counts) and Bob 15, with 5 back for fixing it within 24
-hours; anyone else who turned `main` green would earn 15.
+Totals: Alice 11, Bob 53, Carol 29 (all of Carol's are steward points). Bob's
+PR alone is worth 51 (26 without the one-time first-PR bonus). Carol's two
+reviews both score only because they were on different days. Merging usually
+happens this way: the approver arms auto-merge, and GitHub credits them with
+the merge. If the PR had broken `main`, Carol would lose 20 (approved and
+merged; only the largest penalty counts) and Bob 15, with 5 back for fixing
+it within 24 hours; anyone else who turned `main` green would earn 15.
 
 The rules popup on the page builds this example from the live point values.
 
@@ -116,7 +142,7 @@ The rules popup on the page builds this example from the live point values.
   that PR the same day add nothing.
 - A PR author's replies on their own PR are comments, capped as above, never
   reviews.
-- At most 4 issue opens score per person per day.
+- At most 4 issue opens and 15 issue closes score per person per day.
 
 ## Weekly windows
 
@@ -141,7 +167,9 @@ green) is just a re-score, and the all-time board stays consistent.
 | `review_comments` | inline review comments: which review, and whether each is a reply to an existing thread |
 | `labels` | who added which label when (confirmation, spam) |
 | `answers` | accepted discussion answers |
-| `releases` | tags and publish times (the weekly windows) |
+| `releases` | tags, publish times (the weekly windows) and who published them |
+| `closes` | who closed which issue, how (duplicate, not planned, completed) and whether a commit closed it |
+| `pr_commits` | the commits on each merged PR and who authored them (shepherding) |
 | `runs` | `CI`/`Full Suite` runs on `main`: commit, result, failure cause, and the failure signature (failing tests, else the failing file) |
 | `first_merges` | each person's first merged PR |
 | `state` | collection cursors and commit → PR lookups |
@@ -163,7 +191,9 @@ window and by category.
 | Comments | `GET /repos/{repo}/issues/comments?since=…` (issue and PR conversation) |
 | Labels | `GET /repos/{repo}/issues/events` (`labeled`) |
 | Discussions, replies, answers | GraphQL `repository.discussions` |
-| Releases | `GET /repos/{repo}/releases` |
+| Releases (and who published them) | `GET /repos/{repo}/releases` |
+| Issue closes | `GET /repos/{repo}/issues/events` (`closed`) |
+| Commits on merged PRs | `GET /pulls/{n}/commits`, once per merged PR |
 | Breaks | `GET /actions/workflows/{ci,full-suite}.yml/runs?branch=main`, the failed job's log (cause), `GET /commits/{sha}/pulls` |
 | First merged PR | search `is:pr is:merged author:{login}` |
 

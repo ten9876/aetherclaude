@@ -64,6 +64,11 @@ tr.ev td{background:var(--bg-1);padding:0}
 .rt.stack td:first-child{width:60px}
 .rt.stack td:nth-child(3){text-align:right;font-family:var(--mono);font-weight:700;color:var(--ink);width:60px}
 .rt.stack td:last-child{text-align:right;font-family:var(--mono);font-weight:400;color:var(--muted);width:90px}
+.heroes{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px;margin-bottom:14px}
+.heroes .hero{margin-bottom:0}
+.seg{display:inline-flex;margin-left:12px;border:1px solid var(--line-hi);border-radius:7px;overflow:hidden;text-transform:none;letter-spacing:0;font-weight:500;vertical-align:middle}
+.seg span{padding:2px 10px;cursor:pointer;color:var(--muted)}
+.seg span.on{background:var(--accent);color:#fff}
 .brk{display:grid;grid-template-columns:90px 70px minmax(0,1fr) 140px;column-gap:12px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px}
 .brk span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 </style></head><body><div class="wrap">
@@ -73,7 +78,7 @@ tr.ev td{background:var(--bg-1);padding:0}
 <div class="tabs" id="tabs"></div>
 <div id="hero"></div>
 <div class="panel"><div class="ph"><span id="tbl-title">Standings</span><span class="dim" style="text-transform:none;letter-spacing:0;font-weight:400">Click a row for the point-by-point breakdown</span></div>
-<table><thead><tr><th>#</th><th>Contributor</th><th>Points</th><th>Comments</th><th>Discussions</th><th>Issues</th><th>PRs</th><th>Reviews</th><th>Merges</th><th>Main health</th><th>Penalties</th></tr></thead><tbody id="tb"></tbody></table></div>
+<table><thead><tr><th>#</th><th>Contributor</th><th>Points</th><th title="Points from reviewing, merging, triage, cleanup, shepherding, releases and main health">Steward</th><th>Comments</th><th>Discussions</th><th>Issues</th><th>PRs</th><th>Reviews</th><th>Merges</th><th>Stewardship</th><th>Main health</th><th>Penalties</th></tr></thead><tbody id="tb"></tbody></table></div>
 <div class="panel" id="breaks"></div>
 <p class="dim" style="font-size:11px;text-align:center;margin-top:4px">Points depend on the kind of action, never its size. <a href="#" onclick="openRules();return false">How points work</a></p>
 </div>
@@ -100,17 +105,20 @@ tr.ev td{background:var(--bg-1);padding:0}
 <li>Comments score at most once per person per thread per day, and at most 10 comments a day score.</li>
 <li>Replies on your own PR score at most twice per PR.</li>
 <li>One review per reviewer per PR per day scores (the strongest one that day). Replies in a review thread count as comments, not new reviews, and a review covers your other comments on that PR the same day.</li>
-<li>At most 4 new issues per person per day score.</li>
+<li>At most 4 new issues per person per day score, and at most 15 issue closes a day.</li>
 <li>Issues and PRs labelled <code>spam</code> or <code>invalid</code> lose their points.</li></ul>
+<h3>Steward of the week</h3>
+<p>A lot of what keeps AetherSDR moving isn't writing PRs: reviewing them, merging them, triaging and cleaning up issues, finishing other people's PRs, cutting releases, and fixing <code>main</code>. <b>Steward of the week</b> ranks only that work: review, merge and stewardship points, fixing main and reverts, less the approver and merger penalties. The table's <b>Steward</b> column shows each person's steward points; switch the ranking to <b>Steward</b> to sort by it.</p>
 <h3>Contributor of the week</h3>
-<p>A week runs from one AetherSDR release to the next. When a release is published, the top-scoring eligible contributor for that week is named contributor of the week. Until then the week's leader is shown as "leading". Ties go to more PR points, then more review points.</p>
+<p>A week runs from one AetherSDR release to the next. When a release is published, two people are named for that week: the <b>contributor of the week</b> (most points overall) and the <b>steward of the week</b> (most steward points). The same person can win both. Until the release, the week's leaders are shown as "leading". Overall ties go to more PR points, then more review points; steward ties to more review points.</p>
 </div></div>
 <script>
 let D=null,views=[],cur=null;
-const CATS=['comments','discussions','issues','prs','reviews','merges','main','penalties'];
-const LABEL={discussion_comment:'Discussion comment',issue_comment:'Issue comment',pr_comment:'PR comment',discussion_open:'Started discussion',discussion_answer:'Accepted answer',issue_open:'Opened issue',issue_confirmed:'Issue confirmed',issue_fixed:'Issue fixed',pr_open:'Opened PR',pr_merged:'PR merged',pr_closes_issue:'PR closes issue',pr_tests:'PR adds tests',first_merged_pr:'First merged PR',review_approve:'Approved',review_changes:'Requested changes',review_comment:'Review comments',merge_other:'Merged a PR',main_fixed:'Fixed main',revert_merged:'Revert merged',break_approver:'Approved a break',break_author:'Broke main',break_merger:'Merged a break',break_self_fix:'Fixed own break',spam:'Spam/invalid'};
+const CATS=['comments','discussions','issues','prs','reviews','merges','stewardship','main','penalties'];
+let rankBy='overall';
+const LABEL={discussion_comment:'Discussion comment',issue_comment:'Issue comment',pr_comment:'PR comment',discussion_open:'Started discussion',discussion_answer:'Accepted answer',issue_open:'Opened issue',issue_confirmed:'Issue confirmed',issue_fixed:'Issue fixed',pr_open:'Opened PR',pr_merged:'PR merged',pr_closes_issue:'PR closes issue',pr_tests:'PR adds tests',first_merged_pr:'First merged PR',review_approve:'Approved',review_changes:'Requested changes',review_comment:'Review comments',merge_other:'Merged a PR',main_fixed:'Fixed main',revert_merged:'Revert merged',issue_triaged:'Triaged an issue',issue_closed:'Closed an issue',pr_shepherd:'Shepherded a PR',review_first_fast:'First review within 24h',release_published:'Published a release',break_approver:'Approved a break',break_author:'Broke main',break_merger:'Merged a break',break_self_fix:'Fixed own break',spam:'Spam/invalid'};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const refUrl=r=>{const [t,n]=r.split('#');return `https://github.com/${D.repo}/${t==='pr'?'pull':t==='discussion'?'discussions':'issues'}/${n}`};
+const refUrl=r=>{const [t,n]=r.split('#');return `https://github.com/${D.repo}/${t==='pr'?'pull':t==='discussion'?'discussions':t==='release'?'releases/tag':'issues'}/${n}`};
 const fmtD=s=>s?new Date(s).toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+new Date(s).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}):'';
 function start(data){
   D=data;
@@ -126,21 +134,29 @@ function render(){
   const span=w.start||w.end?`${w.start?fmtD(w.start):'start'} &rarr; ${w.end?fmtD(w.end):'now'}`:'all collected history';
   document.getElementById('sub').innerHTML=`${esc(D.repo)} &middot; ${span} &middot; GitHub data as of ${fmtD(D.collected_at||D.generated_at)}`;
   const top=st.find(r=>r.eligible);
-  const title=w.tag==='current'?'Leading this week':w.tag?`Contributor of the week &middot; ${esc(w.tag)}`:'All-time leader';
-  document.getElementById('hero').innerHTML=top?`<div class="hero"><img src="${esc(top.avatar||`https://github.com/${top.login}.png`)}" alt=""><div><div class="t">${title}</div><div class="n">${esc(top.login)}</div>`+
-    `<div class="dim" style="margin-top:2px">${CATS.filter(c=>top.cats[c]).map(c=>`${c==='prs'?'PRs':c} ${top.cats[c]}`).join(' &middot; ')}</div></div><div class="p"><b>${top.points}</b><span class="dim">points</span></div></div>`:'';
-  document.getElementById('tbl-title').innerHTML=`Standings &middot; ${esc(v.name)}`;
+  const stew=st.filter(r=>r.steward_rank).sort((a,b)=>a.steward_rank-b.steward_rank)[0];
+  const isCur=w.tag==='current',all=!w.tag;
+  const card=(r,title,val,unit,detail)=>`<div class="hero"><img src="${esc(r.avatar||`https://github.com/${r.login}.png`)}" alt=""><div style="min-width:0"><div class="t">${title}</div><div class="n">${esc(r.login)}</div>`+
+    `<div class="dim" style="margin-top:2px">${detail}</div></div><div class="p"><b>${val}</b><span class="dim">${unit}</span></div></div>`;
+  const catLine=r=>CATS.filter(c=>r.cats[c]).map(c=>`${c==='prs'?'PRs':c} ${r.cats[c]}`).join(' &middot; ');
+  document.getElementById('hero').innerHTML='<div class="heroes">'+
+    (top?card(top,isCur?'Leading this week':all?'All-time leader':`Contributor of the week &middot; ${esc(w.tag)}`,top.points,'points',catLine(top)):'')+
+    (stew?card(stew,isCur?'Leading steward this week':all?'All-time steward':`Steward of the week &middot; ${esc(w.tag)}`,stew.steward,'steward points',
+      `reviews ${stew.cats.reviews||0} &middot; merges ${stew.cats.merges||0} &middot; stewardship ${stew.cats.stewardship||0}`):'')+'</div>';
+  document.getElementById('tbl-title').innerHTML=`Standings &middot; ${esc(v.name)} <span class="seg"><span class="${rankBy==='overall'?'on':''}" onclick="rankBy='overall';render()">Overall</span><span class="${rankBy==='steward'?'on':''}" onclick="rankBy='steward';render()">Steward</span></span>`;
+  const rows=rankBy==='steward'?st.slice().sort((a,b)=>(b.steward-a.steward)||a.login.localeCompare(b.login)):st;
+  const leadLogin=rankBy==='steward'?(stew&&stew.login):(top&&top.login);
   let h='';
-  st.forEach((r,i)=>{
-    const lead=top&&r.login===top.login;
-    h+=`<tr class="row${lead?' lead':''}" onclick="tog(${i})"><td class="rank">${r.eligible?(lead?'<span class="gold">1</span>':r.rank):'&mdash;'}</td>`+
+  rows.forEach((r,i)=>{
+    const lead=r.login===leadLogin,rk=rankBy==='steward'?r.steward_rank:r.rank;
+    h+=`<tr class="row${lead?' lead':''}" onclick="tog(${i})"><td class="rank">${r.eligible&&rk?(lead?'<span class="gold">1</span>':rk):'&mdash;'}</td>`+
       `<td><div class="who"><img src="${esc(r.avatar||`https://github.com/${r.login}.png`)}" alt="" loading="lazy"><b>${esc(r.login)}</b>${r.eligible?'':`<span class="badge" title="Scored and shown, but not eligible to win">MAINTAINER &middot; NOT ELIGIBLE</span>`}</div></td>`+
-      `<td class="pts${r.points<0?' neg':''}">${r.points}</td>`+CATS.map(c=>`<td>${num(r.cats[c]||0)}</td>`).join('')+`</tr>`+
-      `<tr class="ev" id="ev${i}" style="display:none"><td colspan="11"><div class="evs">`+
+      `<td class="pts${r.points<0?' neg':''}">${r.points}</td><td class="${r.steward<0?'neg':''}" style="color:${r.steward>0?'var(--ink-soft)':''}">${r.steward||'<span class="zero">·</span>'}</td>`+CATS.map(c=>`<td>${num(r.cats[c]||0)}</td>`).join('')+`</tr>`+
+      `<tr class="ev" id="ev${i}" style="display:none"><td colspan="13"><div class="evs">`+
       (r.event_count>r.events.length?`<span class="dim" style="grid-column:1/-1">Newest ${r.events.length} of ${r.event_count} entries</span>`:'')+r.events.map(e=>`<span class="dim">${fmtD(e.at)}</span><span>${esc(LABEL[e.rule]||e.rule)}</span><span style="text-align:right" class="${e.points<0?'neg':''}">${e.points>0?'+':''}${e.points}</span>`+
         `<span><a href="${refUrl(e.ref)}" target="_blank">${esc(e.ref.replace('discussion','disc'))}</a> <span class="dim">${esc(e.note||'')}</span></span>`).join('')+`</div></td></tr>`;
   });
-  document.getElementById('tb').innerHTML=h||'<tr><td colspan="11" class="dim" style="text-align:left">No activity in this window yet.</td></tr>';
+  document.getElementById('tb').innerHTML=h||'<tr><td colspan="13" class="dim" style="text-align:left">No activity in this window yet.</td></tr>';
   const brks=(D.breaks||[]).filter(b=>(!w.start||b.at>=w.start)&&(!w.end||b.at<w.end)&&b.pr).slice().reverse();
   document.getElementById('breaks').innerHTML=`<div class="ph"><span>Main breaks in this window</span><span class="dim" style="text-transform:none;letter-spacing:0;font-weight:400">${brks.length} counted</span></div>`+
     (brks.length?brks.map(b=>`<div class="brk"><span class="dim">${fmtD(b.at)}</span><a href="${refUrl('pr#'+b.pr)}" target="_blank">#${b.pr}</a><span title="${esc((b.new||[]).join(', '))}">${esc(b.workflow.replace('.yml',''))} ${b.first===false?'new failure while red':'red'} at <a href="${esc(b.url)}" target="_blank">${esc(b.sha.slice(0,7))}</a> <span class="dim">${esc((b.new||[]).slice(0,3).join(', ')||b.cause)}${(b.new||[]).length>3?` +${b.new.length-3} more`:''}</span></span><span class="dim">${b.fixed_at?'green again '+fmtD(b.fixed_at):'still red'}</span></div>`).join(''):'<p class="dim">None. Main stayed green.</p>');
@@ -150,10 +166,13 @@ const DESC={discussion_comment:'Comment or reply in a discussion',issue_comment:
   issue_open:'Open an issue',issue_confirmed:'Your issue is labelled bug or enhancement by someone else',issue_fixed:'Your issue is fixed by a merged PR',
   pr_open:'Open a PR',pr_merged:'Your PR is merged',pr_closes_issue:'Your merged PR closes a linked issue',pr_tests:'Your merged PR adds or changes tests',first_merged_pr:'Your first merged PR ever',
   review_approve:'Review that approves',review_changes:'Review that requests changes',review_comment:'Review with comments only',
-  merge_other:'Merge someone else\'s PR',main_fixed:'Your merged PR turns a red main green',revert_merged:'Your revert of a breaking commit is merged',
+  merge_other:'Merge someone else\'s PR',
+  issue_triaged:'Triage someone else\'s issue (the first label on it)',issue_closed:'Close someone else\'s issue (duplicate, not planned or already fixed)',
+  pr_shepherd:'Shepherd someone else\'s PR: push commits to it (rebase, conflicts, finishing touches) before it merges',
+  review_first_fast:'Give a PR its first review within 24 hours of it opening',release_published:'Publish an AetherSDR release',main_fixed:'Your merged PR turns a red main green',revert_merged:'Your revert of a breaking commit is merged',
   break_approver:'You approved the PR that broke main',break_author:'You authored the PR that broke main',break_merger:'You merged the PR that broke main',
   break_self_fix:'You fix your own break within 24 hours (refund)',spam:'Your issue or PR is labelled spam or invalid'};
-const CAT_NAME={comments:'Comments',discussions:'Discussions',issues:'Issues',prs:'Pull requests',reviews:'Reviews',merges:'Merges',main:'Main health',penalties:'Penalties'};
+const CAT_NAME={stewardship:'Stewardship',comments:'Comments',discussions:'Discussions',issues:'Issues',prs:'Pull requests',reviews:'Reviews',merges:'Merges',main:'Main health',penalties:'Penalties'};
 function ruleRows(keys){return '<table class="rt">'+keys.map(k=>{const v=D.rules[k];
   return `<tr><td>${esc(DESC[k]||LABEL[k]||k)}</td><td class="${v.points<0?'neg':''}">${v.points>0?'+':''}${v.points}</td></tr>`}).join('')+'</table>'}
 function renderRules(){
@@ -171,6 +190,7 @@ const STACK=[
   ['Bob','issue_comment','comments on the issue with a reproduction'],
   ['Bob','pr_open','opens a PR that fixes it and links the issue'],
   ['Carol','review_changes','reviews the PR and requests changes'],
+  ['Carol','review_first_fast','that was the PR\'s first review, within 24 hours of it opening'],
   ['Bob','pr_comment','replies on the PR after pushing the fix'],
   ['Carol','review_approve','approves the updated PR (on a later day)'],
   ['Carol','merge_other','arms auto-merge, so the PR merges once checks pass'],

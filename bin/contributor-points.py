@@ -45,7 +45,7 @@ MIN_COMMENT_CHARS = 15              # a floor, not a scale
 
 # rule -> (points, category). Categories drive the page's breakdown columns.
 RULES = {
-    'discussion_comment':  (1, 'comments'),
+    'discussion_comment':  (2, 'comments'),
     'issue_comment':       (2, 'comments'),
     'pr_comment':          (3, 'comments'),
     'discussion_open':     (2, 'discussions'),
@@ -53,15 +53,21 @@ RULES = {
     'issue_open':          (4, 'issues'),
     'issue_confirmed':     (2, 'issues'),
     'issue_fixed':         (5, 'issues'),
-    'pr_open':             (6, 'prs'),
-    'pr_merged':           (10, 'prs'),
+    'pr_open':             (3, 'prs'),    # the rest of opening's value is paid on merge
+    'pr_merged':           (13, 'prs'),
     'pr_closes_issue':     (5, 'prs'),
     'pr_tests':            (2, 'prs'),
     'first_merged_pr':     (25, 'prs'),
     'review_approve':      (10, 'reviews'),
     'review_changes':      (8, 'reviews'),
     'review_comment':      (6, 'reviews'),
-    'merge_other':         (5, 'merges'),
+    'merge_other':         (8, 'merges'),
+    # Stewardship: the necessary admin that keeps other people's work moving.
+    'issue_triaged':       (2, 'stewardship'),
+    'issue_closed':        (2, 'stewardship'),
+    'pr_shepherd':         (5, 'stewardship'),
+    'review_first_fast':   (3, 'stewardship'),
+    'release_published':   (15, 'stewardship'),
     'main_fixed':          (15, 'main'),
     'revert_merged':       (3, 'main'),
     'break_approver':      (-20, 'penalties'),
@@ -74,6 +80,15 @@ CAP_COMMENT_PER_THREAD_DAY = 1
 CAP_OWN_PR_REPLIES = 2
 CAP_COMMENTS_PER_DAY = 10
 CAP_ISSUE_OPENS_PER_DAY = 4
+CAP_ISSUE_CLOSES_PER_DAY = 15
+FAST_REVIEW_WINDOW = timedelta(hours=24)
+# Labels that are workflow plumbing, not triage judgement.
+NON_TRIAGE_LABELS = {'claude-active', 'aetherclaude-eligible', 'full-suite', 'sanitizer', 'asan-ubsan', 'tsan'}
+# Steward of the week ranks only these: reviewing, merging, triage, cleanup,
+# shepherding, releases and main health, with the gatekeeper penalties.
+STEWARD_RULES = {'review_approve', 'review_changes', 'review_comment', 'merge_other', 'issue_triaged',
+                 'issue_closed', 'pr_shepherd', 'review_first_fast', 'release_published', 'main_fixed',
+                 'revert_merged', 'break_approver', 'break_merger'}
 SELF_FIX_WINDOW = timedelta(hours=24)
 
 
@@ -188,6 +203,10 @@ CREATE TABLE IF NOT EXISTS first_merges(login TEXT PRIMARY KEY, number INTEGER, 
 CREATE TABLE IF NOT EXISTS state(name TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS review_comments(id INTEGER PRIMARY KEY, pr INTEGER, review_id INTEGER,
   login TEXT, in_reply_to INTEGER, created_at TEXT);
+CREATE TABLE IF NOT EXISTS closes(id INTEGER PRIMARY KEY, number INTEGER, actor TEXT, at TEXT,
+  state_reason TEXT, commit_id TEXT);
+CREATE TABLE IF NOT EXISTS pr_commits(pr INTEGER, sha TEXT, author TEXT, committer TEXT, at TEXT,
+  PRIMARY KEY(pr, sha));
 CREATE TABLE IF NOT EXISTS http_cache(url TEXT PRIMARY KEY, etag TEXT, body TEXT, link TEXT, fetched_at TEXT);
 """
 # Columns added after the first schema; applied to existing databases.
@@ -197,7 +216,10 @@ MIGRATIONS = [
     'ALTER TABLE reviews ADD COLUMN body_len INTEGER',  # summary text present (0 = none)
     'ALTER TABLE items ADD COLUMN reviews_v INTEGER',   # review data version stored for this PR
     'ALTER TABLE runs ADD COLUMN sig TEXT',             # failure signature: failing tests / errors
+    'ALTER TABLE releases ADD COLUMN author TEXT',      # who published it
+    'ALTER TABLE items ADD COLUMN commits_v INTEGER',   # PR commits stored (shepherding)
 ]
+EVENTS_V = 2    # 2 = issue events include closes (1 = labels only)
 REVIEWS_V = 2   # 2 = reviews with body_len + inline review comments
 
 
@@ -267,8 +289,9 @@ def collect(gh, db, since):
     run_start = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     # Releases: the weekly windows run between non-prerelease tags.
     for r in gh.pages(f'repos/{REPO}/releases?per_page=100'):
-        db.execute('INSERT OR REPLACE INTO releases VALUES(?,?,?)',
-                   (r['tag_name'], r.get('published_at'), int(bool(r.get('prerelease')))))
+        db.execute('INSERT OR REPLACE INTO releases(tag,published_at,prerelease,author) VALUES(?,?,?,?)',
+                   (r['tag_name'], r.get('published_at'), int(bool(r.get('prerelease'))),
+                    (r.get('author') or {}).get('login')))
 
     # Issues and PRs (one feed), updated since the cursor.
     prs = []
@@ -328,6 +351,24 @@ def collect(gh, db, since):
             db.commit()
     db.commit()
 
+    # Commits on merged PRs: who besides the author pushed to them
+    # (shepherding). Fetched once per PR, after its merge.
+    todo = [n for (n,) in db.execute('SELECT number FROM items WHERE type="pr" AND merged_at IS NOT NULL'
+                                     ' AND IFNULL(commits_v,0)<1')]
+    if todo:
+        print(f'  fetching commits for {len(todo)} merged PRs', file=sys.stderr, flush=True)
+    for i, n in enumerate(todo):
+        for c in gh.pages(f'repos/{REPO}/pulls/{n}/commits?per_page=100'):
+            db.execute('INSERT OR REPLACE INTO pr_commits VALUES(?,?,?,?,?)',
+                       (n, c['sha'], (c.get('author') or {}).get('login'), (c.get('committer') or {}).get('login'),
+                        ((c.get('commit') or {}).get('author') or {}).get('date')))
+        db.execute('UPDATE items SET commits_v=1 WHERE type="pr" AND number=?', (n,))
+        if i % 25 == 24:
+            db.commit()
+        if i % 200 == 199:
+            print(f'  PR commits {i + 1}/{len(todo)} ({gh.calls} calls)', file=sys.stderr, flush=True)
+    db.commit()
+
     print(f'  step: issue and pr conversation comments ({gh.calls} calls)', file=sys.stderr, flush=True)
     # Issue and PR conversation comments (inline review comments are part of
     # the review and are not fetched).
@@ -340,13 +381,20 @@ def collect(gh, db, since):
                     c['created_at'], substantive(c.get('body'))))
 
     print(f'  step: label events ({gh.calls} calls)', file=sys.stderr, flush=True)
-    # Label events (maintainer confirmation, spam).
+    # Issue events: labels (triage, confirmation, spam) and closes (cleanup).
+    # Databases collected before closes were stored re-read the whole feed once.
+    ev_since = since if int(get_state(db, 'events_v', '1')) >= EVENTS_V else REPO_START
     for ev in gh.pages(f'repos/{REPO}/issues/events?per_page=100',
-                       stop=lambda e: e['created_at'] < since):
+                       stop=lambda e: e['created_at'] < ev_since):
+        num = (ev.get('issue') or {}).get('number')
+        actor = (ev.get('actor') or {}).get('login')
         if ev.get('event') == 'labeled' and ev.get('label'):
-            db.execute('INSERT OR IGNORE INTO labels VALUES(?,?,?,?)',
-                       ((ev.get('issue') or {}).get('number'), ev['label']['name'],
-                        (ev.get('actor') or {}).get('login'), ev['created_at']))
+            db.execute('INSERT OR IGNORE INTO labels VALUES(?,?,?,?)', (num, ev['label']['name'], actor, ev['created_at']))
+        elif ev.get('event') == 'closed':
+            db.execute('INSERT OR IGNORE INTO closes VALUES(?,?,?,?,?,?)',
+                       (ev['id'], num, actor, ev['created_at'], ev.get('state_reason'), ev.get('commit_id')))
+    set_state(db, 'events_v', str(EVENTS_V))
+    db.commit()
 
     print(f'  step: discussions ({gh.calls} calls)', file=sys.stderr, flush=True)
     # Discussions (GraphQL only): open, comments, replies, accepted answers.
@@ -573,6 +621,56 @@ def score(db):
     for (login, pr, _), (rule, at) in best.items():
         add(login, rule, at, f'pr#{pr}')
 
+    # First human review on a PR within 24 hours of it opening.
+    first = {}
+    for (login, pr, _), (rule, at) in best.items():
+        if role_of(login) == 'bot':
+            continue
+        if pr not in first or at < first[pr][1]:
+            first[pr] = (login, at)
+    for pr, (login, at) in first.items():
+        it = items.get(('pr', pr))
+        if it and it['created_at'] and _secs(it['created_at'], at) <= FAST_REVIEW_WINDOW.total_seconds():
+            add(login, 'review_first_fast', at, f'pr#{pr}', 'first review within 24h')
+
+    # Triage: the first label someone other than the author (and not a bot)
+    # puts on an issue.
+    for n, evs in labels.items():
+        it = items.get(('issue', n))
+        if not it or ('issue', n) in spam:
+            continue
+        tri = sorted((at, actor) for lab, actor, at in evs if actor and actor != it['author']
+                     and role_of(actor) != 'bot' and lab not in NON_TRIAGE_LABELS)
+        if tri:
+            add(tri[0][1], 'issue_triaged', tri[0][0], f'issue#{n}')
+
+    # Cleanup: closing someone else's issue by hand (as a duplicate, not
+    # planned, or already fixed). Closes done by a merged PR are the PR's.
+    fixed_by_pr = {c for (t, n), it in items.items() if t == 'pr' and it['merged_at']
+                   for c in json.loads(it['closes'] or '[]')}
+    done, per_day = set(), defaultdict(int)
+    for cid, n, actor, at, reason, commit_id in db.execute('SELECT * FROM closes ORDER BY at'):
+        it = items.get(('issue', n))
+        if (not it or not actor or actor == it['author'] or role_of(actor) == 'bot' or commit_id
+                or n in fixed_by_pr or (actor, n) in done):
+            continue
+        if per_day[(actor, at[:10])] >= CAP_ISSUE_CLOSES_PER_DAY:
+            continue
+        done.add((actor, n))
+        per_day[(actor, at[:10])] += 1
+        add(actor, 'issue_closed', at, f'issue#{n}', (reason or 'closed').replace('_', ' '))
+
+    # Shepherding: pushing commits to someone else's PR before it merged.
+    for pr, who in db.execute('SELECT pr, IFNULL(author, committer) FROM pr_commits GROUP BY pr, IFNULL(author, committer)'):
+        it = items.get(('pr', pr))
+        if it and it['merged_at'] and who and who not in ('web-flow', it['author']) and role_of(who) != 'bot':
+            add(who, 'pr_shepherd', it['merged_at'], f'pr#{pr}')
+
+    # Releases.
+    for tag, at, author in db.execute('SELECT tag, published_at, author FROM releases WHERE prerelease=0'
+                                      ' AND author IS NOT NULL'):
+        add(author, 'release_published', at, f'release#{tag}')
+
     # Comments, with caps applied in time order.
     thread_day, own_pr, per_day = defaultdict(int), defaultdict(int), defaultdict(int)
     # A reviewer whose review scored on a PR that day gets nothing more for
@@ -672,6 +770,13 @@ def score(db):
     return led, breaks
 
 
+def _secs(a, b):
+    try:
+        return (datetime.fromisoformat(b.replace('Z', '+00:00')) - datetime.fromisoformat(a.replace('Z', '+00:00'))).total_seconds()
+    except (AttributeError, ValueError):
+        return float('inf')
+
+
 def windows(db):
     rel = [(t, p) for t, p, pre in db.execute('SELECT tag, published_at, prerelease FROM releases ORDER BY published_at')
            if not pre and p]
@@ -696,6 +801,7 @@ def standings(db, led, start=None, end=None):
         kind, role, avatar = people.get(login, ('User', role_of(login), ''))
         out.append({'login': login, 'role': role, 'eligible': role == 'contributor', 'avatar': avatar,
                     'points': r['points'], 'cats': dict(r['cats']),
+                    'steward': sum(e['points'] for e in r['events'] if e['rule'] in STEWARD_RULES),
                     'events': sorted(r['events'], key=lambda e: e['at'] or '', reverse=True)})
     out.sort(key=lambda r: (-r['points'], -r['cats'].get('prs', 0), -r['cats'].get('reviews', 0), r['login'].lower()))
     rank = 0
@@ -703,6 +809,12 @@ def standings(db, led, start=None, end=None):
         if r['eligible']:
             rank += 1
             r['rank'] = rank
+    # Steward of the week: a second ranking over the stewardship-type points.
+    srank = 0
+    for r in sorted(out, key=lambda r: (-r['steward'], -r['cats'].get('reviews', 0), r['login'].lower())):
+        if r['eligible'] and r['steward'] > 0:
+            srank += 1
+            r['steward_rank'] = srank
     return out
 
 
