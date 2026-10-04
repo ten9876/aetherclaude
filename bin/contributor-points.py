@@ -1172,7 +1172,30 @@ def windows(db):
     return out
 
 
+# Kinds of "first" a contributor can have, by the ledger rules that count as
+# doing that thing. A week shows a person's firsts when the earliest such
+# event they have ever had falls inside it.
+FIRSTS = (
+    ('issue', 'first issue', {'issue_open'}),
+    ('comment', 'first comment', {'issue_comment', 'pr_comment', 'discussion_comment'}),
+    ('discussion', 'first discussion', {'discussion_open'}),
+    ('pr', 'first PR', {'pr_open'}),
+    ('merged', 'first merged PR', {'pr_merged'}),
+    ('review', 'first review', {'review_approve', 'review_changes', 'review_comment'}),
+    ('merge', 'first PR merged for someone else', {'merge_other'}),
+    ('answer', 'first accepted answer', {'discussion_answer'}),
+    ('backer', 'first donation', {'backer_contribution'}),
+)
+
+
 def standings(db, led, start=None, end=None):
+    earliest = {}   # (login, kind) -> the first time they ever did it
+    for e in led:
+        for kind, _, rules in FIRSTS:
+            if e[1] in rules and e[2]:
+                k = (e[0], kind)
+                if k not in earliest or e[2] < earliest[k]:
+                    earliest[k] = e[2]
     people = {l: (k, r, a, n) for l, k, r, a, n in db.execute('SELECT login, kind, role, avatar, display_name FROM people')}
     for login, row in BACKER_PEOPLE.items():
         people.setdefault(login, row)
@@ -1195,6 +1218,11 @@ def standings(db, led, start=None, end=None):
         backer = sum(e['points'] for e in r['events'] if e['rule'] in BACKER_RULES)
         out.append({'login': login, 'name': name, 'role': role, 'eligible': role == 'contributor', 'avatar': avatar,
                     'core': login.lower() in CORE_TEAM,
+                    # Firsts that happened in this window (none for all-time).
+                    'firsts': [label for kind, label, _ in FIRSTS
+                               if (start or end) and (login, kind) in earliest
+                               and (not start or earliest[(login, kind)] >= start)
+                               and (not end or earliest[(login, kind)] < end)],
                     'points': r['points'] - steward - backer,   # contributor points
                     'steward': steward, 'backer': backer, 'total': r['points'], 'cats': dict(r['cats']),
                     'events': sorted(r['events'], key=lambda e: e['at'] or '', reverse=True)})

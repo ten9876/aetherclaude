@@ -18,6 +18,11 @@ The core dev team (ten9876, jensenpat, rfoust, NF0T, nigelfenton, K5PTB,
 Ozy311, chibondking) is marked with a shield next to their names. It changes
 nothing about scoring or who can win.
 
+A **1st** rosette marks anyone who did something for the first time ever in
+the week shown: their first issue, comment, discussion, PR, merged PR,
+review, merge of someone else's PR, accepted answer or donation. Its tooltip
+names which. It isn't shown on the all-time board.
+
 A bot's action still counts for the humans involved: merging an agent PR earns
 merge points, and an agent PR that breaks `main` still costs its approvers and
 merger.

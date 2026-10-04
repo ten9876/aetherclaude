@@ -35,6 +35,7 @@ tr.lead td{background:rgba(224,184,74,.07)}
 .who{display:flex;align-items:center;gap:8px}
 .who img{width:22px;height:22px;border-radius:50%}
 .who b{color:var(--ink);font-weight:600}
+.first{display:inline-flex;margin-left:-2px;margin-top:-2px}
 .core{display:inline-flex;color:var(--accent-bright);margin-left:-2px}
 .hero .n .core{margin-left:8px;vertical-align:-1px}
 .badge.backer{color:var(--gold);border-color:var(--gold)}
@@ -123,6 +124,11 @@ td.pts.soft{color:var(--muted);font-weight:500}
 <p>A lot of what keeps AetherSDR moving isn't writing PRs: reviewing them, merging them, triaging and cleaning up issues, finishing other people's PRs and cutting releases. That work earns <b>steward points</b>, a separate score from <b>contributor points</b>: no action counts toward both. Steward of the week ranks steward points (less the approver and merger penalties); contributor of the week ranks contributor points (less the author's penalty). A steward is top contributor only if their contributor points alone put them there. Switch the table between <b>Contributor</b> and <b>Steward</b> to rank by either.</p>
 <h3>Backer of the week</h3>
 <p>Financial support on <a href="https://opencollective.com/aethersdr" target="_blank">Open Collective</a> earns <b>10 backer points per $1</b>, a third score of its own. Backer points count in the Total ranking and name a <b>backer of the week</b>, but never count toward contributor or steward of the week, so a donation can't outbid code or reviews. Donors appear under their Open Collective name, or on their GitHub row when the two are linked.</p>
+<h3>Badges</h3>
+<ul><li><span id="badge-first"></span> <b>1st</b>: did something for the first time ever that week (first issue, comment, PR, merged PR, review, donation…). Hover it to see which. Welcome!</li>
+<li><span id="badge-core"></span> <b>Core dev team.</b></li>
+<li><span class="badge backer">BACKER</span> supports AetherSDR on Open Collective.</li>
+<li><span class="badge">MAINTAINER</span> scored and shown, but can't win.</li></ul>
 <h3>Contributor of the week</h3>
 <p>A week runs from one AetherSDR release to the next. When a release is published, two people are named for that week: the <b>contributor of the week</b> (most contributor points) and the <b>steward of the week</b> (most steward points). The same person can win both, but only by topping each score on its own. Until the release, the week's leaders are shown as "leading". Contributor ties go to more PR points, then more issue points; steward ties to more review points.</p>
 </div></div>
@@ -131,6 +137,13 @@ let D=null,views=[],cur=null,picked=false;
 const CATS=['comments','discussions','issues','prs','main','cpenalties','reviews','merges','stewardship','penalties'];
 const C_CATS=['comments','discussions','issues','prs','main','cpenalties'],S_CATS=['reviews','merges','stewardship'];
 let rankBy='total';
+// Did something for the first time ever in the week shown (first issue,
+// comment, PR, merge, review, donation…); the tooltip names which.
+const firstIcon=r=>(r.firsts||[]).length?FIRST_ICON.replace('__T__',esc('Firsts this week: '+r.firsts.join(', ')+'. Welcome!')):'';
+const FIRST_ICON='<span class="first" title="__T__" aria-label="First-time contributor"><svg viewBox="0 0 26 28" width="22" height="24" aria-hidden="true">'+
+  '<path d="M7.5 16 5 26.5l4-2 2.5 3.2 1.5-10z M18.5 16l2.5 10.5-4-2-2.5 3.2-1.5-10z" fill="#1d7a52"/>'+
+  '<circle cx="13" cy="11" r="10.5" fill="var(--good)"/>'+
+  '<text x="13" y="14.6" text-anchor="middle" font-family="var(--sans)" font-size="10.5" font-weight="800" letter-spacing="-.3" fill="#03140b">1st</text></svg></span>';
 const CORE_ICON='<span class="core" title="Core dev team" aria-label="Core dev team"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5z" fill="currentColor"/><path d="m8.5 12 2.5 2.5 4.5-5" fill="none" stroke="var(--bg)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
 const avatarOf=r=>r.avatar||(r.login.startsWith('oc:')?'https://opencollective.com/static/images/default-guest-logo.svg':`https://github.com/${r.login}.png`);
 const LABEL={discussion_comment:'Discussion comment',issue_comment:'Issue comment',pr_comment:'PR comment',discussion_open:'Started discussion',discussion_answer:'Accepted answer',issue_open:'Opened issue',issue_confirmed:'Issue confirmed',issue_fixed:'Issue fixed',pr_open:'Opened PR',pr_merged:'PR merged',pr_closes_issue:'PR closes issue',pr_tests:'PR adds tests',first_merged_pr:'First merged PR',review_approve:'Approved',review_changes:'Requested changes',review_comment:'Review comments',merge_other:'Merged a PR',main_fixed:'Fixed main',revert_merged:'Revert merged',issue_triaged:'Triaged an issue',issue_closed:'Closed an issue',pr_shepherd:'Shepherded a PR',review_first_fast:'First review within 24h',release_published:'Published a release',break_approver:'Approved a break',backer_contribution:'Open Collective contribution',break_author:'Broke main',break_merger:'Merged a break',break_self_fix:'Fixed own break',spam:'Spam/invalid'};
@@ -182,7 +195,7 @@ function render(){
   rows.forEach((r,i)=>{
     const lead=r.login===leadLogin,rk=rankBy==='steward'?r.steward_rank:rankBy==='backer'?r.backer_rank:rankBy==='total'?totRank[r.login]:r.rank;
     h+=`<tr class="row${lead?' lead':''}" onclick="tog(${i})"><td class="rank">${r.eligible&&rk?(lead?'<span class="gold">1</span>':rk):'&mdash;'}</td>`+
-      `<td><div class="who"><img src="${esc(avatarOf(r))}" alt="" loading="lazy"><b>${esc(r.name||r.login)}</b>${r.core?CORE_ICON:''}${backers.has(r.login)?`<span class="badge backer" title="${r.login.startsWith('oc:')?'Supports AetherSDR on Open Collective (no linked GitHub account)':'Supports AetherSDR on Open Collective'}">BACKER</span>`:''}${r.eligible?'':`<span class="badge" title="Maintainer: scored and shown, but not eligible to win">MAINTAINER</span>`}</div></td>`+
+      `<td><div class="who"><img src="${esc(avatarOf(r))}" alt="" loading="lazy"><b>${esc(r.name||r.login)}</b>${firstIcon(r)}${r.core?CORE_ICON:''}${backers.has(r.login)?`<span class="badge backer" title="${r.login.startsWith('oc:')?'Supports AetherSDR on Open Collective (no linked GitHub account)':'Supports AetherSDR on Open Collective'}">BACKER</span>`:''}${r.eligible?'':`<span class="badge" title="Maintainer: scored and shown, but not eligible to win">MAINTAINER</span>`}</div></td>`+
       `<td class="pts${tot(r)<0?' neg':''}${rankBy==='total'?'':' soft'}">${tot(r)}</td>`+
       `<td class="pts${r.points<0?' neg':''}${rankBy==='contributor'?'':' soft'}">${r.points}</td><td class="pts${r.steward<0?' neg':''}${rankBy==='steward'?'':' soft'}">${r.steward||'<span class="zero">·</span>'}</td>`+
       `<td class="pts${rankBy==='backer'?'':' soft'}">${r.backer||'<span class="zero">·</span>'}</td>`+
@@ -261,7 +274,12 @@ function renderStack(){
     `Bob (author) would lose ${-au}, and get ${fx} back if he fixes it within 24 hours. Whoever else turns main green earns +${pts('main_fixed')}.</p>`;
   document.getElementById('rules-stack').innerHTML=h;
 }
-function openRules(){renderRules();document.getElementById('rules-modal').classList.add('show');document.body.style.overflow='hidden'}
+function badgeIcons(){
+  const f=document.getElementById('badge-first'),c=document.getElementById('badge-core');
+  if(f&&!f.innerHTML)f.innerHTML=FIRST_ICON.replace('__T__','First-time contributor');
+  if(c&&!c.innerHTML)c.innerHTML=CORE_ICON;
+}
+function openRules(){badgeIcons();renderRules();document.getElementById('rules-modal').classList.add('show');document.body.style.overflow='hidden'}
 function closeRules(){document.getElementById('rules-modal').classList.remove('show');document.body.style.overflow=''}
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeRules()});
 if(location.hash==='#rules')setTimeout(openRules,0);
