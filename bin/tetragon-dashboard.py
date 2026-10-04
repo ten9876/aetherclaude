@@ -9425,7 +9425,9 @@ class H(BaseHTTPRequestHandler):
             # page edit needs no restart.
             try:
                 page = open(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'leaderboard.html'), 'rb').read()
-                self.send_response(200); self.send_header('Content-Type', 'text/html'); self.end_headers()
+                self.send_response(200); self.send_header('Content-Type', 'text/html')
+                # Always revalidate: the page changes with each deploy.
+                self.send_header('Cache-Control', 'no-cache'); self.end_headers()
                 self.wfile.write(page)
             except OSError:
                 self.send_response(404); self.end_headers()
@@ -9437,7 +9439,8 @@ class H(BaseHTTPRequestHandler):
                 _log_exc('api_leaderboard', _e)
                 body = json.dumps({'error': 'standings unavailable'}).encode()
                 self.send_response(503)
-            self.send_header('Content-Type', 'application/json'); self.end_headers()
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Cache-Control', 'no-cache'); self.end_headers()
             self.wfile.write(body)
         elif self.path == '/agent-walk' or self.path.startswith('/agent-walk?'):
             self.send_response(200); self.send_header('Content-Type', 'text/html'); self.end_headers()

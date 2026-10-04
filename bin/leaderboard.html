@@ -157,7 +157,8 @@ const CAT_NAME={comments:'Comments',discussions:'Discussions',issues:'Issues',pr
 function ruleRows(keys){return '<table class="rt">'+keys.map(k=>{const v=D.rules[k];
   return `<tr><td>${esc(DESC[k]||LABEL[k]||k)}</td><td class="${v.points<0?'neg':''}">${v.points>0?'+':''}${v.points}</td></tr>`}).join('')+'</table>'}
 function renderRules(){
-  if(!D)return;
+  if(!D){for(const id of ['rules-earn','rules-stack','rules-lose'])
+    document.getElementById(id).innerHTML='<p class="dim">Loading point values&hellip;</p>';return}
   const by={};for(const [k,v] of Object.entries(D.rules))(by[v.category]=by[v.category]||[]).push(k);
   document.getElementById('rules-earn').innerHTML=CATS.filter(c=>c!=='penalties'&&by[c]).map(c=>`<div class="rcat">${CAT_NAME[c]}</div>`+ruleRows(by[c])).join('');
   document.getElementById('rules-lose').innerHTML=ruleRows(by.penalties||[]);
