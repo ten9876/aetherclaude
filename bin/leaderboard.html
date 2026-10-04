@@ -82,8 +82,8 @@ td.pts.soft{color:var(--muted);font-weight:500}
 <div class="tabs" id="tabs"></div>
 <div id="hero"></div>
 <div class="panel"><div class="ph"><span id="tbl-title">Standings</span><span class="dim" style="text-transform:none;letter-spacing:0;font-weight:400">Click a row for the point-by-point breakdown</span></div>
-<table><thead><tr class="grp"><th colspan="2"></th><th colspan="2">Score</th><th colspan="5" class="gc">Contributor points</th><th colspan="4" class="gs">Steward points</th></tr>
-<tr><th>#</th><th>Contributor</th><th title="Contributor points: ranks the contributor of the week">Contributor</th><th title="Steward points: ranks the steward of the week">Steward</th><th class="gc">Comments</th><th>Discussions</th><th>Issues</th><th>PRs</th><th title="Fixing main, reverts, and the author's breaking-main penalty">Main health</th><th class="gs">Reviews</th><th>Merges</th><th>Stewardship</th><th title="Approver and merger breaking-main penalties">Penalties</th></tr></thead><tbody id="tb"></tbody></table></div>
+<table><thead><tr class="grp"><th colspan="2"></th><th colspan="3">Score</th><th colspan="5" class="gc">Contributor points</th><th colspan="4" class="gs">Steward points</th></tr>
+<tr><th>#</th><th>Contributor</th><th title="Contributor plus steward points">Total</th><th title="Contributor points: ranks the contributor of the week">Contributor</th><th title="Steward points: ranks the steward of the week">Steward</th><th class="gc">Comments</th><th>Discussions</th><th>Issues</th><th>PRs</th><th title="Fixing main, reverts, and the author's breaking-main penalty">Main health</th><th class="gs">Reviews</th><th>Merges</th><th>Stewardship</th><th title="Approver and merger breaking-main penalties">Penalties</th></tr></thead><tbody id="tb"></tbody></table></div>
 <div class="panel" id="breaks"></div>
 <p class="dim" style="font-size:11px;text-align:center;margin-top:4px">Points depend on the kind of action, never its size. <a href="#" onclick="openRules();return false">How points work</a></p>
 </div>
@@ -121,7 +121,7 @@ td.pts.soft{color:var(--muted);font-weight:500}
 let D=null,views=[],cur=null;
 const CATS=['comments','discussions','issues','prs','main','reviews','merges','stewardship','penalties'];
 const C_CATS=['comments','discussions','issues','prs','main'],S_CATS=['reviews','merges','stewardship'];
-let rankBy='contributor';
+let rankBy='total';
 const LABEL={discussion_comment:'Discussion comment',issue_comment:'Issue comment',pr_comment:'PR comment',discussion_open:'Started discussion',discussion_answer:'Accepted answer',issue_open:'Opened issue',issue_confirmed:'Issue confirmed',issue_fixed:'Issue fixed',pr_open:'Opened PR',pr_merged:'PR merged',pr_closes_issue:'PR closes issue',pr_tests:'PR adds tests',first_merged_pr:'First merged PR',review_approve:'Approved',review_changes:'Requested changes',review_comment:'Review comments',merge_other:'Merged a PR',main_fixed:'Fixed main',revert_merged:'Revert merged',issue_triaged:'Triaged an issue',issue_closed:'Closed an issue',pr_shepherd:'Shepherded a PR',review_first_fast:'First review within 24h',release_published:'Published a release',break_approver:'Approved a break',break_author:'Broke main',break_merger:'Merged a break',break_self_fix:'Fixed own break',spam:'Spam/invalid'};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const refUrl=r=>{const [t,n]=r.split('#');return `https://github.com/${D.repo}/${t==='pr'?'pull':t==='discussion'?'discussions':t==='release'?'releases/tag':'issues'}/${n}`};
@@ -149,21 +149,26 @@ function render(){
     (top?card(top,isCur?'Leading contributor this week':all?'All-time contributor':`Contributor of the week &middot; ${esc(w.tag)}`,top.points,'contributor points',catLine(top,C_CATS)):'')+
     (stew?card(stew,isCur?'Leading steward this week':all?'All-time steward':`Steward of the week &middot; ${esc(w.tag)}`,stew.steward,'steward points',
       catLine(stew,[...S_CATS,'penalties'])):'')+'</div>';
-  document.getElementById('tbl-title').innerHTML=`Standings &middot; ${esc(v.name)} <span class="seg"><span class="${rankBy==='contributor'?'on':''}" onclick="rankBy='contributor';render()">Contributor</span><span class="${rankBy==='steward'?'on':''}" onclick="rankBy='steward';render()">Steward</span></span>`;
-  const rows=rankBy==='steward'?st.slice().sort((a,b)=>(b.steward-a.steward)||a.login.localeCompare(b.login)):st;
-  const leadLogin=rankBy==='steward'?(stew&&stew.login):(top&&top.login);
+  document.getElementById('tbl-title').innerHTML=`Standings &middot; ${esc(v.name)} <span class="seg"><span class="${rankBy==='total'?'on':''}" onclick="rankBy='total';render()">Total</span><span class="${rankBy==='contributor'?'on':''}" onclick="rankBy='contributor';render()">Contributor</span><span class="${rankBy==='steward'?'on':''}" onclick="rankBy='steward';render()">Steward</span></span>`;
+  const tot=r=>r.total!=null?r.total:r.points+(r.steward||0);
+  const rows=rankBy==='steward'?st.slice().sort((a,b)=>(b.steward-a.steward)||a.login.localeCompare(b.login))
+    :rankBy==='total'?st.slice().sort((a,b)=>(tot(b)-tot(a))||a.login.localeCompare(b.login)):st;
+  // Total has no award of its own; rank the eligible in total order.
+  const totRank={};let tr=0;for(const r of rows)if(rankBy==='total'&&r.eligible)totRank[r.login]=++tr;
+  const leadLogin=rankBy==='steward'?(stew&&stew.login):rankBy==='total'?(rows.find(r=>r.eligible)||{}).login:(top&&top.login);
   let h='';
   rows.forEach((r,i)=>{
-    const lead=r.login===leadLogin,rk=rankBy==='steward'?r.steward_rank:r.rank;
+    const lead=r.login===leadLogin,rk=rankBy==='steward'?r.steward_rank:rankBy==='total'?totRank[r.login]:r.rank;
     h+=`<tr class="row${lead?' lead':''}" onclick="tog(${i})"><td class="rank">${r.eligible&&rk?(lead?'<span class="gold">1</span>':rk):'&mdash;'}</td>`+
       `<td><div class="who"><img src="${esc(r.avatar||`https://github.com/${r.login}.png`)}" alt="" loading="lazy"><b>${esc(r.login)}</b>${r.eligible?'':`<span class="badge" title="Scored and shown, but not eligible to win">MAINTAINER &middot; NOT ELIGIBLE</span>`}</div></td>`+
-      `<td class="pts${r.points<0?' neg':''}${rankBy==='steward'?' soft':''}">${r.points}</td><td class="pts${r.steward<0?' neg':''}${rankBy==='steward'?'':' soft'}">${r.steward||'<span class="zero">·</span>'}</td>`+
+      `<td class="pts${tot(r)<0?' neg':''}${rankBy==='total'?'':' soft'}">${tot(r)}</td>`+
+      `<td class="pts${r.points<0?' neg':''}${rankBy==='contributor'?'':' soft'}">${r.points}</td><td class="pts${r.steward<0?' neg':''}${rankBy==='steward'?'':' soft'}">${r.steward||'<span class="zero">·</span>'}</td>`+
       CATS.map((c,ci)=>`<td class="${ci===0?'gc':ci===5?'gs':''}">${num(r.cats[c]||0)}</td>`).join('')+`</tr>`+
-      `<tr class="ev" id="ev${i}" style="display:none"><td colspan="13"><div class="evs">`+
+      `<tr class="ev" id="ev${i}" style="display:none"><td colspan="14"><div class="evs">`+
       (r.event_count>r.events.length?`<span class="dim" style="grid-column:1/-1">Newest ${r.events.length} of ${r.event_count} entries</span>`:'')+r.events.map(e=>`<span class="dim">${fmtD(e.at)}</span><span>${esc(LABEL[e.rule]||e.rule)}</span><span style="text-align:right" class="${e.points<0?'neg':''}">${e.points>0?'+':''}${e.points}</span>`+
         `<span><a href="${refUrl(e.ref)}" target="_blank">${esc(e.ref.replace('discussion','disc'))}</a> <span class="dim">${esc(e.note||'')}</span></span>`).join('')+`</div></td></tr>`;
   });
-  document.getElementById('tb').innerHTML=h||'<tr><td colspan="13" class="dim" style="text-align:left">No activity in this window yet.</td></tr>';
+  document.getElementById('tb').innerHTML=h||'<tr><td colspan="14" class="dim" style="text-align:left">No activity in this window yet.</td></tr>';
   const brks=(D.breaks||[]).filter(b=>(!w.start||b.at>=w.start)&&(!w.end||b.at<w.end)&&b.pr).slice().reverse();
   document.getElementById('breaks').innerHTML=`<div class="ph"><span>Main breaks in this window</span><span class="dim" style="text-transform:none;letter-spacing:0;font-weight:400">${brks.length} counted</span></div>`+
     (brks.length?brks.map(b=>`<div class="brk"><span class="dim">${fmtD(b.at)}</span><a href="${refUrl('pr#'+b.pr)}" target="_blank">#${b.pr}</a><span title="${esc((b.new||[]).join(', '))}">${esc(b.workflow.replace('.yml',''))} ${b.first===false?'new failure while red':'red'} at <a href="${esc(b.url)}" target="_blank">${esc(b.sha.slice(0,7))}</a> <span class="dim">${esc((b.new||[]).slice(0,3).join(', ')||b.cause)}${(b.new||[]).length>3?` +${b.new.length-3} more`:''}</span></span><span class="dim">${b.fixed_at?'green again '+fmtD(b.fixed_at):'still red'}</span></div>`).join(''):'<p class="dim">None. Main stayed green.</p>');
