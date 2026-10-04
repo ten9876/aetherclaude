@@ -437,10 +437,22 @@ def collect(gh, db, since):
     print(f'  step: main-branch ci verdicts ({gh.calls} calls)', file=sys.stderr, flush=True)
     # Main-branch CI verdicts (the break detector), with the cause of each
     # failure so infrastructure failures can be excluded.
-    lookback = (datetime.fromisoformat(since.replace('Z', '+00:00')) - timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    # The runs API returns at most 1,000 runs per query, so long ranges are
+    # fetched a month at a time.
+    start = datetime.fromisoformat(since.replace('Z', '+00:00')) - timedelta(days=2)
+    now = datetime.now(timezone.utc)
+    spans = []
+    while start < now:
+        end = min(start + timedelta(days=30), now + timedelta(days=1))
+        spans.append(f"{start.strftime('%Y-%m-%dT%H:%M:%SZ')}..{end.strftime('%Y-%m-%dT%H:%M:%SZ')}")
+        start = end
+
+    def month_runs(wf):
+        for span in spans:
+            yield from gh.pages(f'repos/{REPO}/actions/workflows/{wf}/runs?branch=main&event=push&per_page=100'
+                                f'&created={q(span)}')
     for wf in BREAK_WORKFLOWS:
-        for r in gh.pages(f'repos/{REPO}/actions/workflows/{wf}/runs?branch=main&event=push&per_page=100'
-                          f'&created=%3E%3D{q(lookback)}'):
+        for r in month_runs(wf):
             if r.get('status') != 'completed':
                 continue
             known = db.execute('SELECT cause, sig FROM runs WHERE id=?', (r['id'],)).fetchone()
