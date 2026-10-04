@@ -266,3 +266,13 @@ time; the leader (or the week's winner) at the top; a row per person with
 points by category, the maintainer in score order but unranked, with a
 **MAINTAINER** badge (its tooltip says the maintainer can't win); each row expands into the point-by-point ledger; the main
 breaks in the window; and the rules.
+
+Clicking a row opens the person's **bio** beside their activity log for the
+window shown: avatar, name, GitHub login and callsign (found in the login,
+profile name or bio; linked to QRZ.com), core/maintainer/backer badges, when
+they started contributing and their first merged PR, lifetime counts (issues,
+PRs opened and merged, comments, reviews, merges for others, discussions),
+any donation, how often they were contributor, steward or backer of the
+week, and the areas they work in most (their issues' and PRs' area labels).
+The collector keeps public GitHub profiles for this (`profiles`), refreshed
+monthly.
