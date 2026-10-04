@@ -29,8 +29,10 @@ th{font-size:11px;font-weight:500;color:var(--muted-dim);text-align:right;paddin
 th:nth-child(-n+3){text-align:left}
 td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:right;font-family:var(--mono);font-size:12px;white-space:nowrap}
 td:nth-child(-n+3){text-align:left;font-family:var(--sans)}
-th.ic,td.ic{width:48px;padding-left:4px;padding-right:4px;white-space:nowrap;text-align:left}
-td.ic>span{vertical-align:middle;margin-right:4px}
+th.ic,td.ic{width:1%;padding-left:2px;padding-right:2px;white-space:nowrap;text-align:left}
+td.ic>span{vertical-align:middle;margin-right:2px}
+/* The shield matches the 1st rosette's height in the table. */
+td.ic .core svg{width:24px;height:24px}
 tr.row{cursor:pointer}
 tr.row:hover td{background:var(--bg-2)}
 tr.lead td{background:rgba(224,184,74,.07)}
