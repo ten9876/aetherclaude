@@ -1926,7 +1926,7 @@ def fetch_main_ci(opener, hdrs, publish=None, prev=None):
             # A cancelled/skipped run is not a verdict on main; prefer the
             # newest run that actually concluded success or failure.
             latest = runs[0] if runs else None
-            rec['history'] = [{'sha': (r.get('head_sha') or '')[:7], 'status': r.get('status', ''),
+            rec['history'] = [{'id': r['id'], 'sha': (r.get('head_sha') or '')[:7], 'status': r.get('status', ''),
                                'conclusion': r.get('conclusion'), 'created_at': r.get('created_at', ''),
                                'url': r.get('html_url', '')} for r in reversed(runs[:10])]
             rec['url'] = f'https://github.com/{MAIN_CI_REPO}/actions/workflows/{path.split("/")[-1]}' \
@@ -1941,6 +1941,22 @@ def fetch_main_ci(opener, hdrs, publish=None, prev=None):
                 keep_runs.add(completed['id'])
             elif completed is latest:
                 rec['last_completed'] = rec['latest']
+            # Failed runs in the recent strip carry their failing jobs (step,
+            # failed tests, tracking issue), so a red run stays explainable
+            # after a newer run has gone green. Completed runs are cached.
+            for hx in rec['history']:
+                if hx['status'] != 'completed' or hx['conclusion'] not in ('failure', 'timed_out', 'startup_failure'):
+                    continue
+                try:
+                    rr = _main_ci_run(opener, hdrs, next(r for r in runs if r['id'] == hx['id']))
+                    keep_runs.add(hx['id'])
+                    hx['failures'] = [{'job': j['name'], 'conclusion': j.get('conclusion'),
+                                       'failed_step': j.get('failed_step'), 'issue': j.get('issue'),
+                                       'failed_tests': j.get('failed_tests') or [], 'url': j.get('url')}
+                                      for j in rr['jobs'] if j.get('status') == 'completed'
+                                      and j.get('conclusion') in ('failure', 'timed_out')]
+                except Exception as _e:
+                    _log_exc('main_ci_history_failures', _e)
             runs_by_key[key] = runs
             if prev_wf.get(key, {}).get('perf'):
                 rec['perf'] = prev_wf[key]['perf']
@@ -1953,6 +1969,7 @@ def fetch_main_ci(opener, hdrs, publish=None, prev=None):
         _main_ci_jobs_cache.pop(rid, None)
     live_jobs = {j['id'] for w in out['workflows'] for r in (w['latest'], w['last_completed'])
                  if r for j in r['jobs']}
+    live_jobs |= {j['id'] for rid in keep_runs for j in (_main_ci_jobs_cache.get(rid) or [])}
     for jid in [k for k in _main_ci_tests_cache if k not in live_jobs]:
         _main_ci_tests_cache.pop(jid, None)
     if publish:
@@ -4900,6 +4917,18 @@ function mciHitCell(f){
   if(f.hit_pct==null)return `<span style="color:#5f708a" title="${mciU(f.ref==='main'?'not a compiler cache, or no stats parsed yet':'not tracked off main')}">—</span>`;
   const c=f.hit_pct>=90?'var(--good)':f.hit_pct>=70?'var(--warn)':'var(--crit)';
   return `<span style="font-weight:600;color:${c}" title="${mciU(`${f.job} · latest ${f.tool} run`+(f.avg_hit_pct!=null?` · ${f.avg_hit_pct}% average`:''))}">${f.hit_pct}%</span>`}
+// One failed job: name, issue link, then each failed test on its own line
+// (or the step the job stopped at when no test list exists).
+function mciJobFailHtml(f,repo){
+  const ft=f.failed_tests||[],U=mciU;
+  let h=`<div class="x-mci-fail"><b style="color:var(--ink-soft)">${esc(String(f.job))}</b>`+
+    (ft.length?` &middot; ${ft.length} test${ft.length===1?'':'s'} failed`
+              :(f.failed_step?` &middot; failed at step <i>${esc(String(f.failed_step))}</i>`:` &middot; ${esc(String(f.conclusion||'failed'))}`))+
+    (f.issue?` &middot; <a href="https://github.com/${U(repo)}/issues/${f.issue}" target="_blank">#${f.issue} &#x2197;</a>`:'');
+  for(const t of ft)
+    h+=`<div style="margin:3px 0 0 12px;font-family:var(--mono);color:var(--crit);overflow-wrap:anywhere">${esc(t.name)}${t.status?` <span style="color:#8598b4">(${esc(t.status)})</span>`:''}</div>`;
+  return h+'</div>';
+}
 function mciGb(b){return (b/1073741824).toFixed(b>=10737418240?0:2)+' GB'}
 const MCI_SEC='border-top:1px solid var(--line);margin-top:14px;padding-top:10px';
 const MCI_HDR='font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:6px';
@@ -4962,11 +4991,7 @@ function showMainCiCheck(i){
       const js=j.status!=='completed'?['','var(--accent)']:(MCI_ST[j.conclusion]||['','var(--warn)']);
       jobs+=`<a class="x-mci-job" href="${U(j.url)}" target="_blank" title="${U(j.status==='completed'?j.conclusion:j.status)}"><span class="d" style="background:${js[1]}"></span>${esc(String(j.name))}</a>`;
       if(j.status==='completed'&&j.conclusion&&j.conclusion!=='success'&&j.conclusion!=='skipped'){
-        const ft=j.failed_tests||[];
-        fails+=`<div class="x-mci-fail"><b style="color:var(--ink-soft)">${esc(String(j.name))}</b>`+
-          (ft.length?` &middot; ${ft.length} test${ft.length===1?'':'s'} failed:<br>`+ft.map(t=>`<code title="${U(t.status)}">${esc(t.name)}${t.status&&t.status!=='Failed'?' ('+esc(t.status)+')':''}</code>`).join('')
-                    :(j.failed_step?` &middot; failed at step <i>${esc(String(j.failed_step))}</i>`:` &middot; ${esc(String(j.conclusion))}`))+
-          (j.issue?` &middot; <a href="https://github.com/${U(m.repo)}/issues/${j.issue}" target="_blank">#${j.issue} &#x2197;</a>`:'')+`</div>`;
+        fails+=mciJobFailHtml({job:j.name,conclusion:j.conclusion,failed_step:j.failed_step,issue:j.issue,failed_tests:j.failed_tests},m.repo);
       }
     }
     return `<div class="x-mci-jobs" style="margin-top:8px">${jobs}${fails}</div>`;
@@ -4982,7 +5007,10 @@ function showMainCiCheck(i){
   if(hist.length){
     h+='<div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px"><div style="font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:6px">RECENT RUNS ON MAIN</div>';
     for(const x of hist){const st=mciSt(x);
-      h+=`<div style="display:flex;gap:10px;align-items:center;padding:3px 2px;border-bottom:1px solid var(--line);font-size:11px"><span style="color:${st[1]};width:80px;font-weight:600">${st[0]}</span><a href="${U(x.url)}" target="_blank" style="color:#5de3ff;text-decoration:none;font-family:var(--mono)">${esc(x.sha)}</a><span style="color:#5f708a;margin-left:auto">${mciAgo(x.created_at)}</span></div>`}
+      h+=`<div style="display:flex;gap:10px;align-items:center;padding:3px 2px;border-bottom:1px solid var(--line);font-size:11px"><span style="color:${st[1]};width:80px;font-weight:600">${st[0]}</span><a href="${U(x.url)}" target="_blank" style="color:#5de3ff;text-decoration:none;font-family:var(--mono)">${esc(x.sha)}</a><span style="color:#5f708a;margin-left:auto">${mciAgo(x.created_at)}</span></div>`;
+      if(x.failures&&x.failures.length)
+        h+=`<div style="padding:2px 2px 8px 92px;border-bottom:1px solid var(--line)">${x.failures.map(f=>mciJobFailHtml(f,m.repo)).join('')}</div>`;
+    }
     h+='</div>';
   }
   h+=`<div class="detail" style="margin-top:12px;color:#8598b4"><a href="${U(w.url)}" target="_blank" style="color:#5de3ff;text-decoration:none">All ${esc(w.name)} runs &#x2197;</a> &middot; refreshed ${mciAgo(m.fetched_at)}</div>`;
