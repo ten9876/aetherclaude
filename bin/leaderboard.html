@@ -18,6 +18,7 @@ h1{font-size:20px;font-weight:400;color:var(--accent-bright);letter-spacing:.5px
 .hero .t{grid-area:t;font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--gold);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hero .n{grid-area:n;font-size:22px;color:var(--ink);font-weight:600;margin-top:2px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hero .d{grid-area:d;margin-top:2px;min-width:0}
+.hero.nod{grid-template-areas:"img t t" "img n p"}
 .hero .p{grid-area:p;text-align:right;align-self:center}
 .hero .p b{font-size:28px;color:var(--ink);font-weight:600;display:block}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px 16px;margin-bottom:14px;overflow-x:auto}
@@ -149,13 +150,12 @@ function render(){
   const stew=st.filter(r=>r.steward_rank).sort((a,b)=>a.steward_rank-b.steward_rank)[0];
   const back=st.filter(r=>r.backer_rank).sort((a,b)=>a.backer_rank-b.backer_rank)[0];
   const isCur=w.tag==='current',all=!w.tag;
-  const card=(r,title,val,unit,detail)=>`<div class="hero"><img src="${esc(avatarOf(r))}" alt=""><div class="t">${title}</div><div class="n">${esc(r.name||r.login)}</div>`+
-    `<div class="d dim">${detail}</div><div class="p"><b>${val}</b><span class="dim">${unit}</span></div></div>`;
-  const catLine=(r,cats)=>cats.filter(c=>r.cats[c]).map(c=>`${c==='prs'?'PRs':c==='main'?'main health':c==='cpenalties'?'penalties':c} ${r.cats[c]}`).join(' &middot; ');
+  const card=(r,title,val,unit,detail)=>`<div class="hero${detail?'':' nod'}"><img src="${esc(avatarOf(r))}" alt=""><div class="t">${title}</div><div class="n">${esc(r.name||r.login)}</div>`+
+    (detail?`<div class="d dim">${detail}</div>`:'')+`<div class="p"><b>${val}</b><span class="dim">${unit}</span></div></div>`;
   document.getElementById('hero').innerHTML='<div class="heroes">'+
-    (top?card(top,isCur?'Leading contributor this week':all?'All-time contributor':`Contributor of the week &middot; ${esc(w.tag)}`,top.points,'contributor points',catLine(top,C_CATS)):'')+
+    (top?card(top,isCur?'Leading contributor this week':all?'All-time contributor':`Contributor of the week &middot; ${esc(w.tag)}`,top.points,'contributor points',''):'')+
     (stew?card(stew,isCur?'Leading steward this week':all?'All-time steward':`Steward of the week &middot; ${esc(w.tag)}`,stew.steward,'steward points',
-      catLine(stew,[...S_CATS,'penalties'])):'')+
+      ''):'')+
     (back?card(back,isCur?'Leading backer this week':all?'All-time backer':`Backer of the week &middot; ${esc(w.tag)}`,back.backer,'backer points',
       `$${(back.backer/10).toLocaleString(undefined,{maximumFractionDigits:2})} given on Open Collective`):'')+'</div>';
   document.getElementById('tbl-title').innerHTML=`Standings &middot; ${esc(v.name)} <span class="seg"><span class="${rankBy==='total'?'on':''}" onclick="rankBy='total';render()">Total</span><span class="${rankBy==='contributor'?'on':''}" onclick="rankBy='contributor';render()">Contributor</span><span class="${rankBy==='steward'?'on':''}" onclick="rankBy='steward';render()">Steward</span><span class="${rankBy==='backer'?'on':''}" onclick="rankBy='backer';render()">Backer</span></span>`;
