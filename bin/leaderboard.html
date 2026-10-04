@@ -31,6 +31,7 @@ tr.lead td{background:rgba(224,184,74,.07)}
 .who{display:flex;align-items:center;gap:8px}
 .who img{width:22px;height:22px;border-radius:50%}
 .who b{color:var(--ink);font-weight:600}
+.badge.backer{color:var(--gold);border-color:var(--gold)}
 .badge{font-size:10px;font-weight:700;letter-spacing:.3px;border:1px solid var(--muted);color:var(--muted);border-radius:4px;padding:0 5px;font-family:var(--sans)}
 .pts{font-weight:700;color:var(--ink);font-size:13px}
 .neg{color:var(--crit)!important}
@@ -164,10 +165,11 @@ function render(){
   const totRank={};let tr=0;for(const r of rows)if(rankBy==='total'&&r.eligible)totRank[r.login]=++tr;
   const leadLogin=rankBy==='steward'?(stew&&stew.login):rankBy==='backer'?(back&&back.login):rankBy==='total'?(rows.find(r=>r.eligible)||{}).login:(top&&top.login);
   let h='';
+  const backers=new Set((D.all_time||[]).filter(x=>x.backer>0).map(x=>x.login));
   rows.forEach((r,i)=>{
     const lead=r.login===leadLogin,rk=rankBy==='steward'?r.steward_rank:rankBy==='backer'?r.backer_rank:rankBy==='total'?totRank[r.login]:r.rank;
     h+=`<tr class="row${lead?' lead':''}" onclick="tog(${i})"><td class="rank">${r.eligible&&rk?(lead?'<span class="gold">1</span>':rk):'&mdash;'}</td>`+
-      `<td><div class="who"><img src="${esc(avatarOf(r))}" alt="" loading="lazy"><b>${esc(r.name||r.login)}</b>${r.login.startsWith('oc:')?'<span class="badge" title="Open Collective backer without a linked GitHub account">BACKER</span>':''}${r.eligible?'':`<span class="badge" title="Scored and shown, but not eligible to win">MAINTAINER &middot; NOT ELIGIBLE</span>`}</div></td>`+
+      `<td><div class="who"><img src="${esc(avatarOf(r))}" alt="" loading="lazy"><b>${esc(r.name||r.login)}</b>${backers.has(r.login)?`<span class="badge backer" title="${r.login.startsWith('oc:')?'Supports AetherSDR on Open Collective (no linked GitHub account)':'Supports AetherSDR on Open Collective'}">BACKER</span>`:''}${r.eligible?'':`<span class="badge" title="Scored and shown, but not eligible to win">MAINTAINER &middot; NOT ELIGIBLE</span>`}</div></td>`+
       `<td class="pts${tot(r)<0?' neg':''}${rankBy==='total'?'':' soft'}">${tot(r)}</td>`+
       `<td class="pts${r.points<0?' neg':''}${rankBy==='contributor'?'':' soft'}">${r.points}</td><td class="pts${r.steward<0?' neg':''}${rankBy==='steward'?'':' soft'}">${r.steward||'<span class="zero">·</span>'}</td>`+
       `<td class="pts${rankBy==='backer'?'':' soft'}">${r.backer||'<span class="zero">·</span>'}</td>`+
