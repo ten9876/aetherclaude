@@ -1567,6 +1567,211 @@ MAIN_CI_WORKFLOWS = [
 _main_ci_jobs_cache = {}    # run_id -> jobs list (completed runs only)
 _main_ci_tests_cache = {}   # job_id -> {'issue': N|None, 'tests': [...]}
 _main_ci_wf_ids = {}        # dynamic workflow path -> numeric id
+# Build-performance history: run_id -> {'dur', 'conclusion', 'created_at',
+# 'sha', 'jobs': {name: {'dur', 'conclusion', 'id'}}} for completed runs, and
+# job_id -> parsed compiler-cache stats (None when the log has none). Both
+# are immutable once a run completes; bounded to the recent window below.
+MAIN_CI_PERF_RUNS = 20      # runs per workflow behind the averages
+MAIN_CI_CACHE_RUNS = 10     # newest runs whose job logs are parsed
+# Workflows whose jobs build with ccache/sccache; their logs are parsed.
+MAIN_CI_CACHE_WORKFLOWS = {'ci', 'full-suite', 'canary'}
+MAIN_CI_LOGS_PER_POLL = 8   # backfill budget, so the tiles never wait on it
+_main_ci_perf = {}
+_main_ci_cache_stats = {}
+_main_ci_log_failures = defaultdict(int)
+
+def _iso_secs(a, b):
+    try:
+        ta = datetime.fromisoformat(a.replace('Z', '+00:00'))
+        tb = datetime.fromisoformat(b.replace('Z', '+00:00'))
+        d = (tb - ta).total_seconds()
+        return d if d >= 0 else None
+    except Exception:
+        return None
+
+_LOG_TS_RE = re.compile(r'^\d{4}-\d\d-\d\dT[\d:.]+Z ?')
+_SIZE_RE = re.compile(r'([\d.]+)\s*(B|KiB|MiB|GiB|TiB|KB|MB|GB|TB)\b')
+_SIZE_MULT = {'B': 1e-9, 'KB': 1e-6, 'MB': 1e-3, 'GB': 1, 'TB': 1e3,
+              'KiB': 1024 / 1e9, 'MiB': 1024**2 / 1e9, 'GiB': 1024**3 / 1e9, 'TiB': 1024**4 / 1e9}
+
+def _gb(text):
+    m = _SIZE_RE.search(text)
+    return round(float(m.group(1)) * _SIZE_MULT[m.group(2)], 3) if m else None
+
+def _parse_cache_stats(log):
+    """Compiler-cache summary from a job log: the last `ccache -s` block or
+    the first `sccache --show-stats` block, plus the compiler cache key the
+    job restored. None when the log carries neither."""
+    cc = sc = None
+    block = None
+    restored = None
+    for raw in log.splitlines():
+        line = _LOG_TS_RE.sub('', raw).rstrip()
+        st = line.strip()
+        m = re.match(r'Cache restored from key: (\S+)', st)
+        if m and re.match(r's?ccache', m.group(1)):
+            restored = m.group(1)
+        if st.startswith('Cacheable calls:'):
+            block = {'tool': 'ccache'}
+            cc = block
+            continue
+        if block is not None and block.get('tool') == 'ccache':
+            m = re.match(r'(Hits|Misses):\s+(\d+)\s*/\s*(\d+)', st)
+            if m and m.group(1).lower() not in block:
+                block[m.group(1).lower()] = int(m.group(2))
+                block['requests'] = int(m.group(3))
+                continue
+            m = re.match(r'Cache size \(GB\):\s+([\d.]+)\s*/\s*([\d.]+)', st)
+            if m:
+                block['size_gb'], block['max_gb'] = float(m.group(1)), float(m.group(2))
+                continue
+            m = re.match(r'Cleanups:\s+(\d+)', st)
+            if m:
+                block['cleanups'] = int(m.group(1))
+                continue
+            if st and not re.match(r'(Direct|Preprocessed|Local storage|Remote storage|Errors|Uncacheable)', st):
+                block = None
+        if sc is None and st.startswith('Compile requests executed'):
+            sc = {'tool': 'sccache'}
+            block = sc
+            continue
+        if block is not None and block is sc:
+            for k, pat in (('hits', r'Cache hits\s+(\d+)$'), ('misses', r'Cache misses\s+(\d+)$')):
+                mm = re.match(pat, st)
+                if mm and k not in sc:
+                    sc[k] = int(mm.group(1))
+            if st.startswith('Cache size') and 'size_gb' not in sc:
+                sc['size_gb'] = _gb(st)
+            elif st.startswith('Max cache size') and 'max_gb' not in sc:
+                sc['max_gb'] = _gb(st)
+                block = None
+    out = sc if sc and 'hits' in sc else (cc if cc and 'hits' in cc else None)
+    if out:
+        if 'requests' not in out:
+            out['requests'] = out.get('hits', 0) + out.get('misses', 0)
+        out['hit_pct'] = round(100.0 * out['hits'] / out['requests'], 1) if out['requests'] else None
+        out['restored'] = restored
+    return out
+
+import urllib.request as _urlreq
+
+class _NoRedirect(_urlreq.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+def _main_ci_job_log(hdrs, job_id, max_bytes=24 * 1024 * 1024):
+    """Job log text. The API answers 302 to a pre-signed storage URL, which
+    is fetched WITHOUT the GitHub Authorization header (the storage service
+    rejects foreign auth headers)."""
+    import urllib.request, urllib.error
+    proxy = urllib.request.ProxyHandler({'https': 'http://127.0.0.1:8888'})
+    url = f'https://api.github.com/repos/{MAIN_CI_REPO}/actions/jobs/{job_id}/logs'
+    try:
+        urllib.request.build_opener(proxy, _NoRedirect).open(
+            urllib.request.Request(url, headers=hdrs), timeout=15)
+        raise ValueError('job log: expected a redirect')
+    except urllib.error.HTTPError as e:
+        if e.code not in (301, 302, 303, 307) or not e.headers.get('Location'):
+            raise
+        loc = e.headers['Location']
+    with urllib.request.build_opener(proxy).open(
+            urllib.request.Request(loc, headers={'User-Agent': 'AetherClaude-Dashboard'}), timeout=60) as r:
+        return r.read(max_bytes).decode('utf-8', 'replace')
+
+def _main_ci_perf_record(opener, hdrs, w):
+    rid = w['id']
+    if rid in _main_ci_perf:
+        return _main_ci_perf[rid]
+    jobs = _main_ci_jobs_cache.get(rid)
+    if jobs is None:
+        jobs = [{'id': j.get('id'), 'name': j.get('name', ''), 'conclusion': j.get('conclusion'),
+                 'started_at': j.get('started_at'), 'completed_at': j.get('completed_at')}
+                for j in _main_ci_get(opener, hdrs, f'actions/runs/{rid}/jobs?per_page=100').get('jobs', [])]
+    rec = {'dur': _iso_secs(w.get('run_started_at') or w.get('created_at', ''), w.get('updated_at', '')),
+           'conclusion': w.get('conclusion'), 'created_at': w.get('created_at', ''),
+           'sha': (w.get('head_sha') or '')[:7],
+           'jobs': {j['name']: {'id': j['id'], 'conclusion': j.get('conclusion'),
+                                'dur': _iso_secs(j.get('started_at') or '', j.get('completed_at') or '')}
+                    for j in jobs}}
+    _main_ci_perf[rid] = rec
+    return rec
+
+def _avg(xs):
+    xs = [x for x in xs if x is not None]
+    return round(sum(xs) / len(xs), 1) if xs else None
+
+def _main_ci_perf_summary(opener, hdrs, key, runs, budget):
+    """Average run/job durations over the recent successful runs on main,
+    and compiler-cache stats per job for the newest runs."""
+    done = [r for r in runs if r.get('status') == 'completed'
+            and r.get('conclusion') not in ('cancelled', 'skipped')][:MAIN_CI_PERF_RUNS]
+    recs = []
+    for i, r in enumerate(done):
+        try:
+            pr = _main_ci_perf_record(opener, hdrs, r)
+        except Exception as _e:
+            _log_exc('main_ci_perf', _e)
+            continue
+        recs.append(pr)
+        if key in MAIN_CI_CACHE_WORKFLOWS and i < MAIN_CI_CACHE_RUNS:
+            for name, j in pr['jobs'].items():
+                jid = j['id']
+                if (jid in _main_ci_cache_stats or j['conclusion'] in ('skipped', 'cancelled')
+                        or _main_ci_log_failures[jid] >= 3 or budget[0] <= 0):
+                    continue
+                budget[0] -= 1
+                try:
+                    _main_ci_cache_stats[jid] = _parse_cache_stats(_main_ci_job_log(hdrs, jid))
+                except Exception as _e:
+                    _main_ci_log_failures[jid] += 1
+                    _log_exc('main_ci_job_log', _e)
+    ok = [p for p in recs if p['conclusion'] == 'success']
+    names = []
+    for p in recs:
+        for n in p['jobs']:
+            if n not in names:
+                names.append(n)
+    jobs = []
+    for n in names:
+        okj = [p['jobs'][n] for p in ok if n in p['jobs'] and p['jobs'][n]['conclusion'] == 'success']
+        cs = [(p['created_at'], p['sha'], _main_ci_cache_stats.get(p['jobs'][n]['id']))
+              for p in recs[:MAIN_CI_CACHE_RUNS] if n in p['jobs']]
+        cs = [c for c in cs if c[2]]
+        jobs.append({'name': n, 'n': len(okj),
+                     'avg_s': _avg([j['dur'] for j in okj]),
+                     'last_s': okj[0]['dur'] if okj else None,
+                     'durations': [j['dur'] for j in reversed(okj)][-MAIN_CI_PERF_RUNS:],
+                     'cache': dict(cs[0][2], sha=cs[0][1]) if cs else None,
+                     'cache_avg_hit_pct': _avg([c[2].get('hit_pct') for c in cs]),
+                     'cache_hits': [c[2].get('hit_pct') for c in reversed(cs)],
+                     'cache_n': len(cs)})
+    return {'runs': len(ok), 'avg_run_s': _avg([p['dur'] for p in ok]),
+            'last_run_s': ok[0]['dur'] if ok else None,
+            'run_durations': [p['dur'] for p in reversed(ok)], 'jobs': jobs}
+
+def _main_ci_actions_cache(opener, hdrs):
+    """Repo-wide GitHub Actions cache storage, grouped into cache families
+    (key minus its run-id / timestamp / content-hash suffix)."""
+    usage = _main_ci_get(opener, hdrs, 'actions/cache/usage')
+    caches = []
+    for page in (1, 2, 3):
+        d = _main_ci_get(opener, hdrs, f'actions/caches?per_page=100&page={page}&sort=size_in_bytes')
+        caches += d.get('actions_caches', [])
+        if len(caches) >= d.get('total_count', 0):
+            break
+    fam = {}
+    for c in caches:
+        k = c.get('key', '')
+        k = re.sub(r'-\d{4}-\d\d-\d\dT[\d:.]+Z$', '', k)
+        k = re.sub(r'-(\d{8,}|[0-9a-f]{16,})$', '', k)
+        ref = (c.get('ref') or '').replace('refs/heads/', '').replace('refs/', '')
+        f = fam.setdefault((k, ref), {'family': k, 'ref': ref, 'count': 0, 'bytes': 0, 'last_accessed': ''})
+        f['count'] += 1
+        f['bytes'] += c.get('size_in_bytes', 0) or 0
+        f['last_accessed'] = max(f['last_accessed'], c.get('last_accessed_at') or '')
+    fams = sorted(fam.values(), key=lambda f: -f['bytes'])
+    return {'bytes': usage.get('active_caches_size_in_bytes'), 'count': usage.get('active_caches_count'),
+            'limit_bytes': 10 * 1024**3, 'families': fams[:25]}
 _FAILED_TEST_RE = re.compile(r'^\s*\d+\s+-\s+([A-Za-z0-9_.\-]+)\s+\(([^)]+)\)')
 
 def _parse_failed_tests(text, cap=60):
@@ -1671,7 +1876,12 @@ def fetch_main_ci(opener, hdrs):
                 _main_ci_wf_ids[wf.get('path')] = wf.get('id')
         except Exception as _e:
             _log_exc('main_ci_workflows', _e)
-    keep_runs = set()
+    keep_runs, keep_perf = set(), set()
+    log_budget = [MAIN_CI_LOGS_PER_POLL]
+    try:
+        out['actions_cache'] = _main_ci_actions_cache(opener, hdrs)
+    except Exception as _e:
+        _log_exc('main_ci_actions_cache', _e)
     for key, label, path, cadence in MAIN_CI_WORKFLOWS:
         rec = {'key': key, 'name': label, 'cadence': cadence, 'latest': None, 'last_completed': None}
         try:
@@ -1679,13 +1889,13 @@ def fetch_main_ci(opener, hdrs):
             if wid is None:
                 raise ValueError(f'workflow id unresolved for {path}')
             runs = _main_ci_get(opener, hdrs,
-                                f'actions/workflows/{wid}/runs?branch=main&per_page=10').get('workflow_runs', [])
+                                f'actions/workflows/{wid}/runs?branch=main&per_page={MAIN_CI_PERF_RUNS + 5}').get('workflow_runs', [])
             # A cancelled/skipped run is not a verdict on main; prefer the
             # newest run that actually concluded success or failure.
             latest = runs[0] if runs else None
             rec['history'] = [{'sha': (r.get('head_sha') or '')[:7], 'status': r.get('status', ''),
                                'conclusion': r.get('conclusion'), 'created_at': r.get('created_at', ''),
-                               'url': r.get('html_url', '')} for r in reversed(runs)]
+                               'url': r.get('html_url', '')} for r in reversed(runs[:10])]
             rec['url'] = f'https://github.com/{MAIN_CI_REPO}/actions/workflows/{path.split("/")[-1]}' \
                 if not path.startswith('dynamic/') else f'https://github.com/{MAIN_CI_REPO}/actions'
             completed = next((r for r in runs if r.get('status') == 'completed'
@@ -1698,6 +1908,11 @@ def fetch_main_ci(opener, hdrs):
                 keep_runs.add(completed['id'])
             elif completed is latest:
                 rec['last_completed'] = rec['latest']
+            try:
+                rec['perf'] = _main_ci_perf_summary(opener, hdrs, key, runs, log_budget)
+                keep_perf.update(r['id'] for r in runs)
+            except Exception as _e:
+                _log_exc(f'main_ci_perf_{key}', _e)
         except Exception as _e:
             rec['error'] = str(_e)[:120]
             _log_exc(f'main_ci_{key}', _e)
@@ -1709,6 +1924,13 @@ def fetch_main_ci(opener, hdrs):
                  if r for j in r['jobs']}
     for jid in [k for k in _main_ci_tests_cache if k not in live_jobs]:
         _main_ci_tests_cache.pop(jid, None)
+    for rid in [k for k in _main_ci_perf if k not in keep_perf]:
+        _main_ci_perf.pop(rid, None)
+    live_perf_jobs = {j['id'] for p in _main_ci_perf.values() for j in p['jobs'].values()}
+    for jid in [k for k in _main_ci_cache_stats if k not in live_perf_jobs]:
+        _main_ci_cache_stats.pop(jid, None)
+    for jid in [k for k in _main_ci_log_failures if k not in live_perf_jobs]:
+        _main_ci_log_failures.pop(jid, None)
     return out
 
 def main_ci_poller():
@@ -4587,6 +4809,61 @@ function renderMainCi(m){
   const key=tiles+Math.floor(Date.now()/60000);
   if(key!==lastMciHtml){lastMciHtml=key;el.innerHTML=tiles}
 }
+function mciDur(s){if(s==null)return '—';s=Math.round(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;
+  return h?`${h}h ${m}m`:(m?`${m}m ${String(x).padStart(2,'0')}s`:`${x}s`)}
+function mciGb(b){return (b/1073741824).toFixed(b>=10737418240?0:2)+' GB'}
+const MCI_SEC='border-top:1px solid var(--line);margin-top:14px;padding-top:10px';
+const MCI_HDR='font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:6px';
+const MCI_ROW='display:grid;gap:10px;align-items:center;padding:4px 2px;border-bottom:1px solid var(--line);font-size:11px;color:#c4d4e8';
+// Build time + compiler cache for one workflow, and (on the CI tile) the
+// repo's Actions cache storage. Durations average the recent SUCCESSFUL
+// runs on main (a failed build stops early and would drag the mean down).
+function mciPerfHtml(w,m){
+  const p=w.perf;let h='';
+  if(p&&p.jobs&&p.jobs.length){
+    h+=`<div style="${MCI_SEC}"><div style="${MCI_HDR}">BUILD TIME &middot; average of the last ${p.runs} successful run${p.runs===1?'':'s'} on main</div>`;
+    const cols='grid-template-columns:minmax(120px,1.4fr) 70px 90px 120px';
+    h+=`<div style="${MCI_ROW};${cols};color:#5f708a"><span>job</span><span>average</span><span>last</span><span>trend (oldest &rarr; newest)</span></div>`;
+    const row=(nm,avg,last,series,bold)=>{
+      const slow=avg&&last&&last>avg*1.15,fast=avg&&last&&last<avg*0.85;
+      return `<div style="${MCI_ROW};${cols}"><span style="${bold?'font-weight:600':''}">${esc(nm)}</span><span style="font-family:var(--mono)">${mciDur(avg)}</span>`+
+        `<span style="font-family:var(--mono);color:${slow?'var(--warn)':fast?'var(--good)':'inherit'}">${mciDur(last)}${slow?' &#9650;':fast?' &#9660;':''}</span>`+
+        `<span>${svgSparkline((series||[]).filter(x=>x!=null),120,22)}</span></div>`};
+    h+=row('Whole run (wall clock)',p.avg_run_s,p.last_run_s,p.run_durations,true);
+    for(const j of p.jobs)h+=row(j.name,j.avg_s,j.last_s,j.durations,false);
+    if(!p.runs)h+=`<p style="color:#8598b4;font-size:11px;margin-top:6px">No successful runs in the recent window, so there is no average yet.</p>`;
+    h+='</div>';
+    const cj=p.jobs.filter(j=>j.cache);
+    if(cj.length){
+      const cols2='grid-template-columns:minmax(110px,1fr) 56px 60px 60px 90px minmax(170px,1.3fr)';
+      h+=`<div style="${MCI_SEC}"><div style="${MCI_HDR}">COMPILER CACHE &middot; newest run, and average hit rate over the last ${Math.max(...cj.map(j=>j.cache_n))} runs</div>`;
+      h+=`<div style="${MCI_ROW};${cols2};color:#5f708a"><span>job</span><span>tool</span><span>hit rate</span><span>average</span><span>hits / misses</span><span>cache size (used / max)</span></div>`;
+      for(const j of cj){const c=j.cache,hp=c.hit_pct;
+        const hc=hp==null?'inherit':hp>=90?'var(--good)':hp>=70?'var(--warn)':'var(--crit)';
+        const full=c.size_gb!=null&&c.max_gb?c.size_gb/c.max_gb:null;
+        h+=`<div style="${MCI_ROW};${cols2}" title="${mciU(c.restored?'restored from '+c.restored:'no compiler-cache restore line in the log')}"><span>${esc(j.name)}</span><span style="color:#8598b4">${esc(c.tool)}</span>`+
+          `<span style="font-weight:600;color:${hc}">${hp==null?'—':hp+'%'}</span><span>${j.cache_avg_hit_pct==null?'—':j.cache_avg_hit_pct+'%'}</span>`+
+          `<span style="font-family:var(--mono)">${c.hits??'—'} / ${c.misses??'—'}</span>`+
+          `<span style="color:${full!=null&&full>=0.95?'var(--warn)':'inherit'}">${c.size_gb!=null?c.size_gb.toFixed(2):'—'} / ${c.max_gb!=null?c.max_gb.toFixed(2):'—'} GB${full!=null?` (${Math.round(full*100)}%)`:''}${full!=null&&full>=0.95?' full':''}${c.cleanups?` &middot; ${c.cleanups} cleanups`:''}</span></div>`;
+      }
+      h+=`<div style="font-size:10px;color:#5f708a;margin-top:6px">From each job's <code>ccache -s</code> / <code>sccache --show-stats</code> output. A cache at its max size evicts entries (cleanups), which lowers the next build's hit rate.</div></div>`;
+    }
+  }
+  const ac=m.actions_cache;
+  if(w.key==='ci'&&ac&&ac.bytes!=null){
+    const pct=ac.limit_bytes?Math.min(100,Math.round(100*ac.bytes/ac.limit_bytes)):null;
+    const col=pct>=90?'var(--crit)':pct>=75?'var(--warn)':'var(--good)';
+    h+=`<div style="${MCI_SEC}"><div style="${MCI_HDR}">GITHUB ACTIONS CACHE STORAGE &middot; whole repo</div>`+
+      `<div style="display:flex;align-items:center;gap:10px;font-size:12px;color:#c4d4e8;margin-bottom:8px"><b>${mciGb(ac.bytes)}</b> of ${mciGb(ac.limit_bytes)} (default limit) &middot; ${ac.count} caches`+
+      `<span style="flex:1;max-width:240px;height:6px;background:var(--bg-3);border-radius:3px;overflow:hidden;display:inline-block"><span style="display:block;height:100%;width:${pct}%;background:${col}"></span></span>${pct}%</div>`;
+    const cols3='grid-template-columns:minmax(160px,2fr) 110px 50px 80px 80px';
+    h+=`<div style="${MCI_ROW};${cols3};color:#5f708a"><span>cache family</span><span>branch</span><span>count</span><span>size</span><span>last used</span></div>`;
+    for(const f of ac.families.slice(0,12))
+      h+=`<div style="${MCI_ROW};${cols3}"><span style="font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${mciU(f.family)}">${esc(f.family)}</span><span style="color:#8598b4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.ref)}</span><span>${f.count}</span><span>${mciGb(f.bytes)}</span><span style="color:#5f708a">${mciAgo(f.last_accessed)}</span></div>`;
+    h+=`<div style="font-size:10px;color:#5f708a;margin-top:6px">GitHub evicts the least recently used caches once the repo passes its limit.</div></div>`;
+  }
+  return h;
+}
 function showMainCiCheck(i){
   const m=lastMci,w=m&&m.workflows[i];if(!w)return;
   const v=w.last_completed,l=w.latest,live=l&&l.status!=='completed',U=mciU;
@@ -4612,6 +4889,7 @@ function showMainCiCheck(i){
   if(v){h+=runHead(v,'last verdict')+jobsHtml(v)}
   if(live&&l!==v){h+='<div style="margin-top:14px">'+runHead(l,'in progress')+jobsHtml(l)+'</div>'}
   if(!v&&!live)h+=`<p style="color:#8598b4">${w.error?'Fetch error: '+esc(w.error):'No runs on main yet.'}</p>`;
+  h+=mciPerfHtml(w,m);
   const hist=(w.history||[]).slice().reverse();
   if(hist.length){
     h+='<div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px"><div style="font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:6px">RECENT RUNS ON MAIN</div>';
