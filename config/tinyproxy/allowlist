@@ -14,7 +14,8 @@
 ^objects\.githubusercontent\.com$
 # GitHub Actions job logs: the logs API redirects to pre-signed URLs on these
 # storage accounts. The dashboard reads build stats (compiler-cache hits) from them.
-^productionresultssa[0-9]+\.blob\.core\.windows\.net$
+# tinyproxy filters use POSIX basic regex here: `+` is literal, so no `[0-9]+`.
+^productionresultssa[0-9][0-9]*\.blob\.core\.windows\.net$
 
 # pip endpoints — added 2026-05-07 to allow mcp-scanner / Cisco AI scanners upgrades
 ^pypi\.org$

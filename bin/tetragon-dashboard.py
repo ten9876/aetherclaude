@@ -1749,6 +1749,37 @@ def _main_ci_perf_summary(opener, hdrs, key, runs, budget):
             'last_run_s': ok[0]['dur'] if ok else None,
             'run_durations': [p['dur'] for p in reversed(ok)], 'jobs': jobs}
 
+def _cache_family(key):
+    key = re.sub(r'-\d{4}-\d\d-\d\dT[\d:.]+Z$', '', key or '')
+    return re.sub(r'-(\d{8,}|[0-9a-f]{16,})$', '', key)
+
+# Compiler-cache families whose restore line isn't in the job log (the
+# macOS ccache action restores silently), mapped to the job that uses them.
+MAIN_CI_CACHE_FAMILY_JOBS = {'ccache-ccache-macos-ci': ('ci', 'check-macos')}
+
+def _main_ci_family_hit_rates(out):
+    """Attach the latest compiler-cache hit rate to each cache family on
+    main, via the cache key each job restored. The first workflow in
+    MAIN_CI_WORKFLOWS order wins (CI owns ccache-linux-build; Full Suite
+    only restores it)."""
+    ac = out.get('actions_cache')
+    if not ac:
+        return
+    by_family = {}
+    for w in out['workflows']:
+        for j in ((w.get('perf') or {}).get('jobs') or []):
+            c = j.get('cache')
+            fam = _cache_family(c['restored']) if c and c.get('restored') else None
+            if fam is None and c:
+                fam = next((f for f, (wk, jn) in MAIN_CI_CACHE_FAMILY_JOBS.items()
+                            if wk == w['key'] and jn == j['name']), None)
+            if fam and fam not in by_family:
+                by_family[fam] = {'hit_pct': c.get('hit_pct'), 'avg_hit_pct': j.get('cache_avg_hit_pct'),
+                                  'job': f"{w['name']} · {j['name']}", 'tool': c.get('tool')}
+    for f in ac['families']:
+        if f['ref'] == 'main' and f['family'] in by_family:
+            f.update(by_family[f['family']])
+
 def _main_ci_actions_cache(opener, hdrs):
     """Repo-wide GitHub Actions cache storage, grouped into cache families
     (key minus its run-id / timestamp / content-hash suffix)."""
@@ -1761,9 +1792,7 @@ def _main_ci_actions_cache(opener, hdrs):
             break
     fam = {}
     for c in caches:
-        k = c.get('key', '')
-        k = re.sub(r'-\d{4}-\d\d-\d\dT[\d:.]+Z$', '', k)
-        k = re.sub(r'-(\d{8,}|[0-9a-f]{16,})$', '', k)
+        k = _cache_family(c.get('key', ''))
         ref = (c.get('ref') or '').replace('refs/heads/', '').replace('refs/', '')
         f = fam.setdefault((k, ref), {'family': k, 'ref': ref, 'count': 0, 'bytes': 0, 'last_accessed': ''})
         f['count'] += 1
@@ -1924,6 +1953,7 @@ def fetch_main_ci(opener, hdrs):
                  if r for j in r['jobs']}
     for jid in [k for k in _main_ci_tests_cache if k not in live_jobs]:
         _main_ci_tests_cache.pop(jid, None)
+    _main_ci_family_hit_rates(out)
     for rid in [k for k in _main_ci_perf if k not in keep_perf]:
         _main_ci_perf.pop(rid, None)
     live_perf_jobs = {j['id'] for p in _main_ci_perf.values() for j in p['jobs'].values()}
@@ -4811,6 +4841,10 @@ function renderMainCi(m){
 }
 function mciDur(s){if(s==null)return '—';s=Math.round(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;
   return h?`${h}h ${m}m`:(m?`${m}m ${String(x).padStart(2,'0')}s`:`${x}s`)}
+function mciHitCell(f){
+  if(f.hit_pct==null)return `<span style="color:#5f708a" title="${mciU(f.ref==='main'?'not a compiler cache, or no stats parsed yet':'not tracked off main')}">—</span>`;
+  const c=f.hit_pct>=90?'var(--good)':f.hit_pct>=70?'var(--warn)':'var(--crit)';
+  return `<span style="font-weight:600;color:${c}" title="${mciU(`${f.job} · latest ${f.tool} run`+(f.avg_hit_pct!=null?` · ${f.avg_hit_pct}% average`:''))}">${f.hit_pct}%</span>`}
 function mciGb(b){return (b/1073741824).toFixed(b>=10737418240?0:2)+' GB'}
 const MCI_SEC='border-top:1px solid var(--line);margin-top:14px;padding-top:10px';
 const MCI_HDR='font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:6px';
@@ -4856,10 +4890,10 @@ function mciPerfHtml(w,m){
     h+=`<div style="${MCI_SEC}"><div style="${MCI_HDR}">GITHUB ACTIONS CACHE STORAGE &middot; whole repo</div>`+
       `<div style="display:flex;align-items:center;gap:10px;font-size:12px;color:#c4d4e8;margin-bottom:8px"><b>${mciGb(ac.bytes)}</b> of ${mciGb(ac.limit_bytes)} (default limit) &middot; ${ac.count} caches`+
       `<span style="flex:1;max-width:240px;height:6px;background:var(--bg-3);border-radius:3px;overflow:hidden;display:inline-block"><span style="display:block;height:100%;width:${pct}%;background:${col}"></span></span>${pct}%</div>`;
-    const cols3='grid-template-columns:minmax(160px,2fr) 110px 50px 80px 80px';
-    h+=`<div style="${MCI_ROW};${cols3};color:#5f708a"><span>cache family</span><span>branch</span><span>count</span><span>size</span><span>last used</span></div>`;
+    const cols3='grid-template-columns:minmax(160px,2fr) 110px 70px 80px 80px';
+    h+=`<div style="${MCI_ROW};${cols3};color:#5f708a"><span>cache family</span><span>branch</span><span>hit rate</span><span>size</span><span>last used</span></div>`;
     for(const f of ac.families.slice(0,12))
-      h+=`<div style="${MCI_ROW};${cols3}"><span style="font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${mciU(f.family)}">${esc(f.family)}</span><span style="color:#8598b4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.ref)}</span><span>${f.count}</span><span>${mciGb(f.bytes)}</span><span style="color:#5f708a">${mciAgo(f.last_accessed)}</span></div>`;
+      h+=`<div style="${MCI_ROW};${cols3}"><span style="font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${mciU(f.family)}">${esc(f.family)}</span><span style="color:#8598b4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.ref)}</span>${mciHitCell(f)}<span>${mciGb(f.bytes)}</span><span style="color:#5f708a">${mciAgo(f.last_accessed)}</span></div>`;
     h+=`<div style="font-size:10px;color:#5f708a;margin-top:6px">GitHub evicts the least recently used caches once the repo passes its limit.</div></div>`;
   }
   return h;
