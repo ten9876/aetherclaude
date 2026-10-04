@@ -22,7 +22,7 @@ merger.
 
 | Action | Points |
 |---|---|
-| Comment on a discussion | 2 |
+| Comment on a discussion | 1 |
 | Comment on an issue | 2 |
 | Comment on a PR (or reply in a review thread) | 3 |
 | Start a discussion | 2 |
@@ -30,7 +30,7 @@ merger.
 | Open an issue | 4 |
 | Your issue is confirmed (labelled `bug`/`enhancement` by someone else) | +2 |
 | Your issue is fixed by a merged PR | +5 |
-| Open a PR | 3 |
+| Open a PR | 5 |
 | Your PR is merged | +13 |
 | Your merged PR closes a linked issue | +5 |
 | Your merged PR adds or changes tests | +2 |
@@ -38,7 +38,7 @@ merger.
 | Review that approves | 10 |
 | Review that requests changes | 8 |
 | Comment-only review | 6 |
-| Merge someone else's PR | 8 |
+| Merge someone else's PR | 12 |
 | Your merged PR turns a red `main` green | +15 |
 | Your revert is merged | +3 |
 
@@ -51,12 +51,12 @@ overlook:
 |---|---|
 | Triage someone else's issue: the first label anyone but its author (and not a bot) puts on it | 2 |
 | Close someone else's issue by hand: duplicate, not planned, or already fixed (not closes done by a merged PR) | 2 |
-| Shepherd someone else's PR: push commits to it (rebase, conflicts, finishing touches) before it merges | 5 |
+| Shepherd someone else's PR: push commits to it (rebase, conflicts, finishing touches) before it merges | 4 |
 | Give a PR its first review within 24 hours of it opening | 3 |
 | Publish an AetherSDR release | 15 |
 
-Opening a PR pays 3 and the rest of its value (13) on merge, so a merged PR
-is worth the same as before while one that never merges earns little.
+Opening a PR pays 5 and merging it 13 more, so most of a PR's value
+arrives when it merges.
 
 ### Steward of the week
 
@@ -76,20 +76,20 @@ Points add up along the way, and several people earn from the same fix:
 | Alice | opens an issue describing the bug | +4 | 4 |
 | Alice | a maintainer labels it `bug` | +2 | 6 |
 | Bob | comments on the issue with a reproduction | +2 | 2 |
-| Bob | opens a PR that fixes it and links the issue | +3 | 5 |
+| Bob | opens a PR that fixes it and links the issue | +5 | 7 |
 | Carol | reviews the PR and requests changes | +8 | 8 |
 | Carol | that was the PR's first review, within 24 hours of it opening | +3 | 11 |
-| Bob | replies on the PR after pushing the fix | +3 | 8 |
+| Bob | replies on the PR after pushing the fix | +3 | 10 |
 | Carol | approves the updated PR (on a later day) | +10 | 21 |
-| Carol | arms auto-merge, so the PR merges once checks pass | +8 | 29 |
-| Bob | his PR is merged | +13 | 21 |
-| Bob | the merged PR closes the linked issue | +5 | 26 |
-| Bob | the PR added a test | +2 | 28 |
-| Bob | it was his first merged PR ever | +25 | 53 |
+| Carol | arms auto-merge, so the PR merges once checks pass | +12 | 33 |
+| Bob | his PR is merged | +13 | 23 |
+| Bob | the merged PR closes the linked issue | +5 | 28 |
+| Bob | the PR added a test | +2 | 30 |
+| Bob | it was his first merged PR ever | +25 | 55 |
 | Alice | her issue is fixed by the merged PR | +5 | 11 |
 
-Totals: Alice 11, Bob 53, Carol 29 (all of Carol's are steward points). Bob's
-PR alone is worth 51 (26 without the one-time first-PR bonus). Carol's two
+Totals: Alice 11, Bob 55, Carol 33 (all of Carol's are steward points). Bob's
+PR alone is worth 53 (28 without the one-time first-PR bonus). Carol's two
 reviews both score only because they were on different days. Merging usually
 happens this way: the approver arms auto-merge, and GitHub credits them with
 the merge. If the PR had broken `main`, Carol would lose 20 (approved and

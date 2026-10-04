@@ -45,7 +45,7 @@ MIN_COMMENT_CHARS = 15              # a floor, not a scale
 
 # rule -> (points, category). Categories drive the page's breakdown columns.
 RULES = {
-    'discussion_comment':  (2, 'comments'),
+    'discussion_comment':  (1, 'comments'),
     'issue_comment':       (2, 'comments'),
     'pr_comment':          (3, 'comments'),
     'discussion_open':     (2, 'discussions'),
@@ -53,7 +53,7 @@ RULES = {
     'issue_open':          (4, 'issues'),
     'issue_confirmed':     (2, 'issues'),
     'issue_fixed':         (5, 'issues'),
-    'pr_open':             (3, 'prs'),    # the rest of opening's value is paid on merge
+    'pr_open':             (5, 'prs'),
     'pr_merged':           (13, 'prs'),
     'pr_closes_issue':     (5, 'prs'),
     'pr_tests':            (2, 'prs'),
@@ -61,11 +61,11 @@ RULES = {
     'review_approve':      (10, 'reviews'),
     'review_changes':      (8, 'reviews'),
     'review_comment':      (6, 'reviews'),
-    'merge_other':         (8, 'merges'),
+    'merge_other':         (12, 'merges'),
     # Stewardship: the necessary admin that keeps other people's work moving.
     'issue_triaged':       (2, 'stewardship'),
     'issue_closed':        (2, 'stewardship'),
-    'pr_shepherd':         (5, 'stewardship'),
+    'pr_shepherd':         (4, 'stewardship'),
     'review_first_fast':   (3, 'stewardship'),
     'release_published':   (15, 'stewardship'),
     'main_fixed':          (15, 'main'),
