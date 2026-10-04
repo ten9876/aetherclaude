@@ -35,6 +35,8 @@ tr.lead td{background:rgba(224,184,74,.07)}
 .who{display:flex;align-items:center;gap:8px}
 .who img{width:22px;height:22px;border-radius:50%}
 .who b{color:var(--ink);font-weight:600}
+.core{display:inline-flex;color:var(--accent-bright);margin-left:-2px}
+.hero .n .core{margin-left:8px;vertical-align:-1px}
 .badge.backer{color:var(--gold);border-color:var(--gold)}
 .badge{font-size:10px;font-weight:700;letter-spacing:.3px;border:1px solid var(--muted);color:var(--muted);border-radius:4px;padding:0 5px;font-family:var(--sans)}
 .pts{font-weight:700;color:var(--ink);font-size:13px}
@@ -129,6 +131,7 @@ let D=null,views=[],cur=null;
 const CATS=['comments','discussions','issues','prs','main','cpenalties','reviews','merges','stewardship','penalties'];
 const C_CATS=['comments','discussions','issues','prs','main','cpenalties'],S_CATS=['reviews','merges','stewardship'];
 let rankBy='total';
+const CORE_ICON='<span class="core" title="Core dev team" aria-label="Core dev team"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5z" fill="currentColor"/><path d="m8.5 12 2.5 2.5 4.5-5" fill="none" stroke="var(--bg)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
 const avatarOf=r=>r.avatar||(r.login.startsWith('oc:')?'https://opencollective.com/static/images/default-guest-logo.svg':`https://github.com/${r.login}.png`);
 const LABEL={discussion_comment:'Discussion comment',issue_comment:'Issue comment',pr_comment:'PR comment',discussion_open:'Started discussion',discussion_answer:'Accepted answer',issue_open:'Opened issue',issue_confirmed:'Issue confirmed',issue_fixed:'Issue fixed',pr_open:'Opened PR',pr_merged:'PR merged',pr_closes_issue:'PR closes issue',pr_tests:'PR adds tests',first_merged_pr:'First merged PR',review_approve:'Approved',review_changes:'Requested changes',review_comment:'Review comments',merge_other:'Merged a PR',main_fixed:'Fixed main',revert_merged:'Revert merged',issue_triaged:'Triaged an issue',issue_closed:'Closed an issue',pr_shepherd:'Shepherded a PR',review_first_fast:'First review within 24h',release_published:'Published a release',break_approver:'Approved a break',backer_contribution:'Open Collective contribution',break_author:'Broke main',break_merger:'Merged a break',break_self_fix:'Fixed own break',spam:'Spam/invalid'};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -152,7 +155,7 @@ function render(){
   const back=st.filter(r=>r.backer_rank).sort((a,b)=>a.backer_rank-b.backer_rank)[0];
   const isCur=w.tag==='current',all=!w.tag;
   const card=(r,title,val,unit,detail)=>`<div class="hero"><img src="${esc(avatarOf(r))}" alt=""><div class="t">${title}</div>`+
-    `<div class="n">${esc(r.name||r.login)}</div><div class="p">${val}<small>${unit}</small></div><div class="d dim">${detail||''}</div></div>`;
+    `<div class="n">${esc(r.name||r.login)}${r.core?CORE_ICON.replace('width="15" height="15"','width="22" height="22"'):''}</div><div class="p">${val}<small>${unit}</small></div><div class="d dim">${detail||''}</div></div>`;
   document.getElementById('hero').innerHTML='<div class="heroes">'+
     (top?card(top,isCur?'Leading contributor this week':all?'All-time contributor':`Contributor of the week &middot; ${esc(w.tag)}`,top.points,'points',''):'')+
     (stew?card(stew,isCur?'Leading steward this week':all?'All-time steward':`Steward of the week &middot; ${esc(w.tag)}`,stew.steward,'points',
@@ -172,7 +175,7 @@ function render(){
   rows.forEach((r,i)=>{
     const lead=r.login===leadLogin,rk=rankBy==='steward'?r.steward_rank:rankBy==='backer'?r.backer_rank:rankBy==='total'?totRank[r.login]:r.rank;
     h+=`<tr class="row${lead?' lead':''}" onclick="tog(${i})"><td class="rank">${r.eligible&&rk?(lead?'<span class="gold">1</span>':rk):'&mdash;'}</td>`+
-      `<td><div class="who"><img src="${esc(avatarOf(r))}" alt="" loading="lazy"><b>${esc(r.name||r.login)}</b>${backers.has(r.login)?`<span class="badge backer" title="${r.login.startsWith('oc:')?'Supports AetherSDR on Open Collective (no linked GitHub account)':'Supports AetherSDR on Open Collective'}">BACKER</span>`:''}${r.eligible?'':`<span class="badge" title="Maintainer: scored and shown, but not eligible to win">MAINTAINER</span>`}</div></td>`+
+      `<td><div class="who"><img src="${esc(avatarOf(r))}" alt="" loading="lazy"><b>${esc(r.name||r.login)}</b>${r.core?CORE_ICON:''}${backers.has(r.login)?`<span class="badge backer" title="${r.login.startsWith('oc:')?'Supports AetherSDR on Open Collective (no linked GitHub account)':'Supports AetherSDR on Open Collective'}">BACKER</span>`:''}${r.eligible?'':`<span class="badge" title="Maintainer: scored and shown, but not eligible to win">MAINTAINER</span>`}</div></td>`+
       `<td class="pts${tot(r)<0?' neg':''}${rankBy==='total'?'':' soft'}">${tot(r)}</td>`+
       `<td class="pts${r.points<0?' neg':''}${rankBy==='contributor'?'':' soft'}">${r.points}</td><td class="pts${r.steward<0?' neg':''}${rankBy==='steward'?'':' soft'}">${r.steward||'<span class="zero">·</span>'}</td>`+
       `<td class="pts${rankBy==='backer'?'':' soft'}">${r.backer||'<span class="zero">·</span>'}</td>`+

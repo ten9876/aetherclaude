@@ -14,6 +14,10 @@ Breaking `main` costs points, and costs the reviewer who approved it most.
 | Maintainer (`ten9876`) | yes, scored like everyone else, penalties included | no |
 | Bots (the AetherClaude agent, under both its App and its `AetherClaude` user account; the `claude` co-author account; Dependabot, Copilot) | no | no |
 
+The core dev team (ten9876, jensenpat, rfoust, NF0T, nigelfenton, K5PTB,
+Ozy311, chibondking) is marked with a shield next to their names. It changes
+nothing about scoring or who can win.
+
 A bot's action still counts for the humans involved: merging an agent PR earns
 merge points, and an agent PR that breaks `main` still costs its approvers and
 merger.

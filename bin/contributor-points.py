@@ -33,7 +33,11 @@ REPO_START = '2026-03-12T00:00:00Z'   # first backfill starts here
 CURSOR_OVERLAP = timedelta(minutes=10)
 OWNER, NAME = REPO.split('/')
 DB_PATH = os.environ.get('CONTRIBUTOR_DB', '/Users/aetherclaude/data/contributors.db')
-MAINTAINERS = {'ten9876'}           # scored and shown, never eligible to win
+MAINTAINERS = {'ten9876'}
+# Core dev team: shown with a shield badge. Doesn't affect scoring or who can
+# win (only the maintainer is excluded). Compared case-insensitively.
+CORE_TEAM = {c.lower() for c in ('ten9876', 'jensenpat', 'rfoust', 'NF0T', 'nigelfenton', 'K5PTB', 'Ozy311',
+                                 'chibondking')}           # scored and shown, never eligible to win
 # Not ranked. AetherClaude is the agent's GitHub user account (its PRs are
 # opened under it as well as under the App); claude is the account commits
 # co-authored by Claude are attributed to. Compared case-insensitively.
@@ -1190,6 +1194,7 @@ def standings(db, led, start=None, end=None):
         steward = sum(e['points'] for e in r['events'] if e['rule'] in STEWARD_RULES)
         backer = sum(e['points'] for e in r['events'] if e['rule'] in BACKER_RULES)
         out.append({'login': login, 'name': name, 'role': role, 'eligible': role == 'contributor', 'avatar': avatar,
+                    'core': login.lower() in CORE_TEAM,
                     'points': r['points'] - steward - backer,   # contributor points
                     'steward': steward, 'backer': backer, 'total': r['points'], 'cats': dict(r['cats']),
                     'events': sorted(r['events'], key=lambda e: e['at'] or '', reverse=True)})
