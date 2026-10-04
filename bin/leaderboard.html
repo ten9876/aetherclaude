@@ -173,7 +173,7 @@ const STACK=[
   ['Carol','review_changes','reviews the PR and requests changes'],
   ['Bob','pr_comment','replies on the PR after pushing the fix'],
   ['Carol','review_approve','approves the updated PR (on a later day)'],
-  ['Dave','merge_other','merges the PR'],
+  ['Carol','merge_other','arms auto-merge, so the PR merges once checks pass'],
   ['Bob','pr_merged','his PR is merged'],
   ['Bob','pr_closes_issue','the merged PR closes the linked issue'],
   ['Bob','pr_tests','the PR added a test'],
@@ -191,8 +191,8 @@ function renderStack(){
     `Bob's PR alone is worth ${tot.Bob-pts('issue_comment')} (${tot.Bob-pts('issue_comment')-first} without the one-time first-PR bonus). `+
     `Reviews only count once per reviewer per PR per day, so Carol's two reviews score because they were on different days. Same day, she'd get the stronger one only.</p>`;
   const a=pts('break_approver'),au=pts('break_author'),m=pts('break_merger'),fx=pts('break_self_fix');
-  h+=`<p><b>If that PR had broken main</b>, Carol (approved) would lose ${-a}, Bob (author) ${-au} and Dave (merged) ${-m}. `+
-    `If Bob fixes it within 24 hours he gets ${fx} back. Whoever else turns main green earns +${pts('main_fixed')}.</p>`;
+  h+=`<p><b>If that PR had broken main</b>, Carol would lose ${-a}: she approved and merged it, and someone with several roles takes only the largest penalty (approving, ${a}; merging alone would be ${m}). `+
+    `Bob (author) would lose ${-au}, and get ${fx} back if he fixes it within 24 hours. Whoever else turns main green earns +${pts('main_fixed')}.</p>`;
   document.getElementById('rules-stack').innerHTML=h;
 }
 function openRules(){renderRules();document.getElementById('rules-modal').classList.add('show');document.body.style.overflow='hidden'}
