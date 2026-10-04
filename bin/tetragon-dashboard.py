@@ -1671,6 +1671,7 @@ def _main_ci_job_log(hdrs, job_id, max_bytes=24 * 1024 * 1024):
             urllib.request.Request(url, headers=hdrs), timeout=15)
         raise ValueError('job log: expected a redirect')
     except urllib.error.HTTPError as e:
+        _main_ci_note_rate(e.headers)
         if e.code not in (301, 302, 303, 307) or not e.headers.get('Location'):
             raise
         loc = e.headers['Location']
@@ -1685,14 +1686,18 @@ def _main_ci_perf_record(opener, hdrs, w):
     jobs = _main_ci_jobs_cache.get(rid)
     if jobs is None:
         jobs = [{'id': j.get('id'), 'name': j.get('name', ''), 'conclusion': j.get('conclusion'),
+                 'created_at': j.get('created_at'),
                  'started_at': j.get('started_at'), 'completed_at': j.get('completed_at')}
                 for j in _main_ci_get(opener, hdrs, f'actions/runs/{rid}/jobs?per_page=100').get('jobs', [])]
     rec = {'dur': _iso_secs(w.get('run_started_at') or w.get('created_at', ''), w.get('updated_at', '')),
            'conclusion': w.get('conclusion'), 'created_at': w.get('created_at', ''),
            'sha': (w.get('head_sha') or '')[:7],
            'jobs': {j['name']: {'id': j['id'], 'conclusion': j.get('conclusion'),
-                                'dur': _iso_secs(j.get('started_at') or '', j.get('completed_at') or '')}
+                                'dur': _iso_secs(j.get('started_at') or '', j.get('completed_at') or ''),
+                                'queue': _iso_secs(j.get('created_at') or '', j.get('started_at') or '')}
                     for j in jobs}}
+    starts = [j.get('started_at') for j in jobs if j.get('started_at')]
+    rec['queue'] = _iso_secs(w.get('created_at', ''), min(starts)) if starts else None
     _main_ci_perf[rid] = rec
     return rec
 
@@ -1742,6 +1747,9 @@ def _main_ci_perf_summary(opener, hdrs, key, runs, budget):
         cs = [c for c in cs if c[2]]
         jobs.append({'name': n, 'n': len(okj),
                      'avg_s': _avg([j['dur'] for j in okj]),
+                     # Queue time does not depend on the outcome: all runs.
+                     'avg_queue_s': _avg([p['jobs'][n].get('queue') for p in recs if n in p['jobs']]),
+                     'last_queue_s': next((p['jobs'][n].get('queue') for p in recs if n in p['jobs']), None),
                      'last_s': okj[0]['dur'] if okj else None,
                      'durations': [j['dur'] for j in reversed(okj)][-MAIN_CI_PERF_RUNS:],
                      'cache': dict(cs[0][2], sha=cs[0][1]) if cs else None,
@@ -1749,6 +1757,8 @@ def _main_ci_perf_summary(opener, hdrs, key, runs, budget):
                      'cache_hits': [c[2].get('hit_pct') for c in reversed(cs)],
                      'cache_n': len(cs)})
     return {'runs': len(ok), 'avg_run_s': _avg([p['dur'] for p in ok]),
+            'avg_queue_s': _avg([p.get('queue') for p in recs]),
+            'last_queue_s': recs[0].get('queue') if recs else None,
             'last_run_s': ok[0]['dur'] if ok else None,
             'run_durations': [p['dur'] for p in reversed(ok)], 'jobs': jobs}
 
@@ -1822,10 +1832,27 @@ def _parse_failed_tests(text, cap=60):
                 break
     return out
 
+# Last X-RateLimit-* headers seen on an api.github.com response (the App
+# installation token's hourly budget, shared with the agent's MCP server).
+_main_ci_rate = {}
+
+def _main_ci_note_rate(headers):
+    try:
+        if headers.get('X-RateLimit-Limit'):
+            _main_ci_rate.update({'limit': int(headers['X-RateLimit-Limit']),
+                                  'remaining': int(headers.get('X-RateLimit-Remaining', 0)),
+                                  'used': int(headers.get('X-RateLimit-Used', 0)),
+                                  'reset': int(headers.get('X-RateLimit-Reset', 0)),
+                                  'resource': headers.get('X-RateLimit-Resource', ''),
+                                  'seen_at': now_utc_iso()})
+    except (TypeError, ValueError):
+        pass
+
 def _main_ci_get(opener, hdrs, path):
     import urllib.request
     url = path if path.startswith('https://') else f'https://api.github.com/repos/{MAIN_CI_REPO}/{path}'
     with opener.open(urllib.request.Request(url, headers=hdrs), timeout=15) as r:
+        _main_ci_note_rate(r.headers)
         return json.loads(r.read().decode())
 
 # Failure diagnosis: job_id -> {'kind', 'summary', 'detail', 'file'} parsed
@@ -1954,6 +1981,30 @@ def _main_ci_failed_tests(opener, hdrs, job_id, run_id, run_created):
     _main_ci_tests_cache[job_id] = res
     return res
 
+def _main_ci_is_agent(login):
+    app = (os.environ.get('AGENT_APP_SLUG')
+           or os.environ.get('BOT_USERNAME', 'aethersdr-agent[bot]').replace('[bot]', ''))
+    return bool(login) and login.replace('[bot]', '').lower() == app.lower()
+
+def _main_ci_who(w):
+    """Who put this commit on main: the commit author and the account that
+    pushed/merged it (run actor), flagged when either is the agent's App."""
+    hc = w.get('head_commit') or {}
+    author = ((hc.get('author') or {}).get('name') or '')[:60]
+    actor = ((w.get('actor') or {}).get('login') or '')[:60]
+    pr = re.search(r'\(#(\d+)\)\s*$', (hc.get('message') or '').split('\n')[0])
+    return {'author': author, 'actor': actor, 'pr': int(pr.group(1)) if pr else None,
+            'agent': _main_ci_is_agent(author) or _main_ci_is_agent(actor)}
+
+def _main_ci_attach_queue(out):
+    """Queue time (run created -> first job started) on recent-run rows,
+    from the cached per-run perf records."""
+    for w in out['workflows']:
+        for hx in w.get('history') or []:
+            pr = _main_ci_perf.get(hx['id'])
+            if pr and pr.get('queue') is not None:
+                hx['queue'] = pr['queue']
+
 def _main_ci_run(opener, hdrs, w):
     """Compact run record with jobs (and failed tests for failed jobs)."""
     rid = w['id']
@@ -1968,7 +2019,12 @@ def _main_ci_run(opener, hdrs, w):
             rec = {'id': j.get('id'), 'name': j.get('name', ''),
                    'status': j.get('status', ''), 'conclusion': j.get('conclusion'),
                    'url': j.get('html_url', ''), 'failed_step': failed_step,
+                   'created_at': j.get('created_at'),
                    'started_at': j.get('started_at'), 'completed_at': j.get('completed_at')}
+            # Queue time: job created -> picked up by a runner. A job still
+            # queued has no started_at; the page counts its wait live.
+            if j.get('started_at') and j.get('created_at') and j.get('status') != 'queued':
+                rec['queue_s'] = _iso_secs(j['created_at'], j['started_at'])
             if j.get('status') != 'completed':
                 cur = next((st for st in (j.get('steps') or []) if st.get('status') == 'in_progress'), None)
                 if cur:
@@ -1986,7 +2042,7 @@ def _main_ci_run(opener, hdrs, w):
             jobs.append(rec)
         if done and complete:
             _main_ci_jobs_cache[rid] = jobs
-    return {'id': rid, 'sha': (w.get('head_sha') or '')[:7],
+    return {'id': rid, 'sha': (w.get('head_sha') or '')[:7], **_main_ci_who(w),
             'title': (w.get('display_title') or '')[:100],
             'event': w.get('event', ''), 'status': w.get('status', ''),
             'conclusion': w.get('conclusion'), 'created_at': w.get('created_at', ''),
@@ -2088,6 +2144,7 @@ def fetch_main_ci(opener, hdrs, publish=None, prev=None):
             # newest run that actually concluded success or failure.
             latest = runs[0] if runs else None
             rec['history'] = [{'id': r['id'], 'sha': (r.get('head_sha') or '')[:7], 'status': r.get('status', ''),
+                               **_main_ci_who(r),
                                'dur': _iso_secs(r.get('run_started_at') or r.get('created_at', ''), r.get('updated_at', ''))
                                if r.get('status') == 'completed' else None,
                                'conclusion': r.get('conclusion'), 'created_at': r.get('created_at', ''),
@@ -2119,7 +2176,7 @@ def fetch_main_ci(opener, hdrs, publish=None, prev=None):
                     break
             if n:
                 oldest = verdicts[n - 1]
-                rec['streak'] = {'count': n, 'capped': n == len(verdicts),
+                rec['streak'] = {'count': n, 'capped': n == len(verdicts), **_main_ci_who(oldest),
                                  'since_sha': (oldest.get('head_sha') or '')[:7],
                                  'since_at': oldest.get('created_at', ''), 'url': oldest.get('html_url', '')}
                 rec['last_green'] = _main_ci_last_green_run(opener, hdrs, key, wid)
@@ -2153,6 +2210,9 @@ def fetch_main_ci(opener, hdrs, publish=None, prev=None):
     for jid in [k for k in _main_ci_tests_cache if k not in live_jobs]:
         _main_ci_tests_cache.pop(jid, None)
     _main_ci_attach_diag(out)
+    _main_ci_attach_queue(out)
+    if _main_ci_rate:
+        out['rate_limit'] = dict(_main_ci_rate)
     if publish:
         publish(dict(out))
     try:
@@ -2170,6 +2230,9 @@ def fetch_main_ci(opener, hdrs, publish=None, prev=None):
             _log_exc(f"main_ci_perf_{rec['key']}", _e)
     _main_ci_family_hit_rates(out)
     _main_ci_attach_diag(out, hdrs, [MAIN_CI_DIAG_PER_POLL])
+    _main_ci_attach_queue(out)
+    if _main_ci_rate:
+        out['rate_limit'] = dict(_main_ci_rate)
     for rid in [k for k in _main_ci_perf if k not in keep_perf]:
         _main_ci_perf.pop(rid, None)
     live_perf_jobs = {j['id'] for p in _main_ci_perf.values() for j in p['jobs'].values()}
@@ -4623,16 +4686,19 @@ body.view-ops #view-exec{display:none}
 .mci-bh{display:flex;align-items:baseline;gap:10px;white-space:nowrap}
 .mci-bh .pill{font-weight:700;letter-spacing:.3px}
 .mci-bh .right{margin-left:auto}
-.mci-title{margin-top:4px;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mci-tl{display:flex;gap:12px;align-items:baseline;margin-top:4px;min-width:0}
+.mci-title{flex:1;min-width:0;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mci-tl .who{flex:0 0 auto;max-width:45%;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mci-modal .agent{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.3px;color:#a878e0;border:1px solid #a878e0;border-radius:4px;padding:0 4px;line-height:1.4}
 .mci-kv{display:grid;grid-template-columns:88px minmax(0,1fr);column-gap:12px;row-gap:3px;margin-top:6px;font-size:11px;align-items:baseline}
 .mci-kv .k{color:#5f708a;text-align:right;white-space:nowrap}
 .mci-kv .v{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mci-kv .v.wrap{white-space:normal}
-.mci-run{display:grid;grid-template-columns:76px 66px minmax(0,1fr) 64px 60px;column-gap:12px;align-items:baseline;padding:4px 2px;border-bottom:1px solid var(--line);font-size:11px}
+.mci-run{display:grid;grid-template-columns:76px 66px minmax(0,1fr) 54px 64px 60px;column-gap:12px;align-items:baseline;padding:4px 2px;border-bottom:1px solid var(--line);font-size:11px}
 .mci-run.hdr{color:#5f708a}
 .mci-run .r{text-align:right;white-space:nowrap}
 .mci-run .c{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.mci-run .detail{grid-column:3/6;padding:2px 0 4px}
+.mci-run .detail{grid-column:3/7;padding:2px 0 4px}
 .x-mci-ph .val{color:var(--muted-dim)}
 .x-mci-ph .spark{border-radius:4px;background:linear-gradient(90deg,var(--bg-2) 0%,var(--bg-3) 50%,var(--bg-2) 100%);background-size:200% 100%;animation:mciShimmer 1.4s linear infinite;width:110px;height:22px;margin-top:12px}
 @keyframes mciShimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
@@ -5078,6 +5144,7 @@ const MCI_ST={success:['PASS','var(--good)'],failure:['FAIL','var(--crit)'],time
   startup_failure:['STARTUP','var(--crit)']};
 const MCI_RED=['failure','timed_out','startup_failure'];
 function mciSt(run){if(!run)return ['—','var(--muted-dim)'];
+  if(['queued','waiting','requested','pending'].includes(run.status))return ['QUEUED','var(--warn)'];
   if(run.status!=='completed')return ['RUNNING','var(--accent)'];
   return MCI_ST[run.conclusion]||[esc(String(run.conclusion||'?').toUpperCase()),'var(--warn)']}
 function mciU(s){return esc(String(s||'')).replace(/"/g,'&quot;')}
@@ -5148,6 +5215,12 @@ function mciJobFailHtml(f,repo,opt){opt=opt||{};
     h+=mciKv('runner',`<span class="dim">${esc(x)}</span>`,{title:x});
   return h+'</div>';
 }
+// Who put the commit on main: author, and the account that merged/pushed
+// it when different; an "agent" tag when either is the agent's App.
+function mciWho(x){if(!x||!(x.author||x.actor))return '';
+  const a=x.author||x.actor,m=x.actor&&x.actor!==x.author?x.actor:'';
+  return `${x.agent?'<span class="agent">agent</span> ':''}${esc(a)}${m?` <span class="dim">merged by</span> ${esc(m)}`:''}`}
+function mciWhoText(x){if(!x)return '';return [x.author&&'author: '+x.author,x.actor&&'pushed/merged by: '+x.actor,x.pr&&'PR #'+x.pr].filter(Boolean).join('\n')}
 function mciGb(b){return (b/1073741824).toFixed(b>=10737418240?0:2)+' GB'}
 const MCI_SEC='border-top:1px solid var(--line);margin-top:14px;padding-top:10px';
 const MCI_HDR='font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:6px';
@@ -5161,19 +5234,21 @@ function mciPerfHtml(w,m){
     const fd=(w.history||[]).filter(x=>x.status==='completed'&&MCI_RED.includes(x.conclusion)&&x.dur).map(x=>x.dur);
     h+=`<div style="${MCI_SEC}"><div style="${MCI_HDR}">BUILD TIME</div><div class="mci-kv" style="padding-left:15px">`+
       mciKv('average','<span class="dim">no successful run on main in the recent window</span>')+
-      (fd.length?mciKv('failed runs',`${mciDur(Math.min(...fd))} &ndash; ${mciDur(Math.max(...fd))} <span class="dim">average ${mciDur(fd.reduce((a,b)=>a+b,0)/fd.length)}</span>`):'')+`</div></div>`;
+      (fd.length?mciKv('failed runs',`${mciDur(Math.min(...fd))} &ndash; ${mciDur(Math.max(...fd))} <span class="dim">average ${mciDur(fd.reduce((a,b)=>a+b,0)/fd.length)}</span>`):'')+
+      (p.avg_queue_s!=null?mciKv('queue',`${mciDur(p.avg_queue_s)} <span class="dim">average wait for a runner</span>`):'')+`</div></div>`;
   }
   else if(p&&p.jobs&&p.jobs.length){
     h+=`<div style="${MCI_SEC}"><div style="${MCI_HDR}">BUILD TIME &middot; average of the last ${p.runs} successful run${p.runs===1?'':'s'} on main</div>`;
-    const cols='grid-template-columns:minmax(120px,1.4fr) 70px 90px 120px';
-    h+=`<div style="${MCI_ROW};${cols};color:#5f708a"><span>job</span><span>average</span><span>last</span><span title="oldest &rarr; newest">trend</span></div>`;
-    const row=(nm,avg,last,series,bold)=>{
+    const cols='grid-template-columns:minmax(110px,1.4fr) 66px 84px 74px 112px';
+    h+=`<div style="${MCI_ROW};${cols};color:#5f708a"><span>job</span><span>average</span><span>last</span><span title="average wait for a runner, all recent runs">queue</span><span title="oldest &rarr; newest">trend</span></div>`;
+    const row=(nm,avg,last,series,bold,q)=>{
       const slow=avg&&last&&last>avg*1.15,fast=avg&&last&&last<avg*0.85;
       return `<div style="${MCI_ROW};${cols}"><span style="${bold?'font-weight:600':''}">${esc(nm)}</span><span style="font-family:var(--mono)">${mciDur(avg)}</span>`+
         `<span style="font-family:var(--mono);color:${slow?'var(--warn)':fast?'var(--good)':'inherit'}">${mciDur(last)}${slow?' &#9650;':fast?' &#9660;':''}</span>`+
-        `<span>${svgSparkline((series||[]).filter(x=>x!=null),120,22)}</span></div>`};
-    h+=row('Whole run (wall clock)',p.avg_run_s,p.last_run_s,p.run_durations,true);
-    for(const j of p.jobs)h+=row(j.name,j.avg_s,j.last_s,j.durations,false);
+        `<span style="font-family:var(--mono);color:${q!=null&&q>=600?'var(--warn)':'inherit'}" title="average queue time${q!=null?': '+mciDur(q):''}">${q!=null?mciDur(q):'—'}</span>`+
+        `<span>${svgSparkline((series||[]).filter(x=>x!=null),110,22)}</span></div>`};
+    h+=row('Whole run (wall clock)',p.avg_run_s,p.last_run_s,p.run_durations,true,p.avg_queue_s);
+    for(const j of p.jobs)h+=row(j.name,j.avg_s,j.last_s,j.durations,false,j.avg_queue_s);
     h+='</div>';
     const cj=p.jobs.filter(j=>j.cache);
     if(cj.length){
@@ -5220,7 +5295,7 @@ function showMainCiCheck(i){
   const runBlock=(run,label,body)=>{const st=mciSt(run);
     return `<div class="mci-block" style="border-left-color:${st[1]}"><div class="mci-bh"><span class="pill" style="color:${st[1]}">${st[0]}</span>`+
       `<span class="dim">${label}</span>${link(run.url,run.sha)}<span class="dim right">${run.event&&run.event!=='push'?esc(run.event)+' &middot; ':''}${mciAgo(run.updated_at||run.created_at)}</span></div>`+
-      `<div class="mci-title" title="${U(run.title)}">${esc(run.title||'')}</div>`+
+      `<div class="mci-tl"><span class="mci-title" title="${U(run.title)}">${esc(run.title||'')}</span><span class="who" title="${U(mciWhoText(run))}">${mciWho(run)}</span></div>`+
       `<div class="x-mci-jobs" style="margin:8px 0 2px">${chips(run)}</div>${body||''}</div>`};
   const failDurs=(w.history||[]).filter(x=>x.status==='completed'&&MCI_RED.includes(x.conclusion)&&x.dur).map(x=>x.dur);
   const durRange=failDurs.length?mciDur(Math.min(...failDurs))+(failDurs.length>1?' &ndash; '+mciDur(Math.max(...failDurs)):''):'';
@@ -5231,6 +5306,7 @@ function showMainCiCheck(i){
     const ks=Object.entries(kinds).sort((a,b)=>b[1]-a[1]),lg=w.last_green;
     h+=`<div class="mci-block" style="border-left-color:var(--crit)"><div class="mci-bh"><span class="pill" style="color:var(--crit)">&#10008; ${st.count}${st.capped?'+':''} FAILURES IN A ROW</span></div><div class="mci-kv" style="margin-top:6px">`+
       mciKv('since',`${link(st.url,st.since_sha)} <span class="dim">${mciAgo(st.since_at)}</span>`)+
+      (st.author||st.actor?mciKv('first failure',`${st.pr?link(`https://github.com/${m.repo}/pull/${st.pr}`,'#'+st.pr)+' ':''}${mciWho(st)}`,{title:mciWhoText(st)}):'')+
       (ks.length?mciKv(ks.length===1?'cause':'causes',ks.map(([k,n])=>`<b style="color:var(--warn)">${esc(k)}</b> <span class="dim">${n} of ${diagnosed} diagnosed</span>`).join('<br>'),{wrap:true}):'')+
       mciKv('last green',lg?`${link(lg.url,lg.sha)} <span class="dim">${mciAgo(lg.at)}</span>`:'<span class="dim">none on main</span>')+
       (durRange?mciKv('failed runs',`<span class="dim">took ${durRange}</span>`):'')+`</div></div>`;
@@ -5238,8 +5314,11 @@ function showMainCiCheck(i){
   if(v)h+=runBlock(v,'last verdict',fails(v));
   if(live&&l!==v){
     const rj=(l.jobs||[]).filter(j=>j.status!=='completed'&&j.current_step);
-    const body=rj.length?`<div class="mci-kv">`+rj.map(j=>mciKv('running',`<b>${esc(j.name)}</b> <span class="dim">step</span> ${esc(j.current_step)} <span style="color:var(--accent)">${mciDur((Date.now()-new Date(j.current_step_started))/1000)}</span>`+
-      ` <span class="dim">&middot; job ${mciDur((Date.now()-new Date(j.started_at))/1000)}</span>`)).join('')+
+    const qj=(l.jobs||[]).filter(j=>['queued','waiting','pending'].includes(j.status));
+    const qq=(p=>p&&p.avg_queue_s!=null?` <span class="dim">&middot; typical queue ${mciDur(p.avg_queue_s)}</span>`:'')(w.perf);
+    const qhtml=qj.map(j=>mciKv('queued',`<b>${esc(j.name)}</b> <span class="dim">waiting for a runner</span> <span style="color:var(--warn)">${mciDur((Date.now()-new Date(j.created_at||l.created_at))/1000)}</span>${qq}`)).join('');
+    const body=(rj.length||qj.length)?`<div class="mci-kv">`+qhtml+rj.map(j=>mciKv('running',`<b>${esc(j.name)}</b> <span class="dim">step</span> ${esc(j.current_step)} <span style="color:var(--accent)">${mciDur((Date.now()-new Date(j.current_step_started))/1000)}</span>`+
+      ` <span class="dim">&middot; job ${mciDur((Date.now()-new Date(j.started_at))/1000)}${j.queue_s!=null?` &middot; queued ${mciDur(j.queue_s)}`:''}</span>`)).join('')+
       (durRange?mciKv('failed runs',`<span class="dim">ended after ${durRange}</span>`):'')+`</div>`:'';
     h+=runBlock(l,'in progress',body);
   }
@@ -5248,14 +5327,17 @@ function showMainCiCheck(i){
   const hist=(w.history||[]).slice().reverse();
   if(hist.length){
     h+=`<div style="${MCI_SEC}"><div style="${MCI_HDR}">RECENT RUNS ON MAIN</div>`;
-    h+=`<div class="mci-run hdr"><span>result</span><span>commit</span><span>failure</span><span class="r">duration</span><span class="r">started</span></div>`;
+    h+=`<div class="mci-run hdr"><span>result</span><span>commit</span><span>failure / author</span><span class="r" title="wait for a runner">queued</span><span class="r">duration</span><span class="r">started</span></div>`;
     for(const x of hist){const st=mciSt(x),fs=x.failures||[];
       const multi=fs.length>1||((v||l||{}).jobs||[]).length>1;
       const sum=fs.map(f=>{const d=f.diagnosis,ft=f.failed_tests||[];
         return (multi?`${esc(f.job)}: `:'')+(ft.length?`${ft.length} test${ft.length===1?'':'s'} failed`:(d?esc(d.summary)+(d.file?' &middot; '+esc(d.file):''):'failed at '+esc(f.failed_step||'?')))}).join(' &nbsp;|&nbsp; ');
-      h+=`<div class="mci-run"><span style="color:${st[1]};font-weight:600">${st[0]}</span>${link(x.url,x.sha)}`+
-        `<span class="c dim" title="${U(sum.replace(/&middot;/g,'·').replace(/&nbsp;\|&nbsp;/g,' | '))}">${sum}</span>`+
+      const who=mciWho(x);
+      h+=`<div class="mci-run"><span style="color:${st[1]};font-weight:600">${st[0]}</span><span title="${U(mciWhoText(x))}">${link(x.url,x.sha)}</span>`+
+        `<span class="c dim" title="${U((sum?sum.replace(/&middot;/g,'·').replace(/&nbsp;\|&nbsp;/g,' | ')+'\n':'')+mciWhoText(x))}">${sum||who}</span>`+
+        `<span class="r mono" style="color:${x.queue!=null&&x.queue>=600?'var(--warn)':'#8598b4'}">${x.queue!=null?mciDur(x.queue):''}</span>`+
         `<span class="r mono">${x.dur?mciDur(x.dur):''}</span><span class="r dim">${mciAgo(x.created_at)}</span>`;
+      if(sum&&who)h+=`<div class="detail"><div class="c dim">${who}</div></div>`;
       // Failed tests, one per row, aligned under the failure column.
       const tests=fs.flatMap(f=>(f.failed_tests||[]).map(t=>({job:f.job,issue:f.issue,...t})));
       if(tests.length)h+=`<div class="detail">`+tests.map(t=>`<div class="c"><span class="mono" style="color:var(--crit)">${esc(t.name)}</span> <span class="dim">${esc(t.status||'')}${fs.length>1?' &middot; '+esc(t.job):''}</span></div>`).join('')+
@@ -5264,7 +5346,11 @@ function showMainCiCheck(i){
     }
     h+='</div>';
   }
-  h+=`<div class="dim" style="margin-top:12px;font-size:11px">${link(w.url,'All '+w.name+' runs ↗')} &middot; refreshed ${mciAgo(m.fetched_at)}</div>`;
+  const rl=m.rate_limit;let budget='';
+  if(rl&&rl.limit){const pct=Math.round(100*rl.remaining/rl.limit),mins=Math.max(0,Math.round((rl.reset*1000-Date.now())/60000));
+    budget=` &middot; <span title="${U(`GitHub App installation token, ${rl.resource||'core'} budget, shared with the agent. ${rl.used} used this hour. Last seen ${rl.seen_at}.`)}">GitHub API budget `+
+      `<b style="color:${pct<10?'var(--crit)':pct<25?'var(--warn)':'var(--ink-soft)'}">${rl.remaining.toLocaleString()} / ${rl.limit.toLocaleString()}</b> left, resets in ${mins}m</span>`}
+  h+=`<div class="dim" style="margin-top:12px;font-size:11px">${link(w.url,'All '+w.name+' runs ↗')} &middot; refreshed ${mciAgo(m.fetched_at)}${budget}</div>`;
   document.getElementById('modal-title').textContent=`${w.name} — state on main`+(m.head&&m.head.sha?` (${m.head.sha})`:'');
   document.getElementById('modal-body').innerHTML=`<div class="mci-modal">${h}</div>`;
   document.getElementById('modal').classList.add('show');
