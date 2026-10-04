@@ -4695,7 +4695,7 @@ body.view-ops #view-exec{display:none}
     <summary>Links &#9662;</summary>
     <div class="hmenu-list">
       <a href="/agent-walk" target="_blank">Agent Walk &#x2197;</a>
-      <a href="/leaderboard" target="_blank">Contributor Standings &#x2197;</a>
+      <a href="/leaderboard" target="_blank">Leaderboard &#x2197;</a>
       <a href="/codegraph" target="_blank">Codegraph &#x2197;</a>
       <a href="/cartographer" target="_blank">Cartographer &#x2197;</a>
       <a href="#" onclick="openOperatorTui();document.getElementById('hmenu').removeAttribute('open');return false">Operator TUI &#x2197;</a>
