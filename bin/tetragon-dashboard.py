@@ -1721,7 +1721,10 @@ def _main_ci_perf_summary(opener, hdrs, key, runs, budget):
                     continue
                 budget[0] -= 1
                 try:
-                    _main_ci_cache_stats[jid] = _parse_cache_stats(_main_ci_job_log(hdrs, jid))
+                    _log_text = _main_ci_job_log(hdrs, jid)
+                    _main_ci_cache_stats[jid] = _parse_cache_stats(_log_text)
+                    if j['conclusion'] in ('failure', 'timed_out') and jid not in _main_ci_diag:
+                        _main_ci_diag[jid] = _diagnose_log_clean(_log_text)
                 except Exception as _e:
                     _main_ci_log_failures[jid] += 1
                     _log_exc('main_ci_job_log', _e)
@@ -1825,13 +1828,109 @@ def _main_ci_get(opener, hdrs, path):
     with opener.open(urllib.request.Request(url, headers=hdrs), timeout=15) as r:
         return json.loads(r.read().decode())
 
+# Failure diagnosis: job_id -> {'kind', 'summary', 'detail', 'file'} parsed
+# from the failed job's log; cached, bounded like the other per-job caches.
+_main_ci_diag = {}
+_main_ci_diag_failures = defaultdict(int)
+MAIN_CI_DIAG_PER_POLL = 6
+_main_ci_last_green = {}    # workflow key -> (fetched_ts, run summary | None)
+_SRC_RE = r'([\w./+-]+\.(?:cpp|cc|cxx|c|h|hpp|mm|m))'
+
+def _diagnose_log(log):
+    """Most likely cause of a failed job, from its log. Infrastructure
+    failures (disk, memory, time, runner) outrank code errors because they
+    produce misleading secondary errors (a full disk shows up as missing
+    object files)."""
+    lines = [_LOG_TS_RE.sub('', l).rstrip() for l in (log or '').splitlines()]
+    text = '\n'.join(lines)
+    def file_near(i):
+        for k in range(i, max(-1, i - 40), -1):
+            m = re.search(r'FAILED: \S*?(src/[\w./+-]+?)\.o\b', lines[k]) or re.search(_SRC_RE + r':\d+', lines[k])
+            if m:
+                return m.group(1)
+        return None
+    def first(pat):
+        rx = re.compile(pat)
+        for i, l in enumerate(lines):
+            m = rx.search(l)
+            if m:
+                return i, m
+        return None, None
+    i, m = first(r'No space left on device')
+    if m:
+        return {'kind': 'disk', 'summary': 'runner out of disk', 'file': file_near(i),
+                'detail': lines[i].strip()[:240]}
+    i, m = first(r'Killed signal terminated program (\S+)|fatal error: Killed|virtual memory exhausted|Cannot allocate memory')
+    if m:
+        return {'kind': 'oom', 'summary': 'out of memory (compiler killed)', 'file': file_near(i),
+                'detail': lines[i].strip()[:240]}
+    i, m = first(r'has exceeded the maximum execution time|The job was canceled because .*timeout|timed out after')
+    if m:
+        return {'kind': 'timeout', 'summary': 'timed out', 'file': None, 'detail': lines[i].strip()[:240]}
+    i, m = first(r'lost communication with the server|The runner has received a shutdown signal|runner .* did not respond')
+    if m:
+        return {'kind': 'runner', 'summary': 'runner lost', 'file': None, 'detail': lines[i].strip()[:240]}
+    i, m = first(r'internal compiler error')
+    if m:
+        return {'kind': 'ice', 'summary': 'internal compiler error', 'file': file_near(i),
+                'detail': lines[i].strip()[:240]}
+    i, m = first(_SRC_RE + r':(\d+)(?::\d+)?: (?:fatal )?error: (.*)')
+    if m:
+        return {'kind': 'compile', 'summary': 'compile error', 'file': f'{m.group(1)}:{m.group(2)}',
+                'detail': m.group(3).strip()[:240]}
+    i, m = first(r'([\w.:\\/+-]+\.(?:cpp|cc|cxx|c|h|hpp))\((\d+)(?:,\d+)?\): (?:fatal )?error (C\d+): (.*)')
+    if m:
+        return {'kind': 'compile', 'summary': f'compile error {m.group(3)}', 'file': f'{m.group(1)}:{m.group(2)}',
+                'detail': m.group(4).strip()[:240]}
+    i, m = first(r'([\w.:\\/+-]+\.obj) : error (LNK\d+): (.*)|LINK : fatal error (LNK\d+)')
+    if m:
+        return {'kind': 'link', 'summary': 'link error', 'file': None, 'detail': lines[i].strip()[:240]}
+    i, m = first(r'undefined reference to [`\'](.+?)\'|ld(?:\.\w+)?: error: (.*)|collect2: error')
+    if m:
+        return {'kind': 'link', 'summary': 'link error', 'file': None, 'detail': lines[i].strip()[:240]}
+    i, m = first(r'CMake Error at (\S+)')
+    if m:
+        nxt = next((l.strip() for l in lines[i + 1:i + 6] if l.strip()), '')
+        return {'kind': 'configure', 'summary': 'CMake configure error', 'file': m.group(1).rstrip(':'),
+                'detail': nxt[:240]}
+    i, m = first(r'(?:ERROR: (AddressSanitizer|ThreadSanitizer|LeakSanitizer|MemorySanitizer)|WARNING: (ThreadSanitizer)): ?(.*)')
+    if m:
+        san = m.group(1) or m.group(2)
+        return {'kind': 'sanitizer', 'summary': f'{san} report', 'file': file_near(i),
+                'detail': (m.group(3) or '').strip()[:240]}
+    i, m = first(_SRC_RE + r':(\d+):\d+: runtime error: (.*)')
+    if m:
+        return {'kind': 'sanitizer', 'summary': 'UBSan runtime error', 'file': f'{m.group(1)}:{m.group(2)}',
+                'detail': m.group(3).strip()[:240]}
+    i, m = first(r'(\d+)% tests passed, ([1-9]\d*) tests? failed out of (\d+)')
+    if m:
+        return {'kind': 'tests', 'summary': f'{m.group(2)} of {m.group(3)} tests failed', 'file': None,
+                'detail': ''}
+    errs = [l for l in lines if l.startswith('##[error]')]
+    if errs:
+        return {'kind': 'other', 'summary': errs[0][9:].strip()[:120] or 'failed', 'file': None, 'detail': ''}
+    return None
+
+def _diagnose_log_clean(log):
+    """_diagnose_log with runner workspace prefixes trimmed from paths."""
+    d = _diagnose_log(log)
+    if d:
+        for k in ('file', 'detail'):
+            if d.get(k):
+                d[k] = re.sub(r'(?:[A-Za-z]:)?[/\\][^\s:]*?[/\\](?=(?:src|tests|tools|third_party|CMakeLists)\b)', '', d[k])
+    return d
+
 def _main_ci_failed_tests(opener, hdrs, job_id, run_id, run_created):
     """Failed test names for one job, from the tracking issue it opened or
     appended to. Cached per job once resolved (or once known to have none)."""
     if job_id in _main_ci_tests_cache:
         return _main_ci_tests_cache[job_id]
-    res = {'issue': None, 'tests': []}
+    res = {'issue': None, 'tests': [], 'warnings': []}
     anns = _main_ci_get(opener, hdrs, f'check-runs/{job_id}/annotations?per_page=50')
+    # Runner-level warnings (e.g. "running low on disk space"); the label
+    # migration notices are notice-level and skipped.
+    res['warnings'] = [(a.get('message') or '')[:200] for a in anns or []
+                       if a.get('annotation_level') == 'warning'][:5]
     num = None
     for a in anns or []:
         m = re.search(r'(?:Opened|Appended to) #(\d+)', a.get('message') or '')
@@ -1870,11 +1969,17 @@ def _main_ci_run(opener, hdrs, w):
                    'status': j.get('status', ''), 'conclusion': j.get('conclusion'),
                    'url': j.get('html_url', ''), 'failed_step': failed_step,
                    'started_at': j.get('started_at'), 'completed_at': j.get('completed_at')}
+            if j.get('status') != 'completed':
+                cur = next((st for st in (j.get('steps') or []) if st.get('status') == 'in_progress'), None)
+                if cur:
+                    rec['current_step'] = cur.get('name')
+                    rec['current_step_started'] = cur.get('started_at')
             if j.get('conclusion') == 'failure' and j.get('status') == 'completed':
                 try:
                     ft = _main_ci_failed_tests(opener, hdrs, j['id'], rid, w.get('created_at', ''))
                     rec['issue'] = ft['issue']
                     rec['failed_tests'] = ft['tests']
+                    rec['warnings'] = ft.get('warnings') or []
                 except Exception as _e:
                     complete = False  # retry next poll rather than cache a gap
                     _log_exc('main_ci_failed_tests', _e)
@@ -1887,6 +1992,62 @@ def _main_ci_run(opener, hdrs, w):
             'conclusion': w.get('conclusion'), 'created_at': w.get('created_at', ''),
             'updated_at': w.get('updated_at', ''), 'url': w.get('html_url', ''),
             'jobs': jobs}
+
+def _main_ci_last_green_run(opener, hdrs, key, wid, max_age=600):
+    """Newest successful run on main, looked up past the recent window
+    (cached 10 min). None when main has no successful run of it at all."""
+    hit = _main_ci_last_green.get(key)
+    if hit and time.time() - hit[0] < max_age:
+        return hit[1]
+    try:
+        rs = _main_ci_get(opener, hdrs, f'actions/workflows/{wid}/runs?branch=main&status=success&per_page=1')
+        r = (rs.get('workflow_runs') or [None])[0]
+        val = {'sha': (r.get('head_sha') or '')[:7], 'at': r.get('created_at', ''),
+               'url': r.get('html_url', '')} if r else None
+    except Exception as _e:
+        _log_exc('main_ci_last_green', _e)
+        return hit[1] if hit else None
+    _main_ci_last_green[key] = (time.time(), val)
+    return val
+
+def _main_ci_attach_diag(out, opener_hdrs=None, budget=None):
+    """Attach cached failure diagnoses to every failed job in `out`; with a
+    budget, fetch and classify logs for jobs not yet diagnosed."""
+    for w in out['workflows']:
+        targets = []
+        for r in (w.get('latest'), w.get('last_completed')):
+            for j in (r or {}).get('jobs') or []:
+                if j.get('status') == 'completed' and j.get('conclusion') in ('failure', 'timed_out'):
+                    targets.append(j)
+        for hx in w.get('history') or []:
+            targets.extend(hx.get('failures') or [])
+        for j in targets:
+            jid = j.get('id')
+            if jid is None:
+                continue
+            if (jid not in _main_ci_diag and budget and budget[0] > 0
+                    and _main_ci_diag_failures[jid] < 3):
+                budget[0] -= 1
+                try:
+                    _main_ci_diag[jid] = _diagnose_log_clean(_main_ci_job_log(opener_hdrs, jid))
+                except Exception as _e:
+                    _main_ci_diag_failures[jid] += 1
+                    _log_exc('main_ci_diagnose', _e)
+            free = next((re.search(r'\(([\d.]+) ([KMG]B) available\)', x) for x in (j.get('warnings') or [])
+                         if 'disk space' in x), None)
+            d = dict(_main_ci_diag[jid]) if _main_ci_diag.get(jid) else None
+            if free:
+                mb = float(free.group(1)) * {'KB': 1 / 1024, 'MB': 1, 'GB': 1024}[free.group(2)]
+                # A nearly full runner disk makes the compiler fail in odd
+                # ways (missing objects, truncated output); when the log has
+                # no clearer cause, the runner's own warning is the cause.
+                if mb < 500 and (d is None or d['kind'] in ('other', 'compile', 'link')):
+                    d = {'kind': 'disk', 'summary': 'runner out of disk', 'file': (d or {}).get('file'),
+                         'detail': (d or {}).get('detail', ''), 'inferred': True}
+                if d:
+                    d['disk_free'] = f'{free.group(1)} {free.group(2)}'
+            if d:
+                j['diagnosis'] = d
 
 def fetch_main_ci(opener, hdrs, publish=None, prev=None):
     """Two phases: workflow/job status first (published straight away via
@@ -1927,6 +2088,8 @@ def fetch_main_ci(opener, hdrs, publish=None, prev=None):
             # newest run that actually concluded success or failure.
             latest = runs[0] if runs else None
             rec['history'] = [{'id': r['id'], 'sha': (r.get('head_sha') or '')[:7], 'status': r.get('status', ''),
+                               'dur': _iso_secs(r.get('run_started_at') or r.get('created_at', ''), r.get('updated_at', ''))
+                               if r.get('status') == 'completed' else None,
                                'conclusion': r.get('conclusion'), 'created_at': r.get('created_at', ''),
                                'url': r.get('html_url', '')} for r in reversed(runs[:10])]
             rec['url'] = f'https://github.com/{MAIN_CI_REPO}/actions/workflows/{path.split("/")[-1]}' \
@@ -1944,13 +2107,30 @@ def fetch_main_ci(opener, hdrs, publish=None, prev=None):
             # Failed runs in the recent strip carry their failing jobs (step,
             # failed tests, tracking issue), so a red run stays explainable
             # after a newer run has gone green. Completed runs are cached.
+            # Consecutive failures on main, newest first (cancelled/skipped
+            # runs are not verdicts and are stepped over).
+            verdicts = [r for r in runs if r.get('status') == 'completed'
+                        and r.get('conclusion') not in ('cancelled', 'skipped')]
+            n = 0
+            for r in verdicts:
+                if r.get('conclusion') in ('failure', 'timed_out', 'startup_failure'):
+                    n += 1
+                else:
+                    break
+            if n:
+                oldest = verdicts[n - 1]
+                rec['streak'] = {'count': n, 'capped': n == len(verdicts),
+                                 'since_sha': (oldest.get('head_sha') or '')[:7],
+                                 'since_at': oldest.get('created_at', ''), 'url': oldest.get('html_url', '')}
+                rec['last_green'] = _main_ci_last_green_run(opener, hdrs, key, wid)
             for hx in rec['history']:
                 if hx['status'] != 'completed' or hx['conclusion'] not in ('failure', 'timed_out', 'startup_failure'):
                     continue
                 try:
                     rr = _main_ci_run(opener, hdrs, next(r for r in runs if r['id'] == hx['id']))
                     keep_runs.add(hx['id'])
-                    hx['failures'] = [{'job': j['name'], 'conclusion': j.get('conclusion'),
+                    hx['failures'] = [{'id': j['id'], 'job': j['name'], 'conclusion': j.get('conclusion'),
+                                       'warnings': j.get('warnings') or [],
                                        'failed_step': j.get('failed_step'), 'issue': j.get('issue'),
                                        'failed_tests': j.get('failed_tests') or [], 'url': j.get('url')}
                                       for j in rr['jobs'] if j.get('status') == 'completed'
@@ -1972,6 +2152,7 @@ def fetch_main_ci(opener, hdrs, publish=None, prev=None):
     live_jobs |= {j['id'] for rid in keep_runs for j in (_main_ci_jobs_cache.get(rid) or [])}
     for jid in [k for k in _main_ci_tests_cache if k not in live_jobs]:
         _main_ci_tests_cache.pop(jid, None)
+    _main_ci_attach_diag(out)
     if publish:
         publish(dict(out))
     try:
@@ -1988,6 +2169,7 @@ def fetch_main_ci(opener, hdrs, publish=None, prev=None):
         except Exception as _e:
             _log_exc(f"main_ci_perf_{rec['key']}", _e)
     _main_ci_family_hit_rates(out)
+    _main_ci_attach_diag(out, hdrs, [MAIN_CI_DIAG_PER_POLL])
     for rid in [k for k in _main_ci_perf if k not in keep_perf]:
         _main_ci_perf.pop(rid, None)
     live_perf_jobs = {j['id'] for p in _main_ci_perf.values() for j in p['jobs'].values()}
@@ -1995,6 +2177,12 @@ def fetch_main_ci(opener, hdrs, publish=None, prev=None):
         _main_ci_cache_stats.pop(jid, None)
     for jid in [k for k in _main_ci_log_failures if k not in live_perf_jobs]:
         _main_ci_log_failures.pop(jid, None)
+    live_diag = live_jobs | live_perf_jobs | {f['id'] for w in out['workflows'] for hx in (w.get('history') or [])
+                                             for f in (hx.get('failures') or []) if f.get('id')}
+    for jid in [k for k in _main_ci_diag if k not in live_diag]:
+        _main_ci_diag.pop(jid, None)
+    for jid in [k for k in _main_ci_diag_failures if k not in live_diag]:
+        _main_ci_diag_failures.pop(jid, None)
     return out
 
 MAIN_CI_SNAPSHOT = '/Users/aetherclaude/state/main-ci.json'
@@ -4889,6 +5077,8 @@ function mciFailSummary(run){
   if(!bad.length)return '';
   const tests=bad.reduce((a,j)=>a+((j.failed_tests||[]).length),0);
   if(tests)return `${tests} test${tests===1?'':'s'} failed`;
+  const causes=[...new Set(bad.map(j=>j.diagnosis&&j.diagnosis.summary).filter(Boolean))];
+  if(causes.length)return esc(causes.join(', '));
   const steps=[...new Set(bad.map(j=>j.failed_step).filter(Boolean))];
   return steps.length?'failed at '+esc(steps.join(', ')):`${bad.length} job${bad.length===1?'':'s'} failed`;
 }
@@ -4898,7 +5088,8 @@ function renderMainCi(m){
   const tiles=m.workflows.map((w,i)=>{
     const v=w.last_completed,l=w.latest,live=l&&l.status!=='completed';
     const st=v?mciSt(v):mciSt(l),shown=v||l,red=v&&MCI_RED.includes(v.conclusion);
-    let sub=shown?(red?`<span style="color:var(--crit)">${mciFailSummary(v)}</span> &middot; `:'')+`${esc(shown.sha)} &middot; ${mciAgo(shown.updated_at||shown.created_at)}`
+    const strk=w.streak&&w.streak.count>1?`${w.streak.count}${w.streak.capped?'+':''} in a row &middot; `:'';
+    let sub=shown?(red?`<span style="color:var(--crit)">${strk}${mciFailSummary(v)}</span> &middot; `:'')+`${esc(shown.sha)} &middot; ${mciAgo(shown.updated_at||shown.created_at)}`
                  :(w.error?'fetch error':'no runs on main');
     if(live&&l!==v)sub+=` &middot; <span style="color:var(--accent)">&#9711; running</span>`;
     if(m.stale)sub+=` &middot; <span style="color:var(--muted-dim)" title="Last known state from before the dashboard restarted; refreshing">refreshing&hellip;</span>`;
@@ -4925,8 +5116,17 @@ function mciJobFailHtml(f,repo){
     (ft.length?` &middot; ${ft.length} test${ft.length===1?'':'s'} failed`
               :(f.failed_step?` &middot; failed at step <i>${esc(String(f.failed_step))}</i>`:` &middot; ${esc(String(f.conclusion||'failed'))}`))+
     (f.issue?` &middot; <a href="https://github.com/${U(repo)}/issues/${f.issue}" target="_blank">#${f.issue} &#x2197;</a>`:'');
+  const d=f.diagnosis;
+  if(d&&!(d.kind==='tests'&&ft.length)){
+    h+=`<div style="margin:3px 0 0 12px;color:var(--warn)">&#9888; <b>${esc(d.summary)}</b>`+
+      (d.disk_free?` <span style="color:#8598b4">(${esc(d.disk_free)} free)</span>`:'')+
+      (d.file?` <span style="color:#8598b4">&middot; ${d.kind==='disk'||d.kind==='oom'?'while compiling ':''}</span><code>${esc(d.file)}</code>`:'')+`</div>`;
+    if(d.detail&&d.kind!=='disk')h+=`<div style="margin:2px 0 0 12px;font-family:var(--mono);color:#8598b4;overflow-wrap:anywhere">${esc(d.detail)}</div>`;
+  }
   for(const t of ft)
     h+=`<div style="margin:3px 0 0 12px;font-family:var(--mono);color:var(--crit);overflow-wrap:anywhere">${esc(t.name)}${t.status?` <span style="color:#8598b4">(${esc(t.status)})</span>`:''}</div>`;
+  for(const x of (f.warnings||[]).filter(x=>!(d&&d.kind==='disk'&&/disk space/.test(x))))
+    h+=`<div style="margin:2px 0 0 12px;color:#5f708a">runner warning: ${esc(x)}</div>`;
   return h+'</div>';
 }
 function mciGb(b){return (b/1073741824).toFixed(b>=10737418240?0:2)+' GB'}
@@ -4949,7 +5149,8 @@ function mciPerfHtml(w,m){
         `<span>${svgSparkline((series||[]).filter(x=>x!=null),120,22)}</span></div>`};
     h+=row('Whole run (wall clock)',p.avg_run_s,p.last_run_s,p.run_durations,true);
     for(const j of p.jobs)h+=row(j.name,j.avg_s,j.last_s,j.durations,false);
-    if(!p.runs)h+=`<p style="color:#8598b4;font-size:11px;margin-top:6px">No successful runs in the recent window, so there is no average yet.</p>`;
+    const fd=(w.history||[]).filter(x=>x.status==='completed'&&MCI_RED.includes(x.conclusion)&&x.dur).map(x=>x.dur);
+    if(!p.runs)h+=`<p style="color:#8598b4;font-size:11px;margin-top:6px">No successful runs in the recent window, so there is no average yet.${fd.length?` Failed runs took ${mciDur(Math.min(...fd))}&ndash;${mciDur(Math.max(...fd))} (average ${mciDur(fd.reduce((a,b)=>a+b,0)/fd.length)}).`:''}</p>`;
     h+='</div>';
     const cj=p.jobs.filter(j=>j.cache);
     if(cj.length){
@@ -4991,7 +5192,7 @@ function showMainCiCheck(i){
       const js=j.status!=='completed'?['','var(--accent)']:(MCI_ST[j.conclusion]||['','var(--warn)']);
       jobs+=`<a class="x-mci-job" href="${U(j.url)}" target="_blank" title="${U(j.status==='completed'?j.conclusion:j.status)}"><span class="d" style="background:${js[1]}"></span>${esc(String(j.name))}</a>`;
       if(j.status==='completed'&&j.conclusion&&j.conclusion!=='success'&&j.conclusion!=='skipped'){
-        fails+=mciJobFailHtml({job:j.name,conclusion:j.conclusion,failed_step:j.failed_step,issue:j.issue,failed_tests:j.failed_tests},m.repo);
+        fails+=mciJobFailHtml({job:j.name,conclusion:j.conclusion,failed_step:j.failed_step,issue:j.issue,failed_tests:j.failed_tests,diagnosis:j.diagnosis,warnings:j.warnings},m.repo);
       }
     }
     return `<div class="x-mci-jobs" style="margin-top:8px">${jobs}${fails}</div>`;
@@ -4999,17 +5200,37 @@ function showMainCiCheck(i){
   const runHead=(run,label)=>{const st=mciSt(run);const sev=run.status!=='completed'?'MEDIUM':(MCI_RED.includes(run.conclusion)?'HIGH':'SAFE');
     return `<div class="modal-finding ${sev}"><span class="sev ${sev}">${st[0]}</span> ${label} &middot; <a href="${U(run.url)}" target="_blank" style="color:#5de3ff;text-decoration:none">${esc(run.sha)} &#x2197;</a> ${esc(run.title||'')} &middot; ${mciAgo(run.updated_at||run.created_at)}${run.event&&run.event!=='push'?' &middot; '+esc(run.event):''}</div>`};
   let h='';
+  const failDurs=(w.history||[]).filter(x=>x.status==='completed'&&MCI_RED.includes(x.conclusion)&&x.dur).map(x=>x.dur);
+  if(w.streak&&w.streak.count>1){
+    const st=w.streak,kinds={};let diagnosed=0;
+    for(const x of w.history||[])for(const f of x.failures||[])if(f.diagnosis){diagnosed++;kinds[f.diagnosis.summary]=(kinds[f.diagnosis.summary]||0)+1}
+    const ks=Object.entries(kinds).sort((a,b)=>b[1]-a[1]);
+    const cause=!ks.length?'':(ks.length===1?` &middot; cause: <b>${esc(ks[0][0])}</b> (all ${diagnosed} diagnosed)`
+      :` &middot; causes: `+ks.map(([k,n])=>`<b>${esc(k)}</b> &times;${n}`).join(', '));
+    const lg=w.last_green;
+    h+=`<div class="modal-finding HIGH"><span class="sev HIGH">&#10008; ${st.count}${st.capped?'+':''} IN A ROW</span> consecutive failures on main since `+
+      `<a href="${U(st.url)}" target="_blank" style="color:#5de3ff;text-decoration:none">${esc(st.since_sha)}</a> (${mciAgo(st.since_at)})${cause}`+
+      ` &middot; last green: ${lg?`<a href="${U(lg.url)}" target="_blank" style="color:#5de3ff;text-decoration:none">${esc(lg.sha)}</a> (${mciAgo(lg.at)})`:'none on main'}</div>`;
+  }
+  const runningHtml=run=>{
+    const rj=((run&&run.jobs)||[]).filter(j=>j.status!=='completed'&&j.current_step);
+    if(!rj.length)return '';
+    const rng=failDurs.length?` &middot; recent failed runs ended after ${mciDur(Math.min(...failDurs))}${failDurs.length>1?'&ndash;'+mciDur(Math.max(...failDurs)):''}`:'';
+    return rj.map(j=>`<div class="x-mci-fail" style="color:var(--accent)">&#9711; <b style="color:var(--ink-soft)">${esc(j.name)}</b> &middot; step <i>${esc(j.current_step)}</i> running ${mciDur((Date.now()-new Date(j.current_step_started))/1000)}`+
+      ` <span style="color:#8598b4">(job ${mciDur((Date.now()-new Date(j.started_at))/1000)}${rng})</span></div>`).join('');
+  };
   if(v){h+=runHead(v,'last verdict')+jobsHtml(v)}
-  if(live&&l!==v){h+='<div style="margin-top:14px">'+runHead(l,'in progress')+jobsHtml(l)+'</div>'}
+  if(live&&l!==v){h+='<div style="margin-top:14px">'+runHead(l,'in progress')+jobsHtml(l)+runningHtml(l)+'</div>'}
+  else if(live&&!v){h+=runningHtml(l)}
   if(!v&&!live)h+=`<p style="color:#8598b4">${w.error?'Fetch error: '+esc(w.error):'No runs on main yet.'}</p>`;
   h+=mciPerfHtml(w,m);
   const hist=(w.history||[]).slice().reverse();
   if(hist.length){
     h+='<div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px"><div style="font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:6px">RECENT RUNS ON MAIN</div>';
     for(const x of hist){const st=mciSt(x);
-      h+=`<div style="display:flex;gap:10px;align-items:center;padding:3px 2px;border-bottom:1px solid var(--line);font-size:11px"><span style="color:${st[1]};width:80px;font-weight:600">${st[0]}</span><a href="${U(x.url)}" target="_blank" style="color:#5de3ff;text-decoration:none;font-family:var(--mono)">${esc(x.sha)}</a><span style="color:#5f708a;margin-left:auto">${mciAgo(x.created_at)}</span></div>`;
+      h+=`<div style="display:flex;gap:10px;align-items:center;padding:3px 2px;border-bottom:1px solid var(--line);font-size:11px"><span style="color:${st[1]};width:80px;font-weight:600">${st[0]}</span><a href="${U(x.url)}" target="_blank" style="color:#5de3ff;text-decoration:none;font-family:var(--mono)">${esc(x.sha)}</a><span style="color:#8598b4;margin-left:auto;font-family:var(--mono)" title="run duration">${x.dur?mciDur(x.dur):''}</span><span style="color:#5f708a;width:64px;text-align:right">${mciAgo(x.created_at)}</span></div>`;
       if(x.failures&&x.failures.length)
-        h+=`<div style="padding:2px 2px 8px 92px;border-bottom:1px solid var(--line)">${x.failures.map(f=>mciJobFailHtml(f,m.repo)).join('')}</div>`;
+        h+=`<div style="padding:2px 2px 8px 92px;border-bottom:1px solid var(--line)">${x.failures.map(f=>mciJobFailHtml(Object.assign({},f,{warnings:[]}),m.repo)).join('')}</div>`;
     }
     h+='</div>';
   }
