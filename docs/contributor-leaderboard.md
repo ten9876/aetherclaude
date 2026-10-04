@@ -37,7 +37,7 @@ merger.
 | First merged PR ever | +25 |
 | Review that approves | 4 |
 | Review that requests changes | 3 |
-| Comment-only review | 2 |
+| Comment-only review | 4 |
 | Merge someone else's PR | 5 |
 | Your merged PR turns a red `main` green | +15 |
 | Your revert is merged | +3 |

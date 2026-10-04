@@ -60,7 +60,7 @@ RULES = {
     'first_merged_pr':     (25, 'prs'),
     'review_approve':      (4, 'reviews'),
     'review_changes':      (3, 'reviews'),
-    'review_comment':      (2, 'reviews'),
+    'review_comment':      (4, 'reviews'),
     'merge_other':         (5, 'merges'),
     'main_fixed':          (15, 'main'),
     'revert_merged':       (3, 'main'),
