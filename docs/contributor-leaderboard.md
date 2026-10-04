@@ -42,6 +42,34 @@ merger.
 | Your merged PR turns a red `main` green | +15 |
 | Your revert is merged | +3 |
 
+### How points stack: from issue to merged PR
+
+Points add up along the way, and several people earn from the same fix:
+
+| Who | What happens | Points | Running total |
+|---|---|---|---|
+| Alice | opens an issue describing the bug | +4 | 4 |
+| Alice | a maintainer labels it `bug` | +2 | 6 |
+| Bob | comments on the issue with a reproduction | +2 | 2 |
+| Bob | opens a PR that fixes it and links the issue | +6 | 8 |
+| Carol | reviews the PR and requests changes | +8 | 8 |
+| Bob | replies on the PR after pushing the fix | +3 | 11 |
+| Carol | approves the updated PR (on a later day) | +10 | 18 |
+| Dave | merges the PR | +5 | 5 |
+| Bob | his PR is merged | +10 | 21 |
+| Bob | the merged PR closes the linked issue | +5 | 26 |
+| Bob | the PR added a test | +2 | 28 |
+| Bob | it was his first merged PR ever | +25 | 53 |
+| Alice | her issue is fixed by the merged PR | +5 | 11 |
+
+Totals: Alice 11, Bob 53, Carol 18, Dave 5. Bob's PR alone is worth 51 (26
+without the one-time first-PR bonus). Carol's two reviews both score only
+because they were on different days. If the PR had broken `main`, Carol
+would lose 20, Bob 15 and Dave 10; Bob would get 5 back for fixing it within
+24 hours, and anyone else who turned `main` green would earn 15.
+
+The rules popup on the page builds this example from the live point values.
+
 ### Breaking main
 
 | Role in the PR that broke `main` | Points |

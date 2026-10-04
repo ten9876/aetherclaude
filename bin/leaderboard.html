@@ -59,6 +59,11 @@ tr.ev td{background:var(--bg-1);padding:0}
 .rt td{padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;text-align:left;font-family:var(--sans);white-space:normal}
 .rt td:last-child{text-align:right;font-family:var(--mono);font-weight:700;color:var(--ink);width:60px}
 .rt td.neg{color:var(--crit)}
+.rt.stack th{font-size:11px;font-weight:500;color:var(--muted-dim);text-align:left;padding:4px 0;border-bottom:1px solid var(--line)}
+.rt.stack th:nth-child(n+3){text-align:right}
+.rt.stack td:first-child{width:60px}
+.rt.stack td:nth-child(3){text-align:right;font-family:var(--mono);font-weight:700;color:var(--ink);width:60px}
+.rt.stack td:last-child{text-align:right;font-family:var(--mono);font-weight:400;color:var(--muted);width:90px}
 .brk{display:grid;grid-template-columns:90px 70px minmax(0,1fr) 140px;column-gap:12px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px}
 .brk span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 </style></head><body><div class="wrap">
@@ -81,6 +86,9 @@ tr.ev td{background:var(--bg-1);padding:0}
 <li><b>The maintainer</b> is scored the same way, penalties included, and shown in the standings, but can't win.</li>
 <li><b>Bots</b> (the AetherClaude agent, Dependabot, Copilot) aren't ranked. Their PRs still count for the people who review and merge them.</li></ul>
 <h3>Earning points</h3><div id="rules-earn"></div>
+<h3>How points stack: from issue to merged PR</h3>
+<p>Points add up along the way, and several people earn from the same fix. Follow one bug through:</p>
+<div id="rules-stack"></div>
 <h3>Breaking main</h3><div id="rules-lose"></div>
 <ul><li>A <b>break</b> is the first failed CI or Full Suite run on <code>main</code> after a green one, charged to the PR whose commit it ran on.</li>
 <li>While <code>main</code> is already red, a later PR is a break too if it makes something <b>new</b> fail: a test that hasn't failed since <code>main</code> went red. Merging into a red <code>main</code> without breaking anything further costs nothing.</li>
@@ -153,6 +161,38 @@ function renderRules(){
   const by={};for(const [k,v] of Object.entries(D.rules))(by[v.category]=by[v.category]||[]).push(k);
   document.getElementById('rules-earn').innerHTML=CATS.filter(c=>c!=='penalties'&&by[c]).map(c=>`<div class="rcat">${CAT_NAME[c]}</div>`+ruleRows(by[c])).join('');
   document.getElementById('rules-lose').innerHTML=ruleRows(by.penalties||[]);
+  renderStack();
+}
+// Worked example: one bug from report to merge. Values come from D.rules.
+const STACK=[
+  ['Alice','issue_open','opens an issue describing the bug'],
+  ['Alice','issue_confirmed','a maintainer labels it bug'],
+  ['Bob','issue_comment','comments on the issue with a reproduction'],
+  ['Bob','pr_open','opens a PR that fixes it and links the issue'],
+  ['Carol','review_changes','reviews the PR and requests changes'],
+  ['Bob','pr_comment','replies on the PR after pushing the fix'],
+  ['Carol','review_approve','approves the updated PR (on a later day)'],
+  ['Dave','merge_other','merges the PR'],
+  ['Bob','pr_merged','his PR is merged'],
+  ['Bob','pr_closes_issue','the merged PR closes the linked issue'],
+  ['Bob','pr_tests','the PR added a test'],
+  ['Bob','first_merged_pr','it was his first merged PR ever'],
+  ['Alice','issue_fixed','her issue is fixed by the merged PR'],
+];
+function renderStack(){
+  const pts=k=>(D.rules[k]||{}).points||0,tot={};
+  let h='<table class="rt stack"><tr><th>Who</th><th>What happens</th><th>Points</th><th>Running total</th></tr>';
+  for(const [who,k,what] of STACK){tot[who]=(tot[who]||0)+pts(k);
+    h+=`<tr><td><b>${who}</b></td><td>${esc(what)}</td><td>+${pts(k)}</td><td class="dim">${tot[who]}</td></tr>`}
+  h+='</table>';
+  const first=pts('first_merged_pr');
+  h+=`<p style="margin-top:8px"><b>Totals:</b> ${Object.entries(tot).map(([w,t])=>`${w} ${t}`).join(' &middot; ')}. `+
+    `Bob's PR alone is worth ${tot.Bob-pts('issue_comment')} (${tot.Bob-pts('issue_comment')-first} without the one-time first-PR bonus). `+
+    `Reviews only count once per reviewer per PR per day, so Carol's two reviews score because they were on different days. Same day, she'd get the stronger one only.</p>`;
+  const a=pts('break_approver'),au=pts('break_author'),m=pts('break_merger'),fx=pts('break_self_fix');
+  h+=`<p><b>If that PR had broken main</b>, Carol (approved) would lose ${-a}, Bob (author) ${-au} and Dave (merged) ${-m}. `+
+    `If Bob fixes it within 24 hours he gets ${fx} back. Whoever else turns main green earns +${pts('main_fixed')}.</p>`;
+  document.getElementById('rules-stack').innerHTML=h;
 }
 function openRules(){renderRules();document.getElementById('rules-modal').classList.add('show');document.body.style.overflow='hidden'}
 function closeRules(){document.getElementById('rules-modal').classList.remove('show');document.body.style.overflow=''}
