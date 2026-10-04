@@ -127,7 +127,7 @@ td.pts.soft{color:var(--muted);font-weight:500}
 <p>A week runs from one AetherSDR release to the next. When a release is published, two people are named for that week: the <b>contributor of the week</b> (most contributor points) and the <b>steward of the week</b> (most steward points). The same person can win both, but only by topping each score on its own. Until the release, the week's leaders are shown as "leading". Contributor ties go to more PR points, then more issue points; steward ties to more review points.</p>
 </div></div>
 <script>
-let D=null,views=[],cur=null;
+let D=null,views=[],cur=null,picked=false;
 const CATS=['comments','discussions','issues','prs','main','cpenalties','reviews','merges','stewardship','penalties'];
 const C_CATS=['comments','discussions','issues','prs','main','cpenalties'],S_CATS=['reviews','merges','stewardship'];
 let rankBy='total';
@@ -140,14 +140,21 @@ const fmtD=s=>s?new Date(s).toLocaleDateString(undefined,{month:'short',day:'num
 function start(data){
   D=data;
   views=[...D.windows.slice().reverse().map(w=>({key:w.tag,name:w.tag==='current'?'This week':w.tag,w})),{key:'all',name:'All time',w:{standings:D.all_time,all:true}}];
-  if(!views.some(v=>v.key===cur))cur=views[0].key;
+  // Open on the release that just closed for its first 48 hours, so the
+  // page isn't a near-empty new week right after a release; otherwise on
+  // this week. A tab the viewer picked always wins.
+  if(!picked||!views.some(v=>v.key===cur)){
+    const cw=D.windows.find(w=>w.tag==='current'),last=D.windows.filter(w=>w.tag!=='current').slice(-1)[0];
+    const fresh=cw&&cw.start&&last&&(Date.now()-new Date(cw.start).getTime())<48*3600*1000;
+    cur=fresh?last.tag:views[0].key;
+  }
   renderRules();
   render();
 }
 function num(v){return v>0?`<span>${v}</span>`:v<0?`<span class="neg">${v}</span>`:'<span class="zero">·</span>'}
 function render(){
   const v=views.find(x=>x.key===cur),w=v.w,st=w.standings;
-  document.getElementById('tabs').innerHTML=views.map(x=>`<span class="tab${x.key===cur?' on':''}" onclick="cur='${x.key}';render()">${esc(x.name)}</span>`).join('');
+  document.getElementById('tabs').innerHTML=views.map(x=>`<span class="tab${x.key===cur?' on':''}" onclick="cur='${x.key}';picked=true;render()">${esc(x.name)}</span>`).join('');
   const span=w.start||w.end?`${w.start?fmtD(w.start):'start'} &rarr; ${w.end?fmtD(w.end):'now'}`:'all collected history';
   document.getElementById('sub').innerHTML=`${esc(D.repo)} &middot; ${span} &middot; GitHub data as of ${fmtD(D.collected_at||D.generated_at)}`;
   const top=st.find(r=>r.eligible);
