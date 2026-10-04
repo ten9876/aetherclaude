@@ -54,6 +54,7 @@ tr.ev td{background:var(--bg-1);padding:0}
 .modal code{font-family:var(--mono);font-size:12px;color:var(--ink)}
 .modal .mx{position:absolute;top:12px;right:14px;background:none;border:0;color:var(--muted);font-size:22px;cursor:pointer;line-height:1}
 .modal .mx:hover{color:var(--ink)}
+.rboard{font-size:12.5px;font-weight:600;color:var(--ink);margin:14px 0 2px}
 .rcat{font-size:11px;color:var(--muted-dim);margin:10px 0 2px}
 .rt{width:100%;min-width:0;border-collapse:collapse;margin-bottom:4px}
 .rt td{padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;text-align:left;font-family:var(--sans);white-space:normal}
@@ -64,6 +65,9 @@ tr.ev td{background:var(--bg-1);padding:0}
 .rt.stack td:first-child{width:60px}
 .rt.stack td:nth-child(3){text-align:right;font-family:var(--mono);font-weight:700;color:var(--ink);width:60px}
 .rt.stack td:last-child{text-align:right;font-family:var(--mono);font-weight:400;color:var(--muted);width:90px}
+tr.grp th{font-size:10px;letter-spacing:.4px;text-transform:uppercase;color:var(--muted);border-bottom:0;padding-bottom:0;text-align:center}
+th.gc,td.gc,th.gs,td.gs{border-left:1px solid var(--line-hi)}
+td.pts.soft{color:var(--muted);font-weight:500}
 .heroes{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px;margin-bottom:14px}
 .heroes .hero{margin-bottom:0}
 .seg{display:inline-flex;margin-left:12px;border:1px solid var(--line-hi);border-radius:7px;overflow:hidden;text-transform:none;letter-spacing:0;font-weight:500;vertical-align:middle}
@@ -78,7 +82,8 @@ tr.ev td{background:var(--bg-1);padding:0}
 <div class="tabs" id="tabs"></div>
 <div id="hero"></div>
 <div class="panel"><div class="ph"><span id="tbl-title">Standings</span><span class="dim" style="text-transform:none;letter-spacing:0;font-weight:400">Click a row for the point-by-point breakdown</span></div>
-<table><thead><tr><th>#</th><th>Contributor</th><th>Points</th><th title="Points from reviewing, merging, triage, cleanup, shepherding, releases and main health">Steward</th><th>Comments</th><th>Discussions</th><th>Issues</th><th>PRs</th><th>Reviews</th><th>Merges</th><th>Stewardship</th><th>Main health</th><th>Penalties</th></tr></thead><tbody id="tb"></tbody></table></div>
+<table><thead><tr class="grp"><th colspan="2"></th><th colspan="2">Score</th><th colspan="5" class="gc">Contributor points</th><th colspan="4" class="gs">Steward points</th></tr>
+<tr><th>#</th><th>Contributor</th><th title="Contributor points: ranks the contributor of the week">Contributor</th><th title="Steward points: ranks the steward of the week">Steward</th><th class="gc">Comments</th><th>Discussions</th><th>Issues</th><th>PRs</th><th title="Fixing main, reverts, and the author's breaking-main penalty">Main health</th><th class="gs">Reviews</th><th>Merges</th><th>Stewardship</th><th title="Approver and merger breaking-main penalties">Penalties</th></tr></thead><tbody id="tb"></tbody></table></div>
 <div class="panel" id="breaks"></div>
 <p class="dim" style="font-size:11px;text-align:center;margin-top:4px">Points depend on the kind of action, never its size. <a href="#" onclick="openRules();return false">How points work</a></p>
 </div>
@@ -90,7 +95,7 @@ tr.ev td{background:var(--bg-1);padding:0}
 <ul><li><b>Community contributors and org members</b> are ranked and can be named contributor of the week.</li>
 <li><b>The maintainer</b> is scored the same way, penalties included, and shown in the standings, but can't win.</li>
 <li><b>Bots</b> (the AetherClaude agent, Dependabot, Copilot) aren't ranked. Their PRs still count for the people who review and merge them.</li></ul>
-<h3>Earning points</h3><div id="rules-earn"></div>
+<h3>Earning points</h3><p>There are two separate scores. Every action counts toward exactly one of them.</p><div id="rules-earn"></div>
 <h3>How points stack: from issue to merged PR</h3>
 <p>Points add up along the way, and several people earn from the same fix. Follow one bug through:</p>
 <div id="rules-stack"></div>
@@ -108,14 +113,15 @@ tr.ev td{background:var(--bg-1);padding:0}
 <li>At most 4 new issues per person per day score, and at most 15 issue closes a day.</li>
 <li>Issues and PRs labelled <code>spam</code> or <code>invalid</code> lose their points.</li></ul>
 <h3>Steward of the week</h3>
-<p>A lot of what keeps AetherSDR moving isn't writing PRs: reviewing them, merging them, triaging and cleaning up issues, finishing other people's PRs, cutting releases, and fixing <code>main</code>. <b>Steward of the week</b> ranks only that work: review, merge and stewardship points, fixing main and reverts, less the approver and merger penalties. The table's <b>Steward</b> column shows each person's steward points; switch the ranking to <b>Steward</b> to sort by it.</p>
+<p>A lot of what keeps AetherSDR moving isn't writing PRs: reviewing them, merging them, triaging and cleaning up issues, finishing other people's PRs and cutting releases. That work earns <b>steward points</b>, a separate score from <b>contributor points</b>: no action counts toward both. Steward of the week ranks steward points (less the approver and merger penalties); contributor of the week ranks contributor points (less the author's penalty). A steward is top contributor only if their contributor points alone put them there. Switch the table between <b>Contributor</b> and <b>Steward</b> to rank by either.</p>
 <h3>Contributor of the week</h3>
-<p>A week runs from one AetherSDR release to the next. When a release is published, two people are named for that week: the <b>contributor of the week</b> (most points overall) and the <b>steward of the week</b> (most steward points). The same person can win both. Until the release, the week's leaders are shown as "leading". Overall ties go to more PR points, then more review points; steward ties to more review points.</p>
+<p>A week runs from one AetherSDR release to the next. When a release is published, two people are named for that week: the <b>contributor of the week</b> (most contributor points) and the <b>steward of the week</b> (most steward points). The same person can win both, but only by topping each score on its own. Until the release, the week's leaders are shown as "leading". Contributor ties go to more PR points, then more issue points; steward ties to more review points.</p>
 </div></div>
 <script>
 let D=null,views=[],cur=null;
-const CATS=['comments','discussions','issues','prs','reviews','merges','stewardship','main','penalties'];
-let rankBy='overall';
+const CATS=['comments','discussions','issues','prs','main','reviews','merges','stewardship','penalties'];
+const C_CATS=['comments','discussions','issues','prs','main'],S_CATS=['reviews','merges','stewardship'];
+let rankBy='contributor';
 const LABEL={discussion_comment:'Discussion comment',issue_comment:'Issue comment',pr_comment:'PR comment',discussion_open:'Started discussion',discussion_answer:'Accepted answer',issue_open:'Opened issue',issue_confirmed:'Issue confirmed',issue_fixed:'Issue fixed',pr_open:'Opened PR',pr_merged:'PR merged',pr_closes_issue:'PR closes issue',pr_tests:'PR adds tests',first_merged_pr:'First merged PR',review_approve:'Approved',review_changes:'Requested changes',review_comment:'Review comments',merge_other:'Merged a PR',main_fixed:'Fixed main',revert_merged:'Revert merged',issue_triaged:'Triaged an issue',issue_closed:'Closed an issue',pr_shepherd:'Shepherded a PR',review_first_fast:'First review within 24h',release_published:'Published a release',break_approver:'Approved a break',break_author:'Broke main',break_merger:'Merged a break',break_self_fix:'Fixed own break',spam:'Spam/invalid'};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const refUrl=r=>{const [t,n]=r.split('#');return `https://github.com/${D.repo}/${t==='pr'?'pull':t==='discussion'?'discussions':t==='release'?'releases/tag':'issues'}/${n}`};
@@ -138,12 +144,12 @@ function render(){
   const isCur=w.tag==='current',all=!w.tag;
   const card=(r,title,val,unit,detail)=>`<div class="hero"><img src="${esc(r.avatar||`https://github.com/${r.login}.png`)}" alt=""><div style="min-width:0"><div class="t">${title}</div><div class="n">${esc(r.login)}</div>`+
     `<div class="dim" style="margin-top:2px">${detail}</div></div><div class="p"><b>${val}</b><span class="dim">${unit}</span></div></div>`;
-  const catLine=r=>CATS.filter(c=>r.cats[c]).map(c=>`${c==='prs'?'PRs':c} ${r.cats[c]}`).join(' &middot; ');
+  const catLine=(r,cats)=>cats.filter(c=>r.cats[c]).map(c=>`${c==='prs'?'PRs':c==='main'?'main health':c} ${r.cats[c]}`).join(' &middot; ');
   document.getElementById('hero').innerHTML='<div class="heroes">'+
-    (top?card(top,isCur?'Leading this week':all?'All-time leader':`Contributor of the week &middot; ${esc(w.tag)}`,top.points,'points',catLine(top)):'')+
+    (top?card(top,isCur?'Leading contributor this week':all?'All-time contributor':`Contributor of the week &middot; ${esc(w.tag)}`,top.points,'contributor points',catLine(top,C_CATS)):'')+
     (stew?card(stew,isCur?'Leading steward this week':all?'All-time steward':`Steward of the week &middot; ${esc(w.tag)}`,stew.steward,'steward points',
-      `reviews ${stew.cats.reviews||0} &middot; merges ${stew.cats.merges||0} &middot; stewardship ${stew.cats.stewardship||0}`):'')+'</div>';
-  document.getElementById('tbl-title').innerHTML=`Standings &middot; ${esc(v.name)} <span class="seg"><span class="${rankBy==='overall'?'on':''}" onclick="rankBy='overall';render()">Overall</span><span class="${rankBy==='steward'?'on':''}" onclick="rankBy='steward';render()">Steward</span></span>`;
+      catLine(stew,[...S_CATS,'penalties'])):'')+'</div>';
+  document.getElementById('tbl-title').innerHTML=`Standings &middot; ${esc(v.name)} <span class="seg"><span class="${rankBy==='contributor'?'on':''}" onclick="rankBy='contributor';render()">Contributor</span><span class="${rankBy==='steward'?'on':''}" onclick="rankBy='steward';render()">Steward</span></span>`;
   const rows=rankBy==='steward'?st.slice().sort((a,b)=>(b.steward-a.steward)||a.login.localeCompare(b.login)):st;
   const leadLogin=rankBy==='steward'?(stew&&stew.login):(top&&top.login);
   let h='';
@@ -151,7 +157,8 @@ function render(){
     const lead=r.login===leadLogin,rk=rankBy==='steward'?r.steward_rank:r.rank;
     h+=`<tr class="row${lead?' lead':''}" onclick="tog(${i})"><td class="rank">${r.eligible&&rk?(lead?'<span class="gold">1</span>':rk):'&mdash;'}</td>`+
       `<td><div class="who"><img src="${esc(r.avatar||`https://github.com/${r.login}.png`)}" alt="" loading="lazy"><b>${esc(r.login)}</b>${r.eligible?'':`<span class="badge" title="Scored and shown, but not eligible to win">MAINTAINER &middot; NOT ELIGIBLE</span>`}</div></td>`+
-      `<td class="pts${r.points<0?' neg':''}">${r.points}</td><td class="${r.steward<0?'neg':''}" style="color:${r.steward>0?'var(--ink-soft)':''}">${r.steward||'<span class="zero">·</span>'}</td>`+CATS.map(c=>`<td>${num(r.cats[c]||0)}</td>`).join('')+`</tr>`+
+      `<td class="pts${r.points<0?' neg':''}${rankBy==='steward'?' soft':''}">${r.points}</td><td class="pts${r.steward<0?' neg':''}${rankBy==='steward'?'':' soft'}">${r.steward||'<span class="zero">·</span>'}</td>`+
+      CATS.map((c,ci)=>`<td class="${ci===0?'gc':ci===5?'gs':''}">${num(r.cats[c]||0)}</td>`).join('')+`</tr>`+
       `<tr class="ev" id="ev${i}" style="display:none"><td colspan="13"><div class="evs">`+
       (r.event_count>r.events.length?`<span class="dim" style="grid-column:1/-1">Newest ${r.events.length} of ${r.event_count} entries</span>`:'')+r.events.map(e=>`<span class="dim">${fmtD(e.at)}</span><span>${esc(LABEL[e.rule]||e.rule)}</span><span style="text-align:right" class="${e.points<0?'neg':''}">${e.points>0?'+':''}${e.points}</span>`+
         `<span><a href="${refUrl(e.ref)}" target="_blank">${esc(e.ref.replace('discussion','disc'))}</a> <span class="dim">${esc(e.note||'')}</span></span>`).join('')+`</div></td></tr>`;
@@ -179,8 +186,16 @@ function renderRules(){
   if(!D){for(const id of ['rules-earn','rules-stack','rules-lose'])
     document.getElementById(id).innerHTML='<p class="dim">Loading point values&hellip;</p>';return}
   const by={};for(const [k,v] of Object.entries(D.rules))(by[v.category]=by[v.category]||[]).push(k);
-  document.getElementById('rules-earn').innerHTML=CATS.filter(c=>c!=='penalties'&&by[c]).map(c=>`<div class="rcat">${CAT_NAME[c]}</div>`+ruleRows(by[c])).join('');
-  document.getElementById('rules-lose').innerHTML=ruleRows(by.penalties||[]);
+  const PEN=['break_approver','break_author','break_merger','break_self_fix','spam'];
+  const sect=(cats)=>cats.map(c=>[c,(by[c]||[]).filter(k=>!PEN.includes(k))]).filter(([c,ks])=>ks.length)
+    .map(([c,ks])=>`<div class="rcat">${CAT_NAME[c]}</div>`+ruleRows(ks)).join('');
+  document.getElementById('rules-earn').innerHTML=
+    `<div class="rboard">Contributor points <span class="dim">&middot; rank the contributor of the week</span></div>`+sect(C_CATS)+
+    `<div class="rboard">Steward points <span class="dim">&middot; rank the steward of the week</span></div>`+sect(S_CATS);
+  const pen=PEN.filter(k=>D.rules[k]);
+  document.getElementById('rules-lose').innerHTML=
+    `<div class="rcat">Contributor points</div>`+ruleRows(pen.filter(k=>D.rules[k].board!=='steward'))+
+    `<div class="rcat">Steward points</div>`+ruleRows(pen.filter(k=>D.rules[k].board==='steward'));
   renderStack();
 }
 // Worked example: one bug from report to merge. Values come from D.rules.
@@ -207,7 +222,9 @@ function renderStack(){
     h+=`<tr><td><b>${who}</b></td><td>${esc(what)}</td><td>+${pts(k)}</td><td class="dim">${tot[who]}</td></tr>`}
   h+='</table>';
   const first=pts('first_merged_pr');
-  h+=`<p style="margin-top:8px"><b>Totals:</b> ${Object.entries(tot).map(([w,t])=>`${w} ${t}`).join(' &middot; ')}. `+
+  const brd={};for(const [who,k] of STACK){const b=(D.rules[k]||{}).board||'contributor';brd[who]=brd[who]||{};brd[who][b]=(brd[who][b]||0)+pts(k)}
+  h+=`<p style="margin-top:8px"><b>Totals:</b> ${Object.entries(brd).map(([w,b])=>`${w} ${Object.entries(b).map(([k,v])=>`${v} ${k}`).join(' + ')}`).join(' &middot; ')} points. `+
+    `Bob and Alice earn contributor points; everything Carol does here is steward work, so it counts only toward steward of the week. `+
     `Bob's PR alone is worth ${tot.Bob-pts('issue_comment')} (${tot.Bob-pts('issue_comment')-first} without the one-time first-PR bonus). `+
     `Reviews only count once per reviewer per PR per day, so Carol's two reviews score because they were on different days. Same day, she'd get the stronger one only.</p>`;
   const a=pts('break_approver'),au=pts('break_author'),m=pts('break_merger'),fx=pts('break_self_fix');

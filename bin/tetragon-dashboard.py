@@ -2247,7 +2247,9 @@ def leaderboard_data():
             cur = db.execute("SELECT value FROM state WHERE name='cursor'").fetchone()
             data = {'generated_at': now_utc_iso(), 'collected_at': cur[0] if cur else None,
                     'repo': cp.REPO,
-                    'rules': {k: {'points': v[0], 'category': v[1]} for k, v in cp.RULES.items()},
+                    'rules': {k: {'points': v[0], 'category': v[1],
+                                  'board': 'steward' if k in cp.STEWARD_RULES else 'contributor'}
+                              for k, v in cp.RULES.items()},
                     'windows': [dict(w, standings=cp.standings(db, led, w['start'], w['end'])) for w in ws],
                     'all_time': all_time, 'breaks': breaks}
         finally:

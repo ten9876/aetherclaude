@@ -58,14 +58,21 @@ overlook:
 Opening a PR pays 5 and merging it 10 more, so most of a PR's value
 arrives when it merges.
 
-### Steward of the week
+### Two separate scores
 
-Alongside the contributor of the week (most points overall), each release
-names a **steward of the week**: the most steward points, counting reviews,
-merges, stewardship, fixing main and reverts, less the approver and merger
-penalties. It recognises the people whose reviewing, merging and admin get
-other people's PRs over the line. The page shows each person's steward points
-and can rank by them.
+Every action counts toward exactly one of two scores, and each names its own
+winner at every release:
+
+- **Contributor points** rank the **contributor of the week**: comments,
+  discussions, issues, PRs, fixing `main` and reverts, less the author's own
+  breaking-main penalty (with its refund) and spam.
+- **Steward points** rank the **steward of the week**: reviews, merges,
+  triage, closing issues, shepherding PRs, fast first reviews and releases,
+  less the approver and merger breaking-main penalties.
+
+A steward is top contributor only if their contributor points alone put them
+there, and the other way round. The page shows both scores and ranks by
+either.
 
 ### How points stack: from issue to merged PR
 
@@ -88,7 +95,7 @@ Points add up along the way, and several people earn from the same fix:
 | Bob | it was his first merged PR ever | +25 | 52 |
 | Alice | her issue is fixed by the merged PR | +5 | 11 |
 
-Totals: Alice 11, Bob 52, Carol 31 (all of Carol's are steward points). Bob's
+Totals: Alice 11 and Bob 52 contributor points; Carol 31 steward points. Bob's
 PR alone is worth 50 (25 without the one-time first-PR bonus). Carol's two
 reviews both score only because they were on different days. Merging usually
 happens this way: the approver arms auto-merge, and GitHub credits them with
@@ -147,9 +154,9 @@ The rules popup on the page builds this example from the live point values.
 ## Weekly windows
 
 A week runs from one non-prerelease AetherSDR release to the next, so the
-winner is known when the release is published. The current week is shown as
-"leading" until the next release lands. Ties break on more PR points, then
-more review points.
+winners are known when the release is published. The current week is shown as
+"leading" until the next release lands. Contributor ties break on more PR points, then more issue points; steward
+ties on more review points.
 
 ## Data model
 

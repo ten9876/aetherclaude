@@ -71,10 +71,10 @@ RULES = {
     'main_fixed':          (15, 'main'),
     'revert_merged':       (3, 'main'),
     'break_approver':      (-60, 'penalties'),
-    'break_author':        (-45, 'penalties'),
+    'break_author':        (-45, 'main'),        # contributor side
     'break_merger':        (-30, 'penalties'),
-    'break_self_fix':      (15, 'penalties'),
-    'spam':                (-3, 'penalties'),
+    'break_self_fix':      (15, 'main'),
+    'spam':                (-3, 'issues'),
 }
 CAP_COMMENT_PER_THREAD_DAY = 1
 CAP_OWN_PR_REPLIES = 2
@@ -84,11 +84,13 @@ CAP_ISSUE_CLOSES_PER_DAY = 15
 FAST_REVIEW_WINDOW = timedelta(hours=24)
 # Labels that are workflow plumbing, not triage judgement.
 NON_TRIAGE_LABELS = {'claude-active', 'aetherclaude-eligible', 'full-suite', 'sanitizer', 'asan-ubsan', 'tsan'}
-# Steward of the week ranks only these: reviewing, merging, triage, cleanup,
-# shepherding, releases and main health, with the gatekeeper penalties.
+# Two separate scores, no overlap: steward points (reviewing, merging,
+# triage, cleanup, shepherding, releases, and the approver and merger
+# penalties) rank the steward of the week; everything else is contributor
+# points and ranks the contributor of the week.
 STEWARD_RULES = {'review_approve', 'review_changes', 'review_comment', 'merge_other', 'issue_triaged',
-                 'issue_closed', 'pr_shepherd', 'review_first_fast', 'release_published', 'main_fixed',
-                 'revert_merged', 'break_approver', 'break_merger'}
+                 'issue_closed', 'pr_shepherd', 'review_first_fast', 'release_published',
+                 'break_approver', 'break_merger'}
 SELF_FIX_WINDOW = timedelta(hours=24)
 
 
@@ -799,17 +801,18 @@ def standings(db, led, start=None, end=None):
     out = []
     for login, r in rows.items():
         kind, role, avatar = people.get(login, ('User', role_of(login), ''))
+        steward = sum(e['points'] for e in r['events'] if e['rule'] in STEWARD_RULES)
         out.append({'login': login, 'role': role, 'eligible': role == 'contributor', 'avatar': avatar,
-                    'points': r['points'], 'cats': dict(r['cats']),
-                    'steward': sum(e['points'] for e in r['events'] if e['rule'] in STEWARD_RULES),
+                    'points': r['points'] - steward,   # contributor points
+                    'steward': steward, 'total': r['points'], 'cats': dict(r['cats']),
                     'events': sorted(r['events'], key=lambda e: e['at'] or '', reverse=True)})
-    out.sort(key=lambda r: (-r['points'], -r['cats'].get('prs', 0), -r['cats'].get('reviews', 0), r['login'].lower()))
+    out.sort(key=lambda r: (-r['points'], -r['cats'].get('prs', 0), -r['cats'].get('issues', 0), r['login'].lower()))
     rank = 0
     for r in out:
         if r['eligible']:
             rank += 1
             r['rank'] = rank
-    # Steward of the week: a second ranking over the stewardship-type points.
+    # Steward of the week: ranked on steward points alone.
     srank = 0
     for r in sorted(out, key=lambda r: (-r['steward'], -r['cats'].get('reviews', 0), r['login'].lower())):
         if r['eligible'] and r['steward'] > 0:
@@ -844,7 +847,8 @@ def main():
     led, breaks = score(db)
     ws = windows(db)[-a.windows:]
     out = {'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'repo': REPO,
-           'rules': {k: {'points': v[0], 'category': v[1]} for k, v in RULES.items()},
+           'rules': {k: {'points': v[0], 'category': v[1], 'board': 'steward' if k in STEWARD_RULES else 'contributor'}
+                     for k, v in RULES.items()},
            'windows': [dict(w, standings=standings(db, led, w['start'], w['end'])) for w in ws],
            'all_time': standings(db, led),
            'breaks': breaks}
