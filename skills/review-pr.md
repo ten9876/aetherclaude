@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: Adversarially review a community pull request — red-team it against its linked issue, audit scope and governance, post one review with inline comments
+description: Adversarially review a community pull request — red-team it against its linked issue, audit scope and governance, post one review with every finding in its body
 goal: create_pr_review has been called successfully on PR #${PR_NUMBER} with event COMMENT, carrying a scope section and a "what I tried to break" section, OR stop after 40 turns
 ---
 
@@ -242,8 +242,8 @@ Report what the diff does and let the maintainer rule.
 CodeGuard and Copilot findings are above. Both are **leads, not findings.**
 Confirm each against the diff before repeating it — CodeGuard false-positives
 especially on test/example code and non-secret constants. Fold confirmed ones
-into your inline comments anchored to the flagged line, credited ("CodeGuard
-flagged …"), and silently drop the ones you can refute. Hardcoded-credential
+into the review body at their `file:line`, credited ("CodeGuard flagged …"),
+and silently drop the ones you can refute. Hardcoded-credential
 findings (CG-CRED-*) are almost always worth surfacing even when small.
 
 Never imply a scan ran that did not. If `${CODEGUARD_FINDINGS}` is empty,
@@ -354,27 +354,31 @@ not by the review event. This holds even when you find blockers — a blocker is
 a clearly-labelled numbered entry under "Blockers", not a state change on the
 PR.
 
-**Inline comments** (`comments: [{path, line, body}, …]`):
+**Every finding goes in the review body. Do not post inline comments.**
+`main` requires every conversation to be resolved before merge, so each inline
+thread is a merge blocker someone has to answer and resolve, which costs the
+author a round trip even for a nit. One body is read once and answered once.
 
-- Anchor each finding to the exact line. `line` is the NEW-file line number
-  (RIGHT side) — compute it from the `@@` hunk headers in the diff. For a
-  multi-line finding set `start_line` to the first and `line` to the last.
-- Anchors MUST be lines present in this PR's diff. A finding about untouched
-  code goes in the body with a `file:line` reference — never guess an anchor.
-- Where the fix is a concrete replacement of the anchored lines, include a
-  suggestion fence so the contributor can apply it in one click:
+- Locate every finding as `path/to/file.cpp:123` (or a line range, e.g.
+  `src/core/Foo.cpp:40-52`), using NEW-file line numbers from the `@@` hunk
+  headers. That includes findings about untouched code and out-of-scope files.
+- Quote the line or snippet the finding is about, so it reads without the diff
+  open.
+- For a mechanical fix, put the replacement in a fenced code block under the
+  finding, drop-in correct (the file's real indentation, compiling in
+  context, never pseudocode), so the author can paste it:
 
-      This leaks `reply` if parse fails.
-      ```suggestion
+      `src/core/Reply.cpp:88` — this leaks `reply` if parse fails:
+      ```cpp
           std::unique_ptr<Reply> reply(parseReply(msg));
       ```
 
-  The suggestion replaces EXACTLY `start_line` through `line`, so it must be
-  the complete replacement text with the file's real indentation. Do not force
-  one for judgment calls, multi-file changes, or fixes needing context outside
-  the diff — a plain comment is better than a wrong suggestion.
-- Anchor out-of-scope findings inline on the file they concern (line 1 of an
-  added file is a valid anchor), so the author sees them where the change is.
+  Leave the block out for judgment calls, multi-file changes, or fixes that
+  need context outside the diff; a plain description beats a wrong fix.
+- **The one exception:** an inline comment (`comments: [{path, line, body}]`)
+  is acceptable only when a finding cannot be understood from a `file:line`
+  reference plus a quoted snippet. That is rare. Never for nits, suggestions,
+  or anything the body already says. If you post one, say why in the body.
 
 **Review body**, in this order:
 
@@ -384,10 +388,10 @@ PR.
    "everything in the diff is explained by the issue" and move on. Never omit
    the section: "I checked and it is clean" and "I did not check" must not
    look the same.
-3. **Blockers** — numbered, each cross-referencing its inline comment: what is
+3. **Blockers** — numbered, each with its `file:line`: what is
    wrong, the evidence, which rule it violates if governance, and what a fix
    looks like. "None." if none.
-4. **Nits** — bulleted, explicitly non-blocking.
+4. **Nits** — bulleted, each with its `file:line`, explicitly non-blocking.
 5. **What I tried to break** — two to five bullets on the attacks that did NOT
    produce a finding: the body claims you tested and that held, the edge cases
    and failure paths you walked, the sibling call sites you checked. This is
@@ -400,8 +404,8 @@ PR.
    concrete next step. This is a recommendation *to the maintainer* in prose;
    the review event stays COMMENT regardless.
 
-If the code is genuinely clean, skip the inline machinery: say so briefly,
-keep the scope section and "what I tried to break", and thank the contributor.
+If the code is genuinely clean, say so briefly, keep the scope section and
+"what I tried to break", and thank the contributor.
 
 Be specific and constructive. Keep it concise. Do not nitpick formatting or
 style. Calibrate severity honestly — a blocker breaks users, violates canon,
@@ -436,5 +440,5 @@ if the code is perfect.
   4. Offer https://docs.github.com/authentication/managing-commit-signature-verification
      for GPG or troubleshooting.
 
-  If signing is the ONLY issue, still post the review: brief praise, no inline
-  comments, plus the signing section.
+  If signing is the ONLY issue, still post the review: brief praise plus the
+  signing section.

@@ -1289,7 +1289,7 @@ review_single_pr() {
     # sends Accept: application/vnd.github+json, so asking that endpoint for a
     # diff yields 48 keys of metadata and no hunks. /files carries a real
     # per-file `patch` with @@ headers, which is what the review needs to
-    # anchor inline comments.
+    # locate each finding by file:line.
     local pr_files_json
     pr_files_json=$(github_api GET "/repos/${REPO}/pulls/${pr_number}/files?per_page=50" "$token")
 
@@ -1394,7 +1394,7 @@ list_pr_files for the remainder before commenting on anything below this point]"
     record_action "$pr_number" "review" "reviewed" "success" "$pr_title"
 
     # Standalone CodeGuard advisory comment — a durable structured record
-    # alongside the review's inline comments.
+    # alongside the review.
     if [ "${cg_count:-0}" -gt 0 ]; then
         local cg_comment cg_payload
         cg_comment=$(printf '**Cisco CodeGuard — static analysis of this PR (%s finding(s))**\n\n%s\n\n<sub>Automated static scan by Cisco DefenseClaw CodeGuard on the changed files. Advisory — some may be false positives; the review above verifies them.</sub>' "$cg_count" "$codeguard_block")
