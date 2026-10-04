@@ -83,7 +83,8 @@ RULES = {
     # Financial support on Open Collective: points per US dollar given.
     'backer_contribution': (10, 'backer'),
 }
-BACKER_RULES = {'backer_contribution'}   # the Backer score; not contributor or steward points
+BACKER_RULES = {'backer_contribution'}
+BACKER_PEOPLE = {}   # login -> (kind, role, avatar, display_name) for donors without a GitHub login   # the Backer score; not contributor or steward points
 OC_SLUG = 'aethersdr'
 OC_API = 'https://api.opencollective.com/graphql/v2'
 OC_MAP_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
@@ -1037,8 +1038,9 @@ def score(db):
         github = (json.loads(raw).get('fromAccount') or {}).get('githubHandle')
         login, display = _oc_identity(db, slug, name, github, oc_map)
         if display is not None:
-            db.execute('INSERT OR IGNORE INTO people(login,kind,role,avatar,display_name) VALUES(?,?,?,?,?)',
-                       (login, 'Backer', 'contributor', img or '', display))
+            # Donors without a GitHub login; kept in memory so scoring stays
+            # read-only (readers never wait on the collector's writes).
+            BACKER_PEOPLE.setdefault(login, ('Backer', 'contributor', img or '', display))
         dollars = cents / 100
         add(login, 'backer_contribution', at.replace('.000Z', 'Z') if at else at, f'oc#{tid}',
             f'${dollars:,.2f} on Open Collective', round(dollars * RULES['backer_contribution'][0]))
@@ -1168,6 +1170,8 @@ def windows(db):
 
 def standings(db, led, start=None, end=None):
     people = {l: (k, r, a, n) for l, k, r, a, n in db.execute('SELECT login, kind, role, avatar, display_name FROM people')}
+    for login, row in BACKER_PEOPLE.items():
+        people.setdefault(login, row)
     rows = defaultdict(lambda: {'points': 0, 'cats': defaultdict(int), 'events': []})
     for e in led:
         login, rule, at, ref, note = e[:5]

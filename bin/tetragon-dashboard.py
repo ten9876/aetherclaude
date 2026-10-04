@@ -2335,7 +2335,16 @@ def leaderboard_data():
         if c['data'] is not None and c['key'] == key and time.time() - c['ts'] < 60:
             return c['data']
         cp = _contributor_points()
-        db = cp.db_open(CONTRIBUTOR_DB)   # applies any pending schema migrations
+        # Read-only: WAL readers never wait on the collector's or the webhook
+        # path's writes. Those writers apply schema migrations; if this
+        # database predates one, apply it once and read again.
+        try:
+            db = sqlite3.connect(f'file:{CONTRIBUTOR_DB}?mode=ro', uri=True, timeout=30)
+            db.execute('SELECT webhook_at FROM items LIMIT 0')
+            db.execute('SELECT display_name FROM people LIMIT 0')
+        except sqlite3.OperationalError:
+            cp.db_open(CONTRIBUTOR_DB).close()
+            db = sqlite3.connect(f'file:{CONTRIBUTOR_DB}?mode=ro', uri=True, timeout=30)
         try:
             led, breaks = cp.score(db)
             ws = cp.windows(db)[-LEADERBOARD_WINDOWS:]
