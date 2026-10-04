@@ -2212,7 +2212,7 @@ def main_ci_poller():
 # (hourly, com.aetherclaude.contributors) into CONTRIBUTOR_DB. Scoring is a
 # pure function of that database, cached until it changes or for 5 minutes.
 CONTRIBUTOR_DB = '/Users/aetherclaude/data/contributors.db'
-LEADERBOARD_WINDOWS = 6            # most recent release weeks offered as tabs
+LEADERBOARD_WINDOWS = 11           # This week plus the last 10 releases, as tabs
 LEADERBOARD_EVENTS_ALL_TIME = 200  # newest ledger rows per person on All time
 _leaderboard_cache = {'key': None, 'ts': 0.0, 'data': None}
 _leaderboard_lock = threading.Lock()
