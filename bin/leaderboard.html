@@ -50,7 +50,28 @@ tr.lead td{background:rgba(224,184,74,.07)}
 .rank{color:var(--muted);width:44px}
 .gold{color:var(--gold);font-weight:700}
 tr.ev td{background:var(--bg-1);padding:0}
-.evs{display:grid;grid-template-columns:120px 170px 46px minmax(0,1fr);column-gap:12px;row-gap:2px;padding:8px 12px 10px 60px;font-size:11px;text-align:left}
+.evs{display:grid;grid-template-columns:120px 170px 46px minmax(0,1fr);column-gap:12px;row-gap:2px;font-size:11px;text-align:left}
+/* Expanded row: the contributor's bio (all time) beside the activity log
+   for the window shown. Stacks on narrow screens. */
+.exp{display:grid;grid-template-columns:minmax(260px,340px) minmax(0,1fr);gap:18px;padding:12px 16px 14px;text-align:left;font-family:var(--sans);white-space:normal}
+@media (max-width:900px){.exp{grid-template-columns:1fr}}
+.ph2{font-size:11px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+.bio{background:var(--bg-2);border:1px solid var(--line);border-radius:12px;padding:14px 16px;font-size:12px;color:var(--ink-soft);align-self:start}
+.bio .hd{display:flex;gap:12px;align-items:center}
+.bio .hd img{width:56px;height:56px;border-radius:50%;border:1px solid var(--line-hi)}
+.bio .nm{font-size:17px;font-weight:600;color:var(--ink);line-height:1.2}
+.bio .sub{color:var(--muted);margin-top:2px}
+.bio .call{font-family:var(--mono);font-weight:700;color:var(--gold);text-decoration:none}
+.bio .facts{margin-top:10px;display:grid;grid-template-columns:auto 1fr;column-gap:10px;row-gap:3px}
+.bio .facts .k{color:var(--muted-dim)}
+.bio .stats{margin-top:10px;display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.bio .stat{background:var(--bg-1);border:1px solid var(--line);border-radius:8px;padding:6px 4px;text-align:center}
+.bio .stat b{display:block;font-family:var(--mono);font-size:15px;color:var(--ink)}
+.bio .stat span{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px}
+.bio .awards{margin-top:10px;display:flex;flex-direction:column;gap:3px}
+.bio .awards div{color:var(--gold)}
+.bio .chips{margin-top:8px;display:flex;flex-wrap:wrap;gap:5px}
+.bio .chip{font-size:10px;border:1px solid var(--line-hi);border-radius:20px;padding:1px 8px;color:var(--ink-soft)}
 .evs span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dim{color:var(--muted)}
 .rules{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:2px 24px;font-size:12px}
@@ -207,9 +228,9 @@ function render(){
       `<td class="pts${r.points<0?' neg':''}${rankBy==='contributor'?'':' soft'}">${r.points}</td><td class="pts${r.steward<0?' neg':''}${rankBy==='steward'?'':' soft'}">${r.steward||'<span class="zero">·</span>'}</td>`+
       `<td class="pts${rankBy==='backer'?'':' soft'}">${r.backer||'<span class="zero">·</span>'}</td>`+
       CATS.map((c,ci)=>`<td class="${ci===0?'gc':ci===6?'gs':''}">${num(r.cats[c]||0)}</td>`).join('')+`</tr>`+
-      `<tr class="ev" id="ev${i}" style="display:none"><td colspan="17"><div class="evs">`+
+      `<tr class="ev" id="ev${i}" style="display:none"><td colspan="17"><div class="exp">${bioHtml(r)}<div class="log"><div class="ph2">Activity &middot; ${esc(v.name)}</div><div class="evs">`+
       (r.event_count>r.events.length?`<span class="dim" style="grid-column:1/-1">Newest entries of ${r.event_count}, plus every penalty and refund</span>`:'')+r.events.map(e=>`<span class="dim">${fmtD(e.at)}</span><span>${esc(LABEL[e.rule]||e.rule)}</span><span style="text-align:right" class="${e.points<0?'neg':''}">${e.points>0?'+':''}${e.points}</span>`+
-        `<span><a href="${refUrl(e.ref)}" target="_blank">${esc(e.ref.replace('discussion','disc'))}</a> <span class="dim">${esc(e.note||'')}</span></span>`).join('')+`</div></td></tr>`;
+        `<span><a href="${refUrl(e.ref)}" target="_blank">${esc(e.ref.replace('discussion','disc'))}</a> <span class="dim">${esc(e.note||'')}</span></span>`).join('')+`</div></div></div></td></tr>`;
   });
   document.getElementById('tb').innerHTML=h||'<tr><td colspan="17" class="dim" style="text-align:left">No activity in this window yet.</td></tr>';
   const brks=(D.breaks||[]).filter(b=>(!w.start||b.at>=w.start)&&(!w.end||b.at<w.end)&&b.pr).slice().reverse();
@@ -290,6 +311,31 @@ function openRules(){badgeIcons();renderRules();document.getElementById('rules-m
 function closeRules(){document.getElementById('rules-modal').classList.remove('show');document.body.style.overflow=''}
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeRules()});
 if(location.hash==='#rules')setTimeout(openRules,0);
+function fmtDay(s){return s?new Date(s).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):'—'}
+// Contributor bio (all time; the same whichever window is shown).
+function bioHtml(r){
+  const b=(D.bios||{})[r.login];
+  if(!b)return '<div class="bio dim">No profile yet.</div>';
+  const c=b.counts||{},n=x=>(x||0).toLocaleString();
+  const stat=(v,l)=>`<div class="stat"><b>${v}</b><span>${l}</span></div>`;
+  const badges=[r.core?'<span class="chip" style="color:var(--accent-bright);border-color:var(--accent)">Core dev team</span>':'',
+    r.role==='maintainer'?'<span class="chip">Maintainer</span>':'',b.donated>0?'<span class="chip" style="color:var(--gold);border-color:var(--gold)">Backer</span>':''].join('');
+  const aw=b.awards||{},AW={contributor:'Contributor',steward:'Steward',backer:'Backer'};
+  const awards=Object.keys(AW).filter(k=>aw[k]).map(k=>`<div>&#9733; ${AW[k]} of the week &times;${aw[k].count} <span class="dim">&middot; latest ${esc(aw[k].latest)}</span></div>`).join('');
+  return `<div class="bio"><div class="hd"><img src="${esc(b.avatar||avatarOf(r))}" alt="">`+
+    `<div><div class="nm">${esc(b.name||r.name||r.login)}</div><div class="sub">`+
+    (b.github?`<a href="${esc(b.github)}" target="_blank">@${esc(r.login)}</a>`:'Open Collective backer')+
+    (b.callsign?` &middot; <a class="call" href="https://www.qrz.com/db/${esc(b.callsign)}" target="_blank" title="Look up on QRZ.com">${esc(b.callsign)}</a>`:'')+`</div></div></div>`+
+    (badges?`<div class="chips">${badges}</div>`:'')+
+    `<div class="facts"><span class="k">Contributing since</span><span>${fmtDay(b.first_at)}</span>`+
+    (b.first_merged?`<span class="k">First merged PR</span><span><a href="${refUrl('pr#'+b.first_merged.pr)}" target="_blank">#${b.first_merged.pr}</a> &middot; ${fmtDay(b.first_merged.at)}</span>`:'')+
+    (b.donated>0?`<span class="k">Donated</span><span>$${b.donated.toLocaleString(undefined,{maximumFractionDigits:2})} on Open Collective</span>`:'')+`</div>`+
+    `<div class="stats">${stat(n(c.issues),'Issues')}${stat(n(c.prs),'PRs')}${stat(n(c.merged),'Merged')}${stat(n(c.comments),'Comments')}`+
+    `${stat(n(c.reviews),'Reviews')}${stat(n(c.merges),'Merges')}${stat(n(c.discussions),'Discussions')}${stat(n(r.total||0),'Points')}</div>`+
+    (awards?`<div class="awards">${awards}</div>`:'')+
+    ((b.areas||[]).length?`<div class="chips" title="Most frequent area labels on their issues and PRs">${b.areas.map(a=>`<span class="chip">${esc(a)}</span>`).join('')}</div>`:'')+
+    `</div>`;
+}
 function tog(i){const e=document.getElementById('ev'+i);e.style.display=e.style.display==='none'?'':'none'}
 function load(){
   fetch('/api/leaderboard').then(r=>r.ok?r.json():Promise.reject(r.status)).then(start).catch(()=>{

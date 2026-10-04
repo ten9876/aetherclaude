@@ -88,6 +88,8 @@ RULES = {
     'backer_contribution': (10, 'backer'),
 }
 BACKER_RULES = {'backer_contribution'}
+PROFILES_PER_RUN = 150
+PROFILE_MAX_AGE = timedelta(days=30)
 BACKER_PEOPLE = {}   # login -> (kind, role, avatar, display_name) for donors without a GitHub login   # the Backer score; not contributor or steward points
 OC_SLUG = 'aethersdr'
 OC_API = 'https://api.opencollective.com/graphql/v2'
@@ -235,6 +237,8 @@ CREATE TABLE IF NOT EXISTS ci_logs(job_id INTEGER PRIMARY KEY, run_id INTEGER, w
   log_bytes INTEGER, log BLOB);
 CREATE TABLE IF NOT EXISTS webhook_events(delivery TEXT PRIMARY KEY, event TEXT, action TEXT,
   received_at TEXT, payload TEXT, applied INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS profiles(login TEXT PRIMARY KEY, name TEXT, bio TEXT, location TEXT, blog TEXT,
+  created_at TEXT, fetched_at TEXT, raw TEXT);
 CREATE TABLE IF NOT EXISTS oc_contributions(id TEXT PRIMARY KEY, created_at TEXT, amount_cents INTEGER,
   currency TEXT, from_slug TEXT, from_name TEXT, from_type TEXT, from_image TEXT, refunded INTEGER, raw TEXT);
 CREATE TABLE IF NOT EXISTS http_cache(url TEXT PRIMARY KEY, etag TEXT, body TEXT, link TEXT, fetched_at TEXT);
@@ -823,6 +827,28 @@ def collect(gh, db, since):
                         print(f'    {kept} logs kept ({gh.calls} calls)', file=sys.stderr, flush=True)
     db.commit()
 
+    print(f'  step: profiles ({gh.calls} calls)', file=sys.stderr, flush=True)
+    # Public GitHub profiles (display name, bio) for contributor bios and
+    # callsigns: new people first, then any older than a month, a bounded
+    # number per run.
+    stale = (datetime.now(timezone.utc) - PROFILE_MAX_AGE).strftime('%Y-%m-%dT%H:%M:%SZ')
+    todo = [l for (l,) in db.execute(
+        "SELECT p.login FROM people p LEFT JOIN profiles f ON f.login=p.login WHERE p.kind!='Bot'"
+        " AND p.login NOT LIKE '%[bot]' AND p.login NOT LIKE 'oc:%' AND (f.fetched_at IS NULL OR f.fetched_at<?)"
+        " ORDER BY f.fetched_at IS NOT NULL, f.fetched_at LIMIT ?", (stale, PROFILES_PER_RUN))
+        if role_of(l) != 'bot']
+    for login in todo:
+        try:
+            u, _ = gh.get(f'users/{urllib.parse.quote(login)}')
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+            u = {}
+        db.execute('INSERT OR REPLACE INTO profiles VALUES(?,?,?,?,?,?,?,?)',
+                   (login, u.get('name'), u.get('bio'), u.get('location'), u.get('blog'), u.get('created_at'),
+                    datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), json.dumps(u)))
+    db.commit()
+
     print(f'  step: open collective ({gh.calls} calls)', file=sys.stderr, flush=True)
     try:
         print(f'    {collect_open_collective(db, gh.proxy)} contributions', file=sys.stderr, flush=True)
@@ -1169,6 +1195,114 @@ def windows(db):
            if not pre and p]
     out = [{'tag': t, 'start': rel[i - 1][1] if i else None, 'end': p} for i, (t, p) in enumerate(rel)]
     out.append({'tag': 'current', 'start': rel[-1][1] if rel else None, 'end': None})
+    return out
+
+
+# Amateur-radio callsign: a prefix (one or two letters, or a letter and a
+# digit either way round), a digit, then a one-to-four-letter suffix.
+_CALLSIGN = re.compile(r'(?<![A-Z0-9])((?:[A-Z]{1,2}|[A-Z][0-9]|[0-9][A-Z])[0-9][A-Z]{1,4})(?![A-Z0-9])')
+# Labels that say what kind of item it is, not which part of AetherSDR.
+NON_AREA_LABELS = {'bug', 'enhancement', 'documentation', 'question', 'duplicate', 'invalid', 'wontfix',
+                   'good first issue', 'help wanted', 'maintainer-review', 'awaiting-response', 'claude-active',
+                   'aetherclaude-eligible', 'full-suite', 'sanitizer', 'asan-ubsan', 'tsan', 'refactor', 'dependencies',
+                   'needs-triage', 'release', 'stale', 'spam', 'new feature', 'feature request', 'rfc', 'discussion', 'wip', 'blocked'}
+
+
+def find_callsign(*texts):
+    for t in texts:
+        if not t:
+            continue
+        for tok in re.split(r'[^A-Za-z0-9]+', t):
+            m = _CALLSIGN.fullmatch(tok.upper()) if 4 <= len(tok) <= 7 else None
+            if m and any(c.isdigit() for c in tok) and any(c.isalpha() for c in tok):
+                return m.group(1)
+    return None
+
+
+def bios(db, led, logins=None):
+    """All-time profile for each person: identity, firsts, lifetime counts,
+    weekly awards and the areas they work in. Independent of the window."""
+    want = set(logins) if logins is not None else None
+    prof = {l: (n, b) for l, n, b in db.execute('SELECT login, name, bio FROM profiles')}
+    people = {l: (k, a, n) for l, k, a, n in db.execute('SELECT login, kind, avatar, display_name FROM people')}
+    for l, row in BACKER_PEOPLE.items():
+        people.setdefault(l, (row[0], row[2], row[3]))
+    count = lambda sql: dict(db.execute(sql))
+    issues = count("SELECT author, COUNT(*) FROM items WHERE type='issue' GROUP BY author")
+    prs = count("SELECT author, COUNT(*) FROM items WHERE type='pr' GROUP BY author")
+    merged = count("SELECT author, COUNT(*) FROM items WHERE type='pr' AND merged_at IS NOT NULL GROUP BY author")
+    discussions = count("SELECT author, COUNT(*) FROM items WHERE type='discussion' GROUP BY author")
+    comments = count('SELECT login, COUNT(*) FROM comments GROUP BY login')
+    reviewed = count("SELECT r.login, COUNT(DISTINCT r.pr) FROM reviews r JOIN items i ON i.type='pr' AND i.number=r.pr"
+                     " WHERE r.login!=i.author AND r.state NOT IN ('PENDING','DISMISSED') GROUP BY r.login")
+    merges = count("SELECT merged_by, COUNT(*) FROM items WHERE type='pr' AND merged_at IS NOT NULL"
+                   " AND merged_by!=author GROUP BY merged_by")
+    areas = defaultdict(lambda: defaultdict(int))
+    for author, labels in db.execute("SELECT author, labels FROM items WHERE type IN ('issue','pr') AND labels!='[]'"):
+        for lab in json.loads(labels or '[]'):
+            if lab.lower() not in NON_AREA_LABELS and not lab.lower().startswith(('priority', 'size', 'status')):
+                areas[author][lab] += 1
+    first, first_merge, donated = {}, {}, defaultdict(float)
+    for e in led:
+        login, rule, at, ref = e[0], e[1], e[2], e[3]
+        if not at:
+            continue
+        if login not in first or at < first[login]:
+            first[login] = at
+        if rule == 'pr_merged' and (login not in first_merge or at < first_merge[login][0]):
+            first_merge[login] = (at, ref)
+        if rule == 'backer_contribution':
+            donated[login] += (e[5] if len(e) > 5 else 0) / RULES['backer_contribution'][0]
+    # Weekly awards: winners of every completed release window, one pass.
+    ws = [w for w in windows(db) if w['tag'] != 'current']
+    starts = [w['start'] or '' for w in ws]
+    import bisect
+    agg = [defaultdict(lambda: [0, 0, 0, 0, 0]) for _ in ws]   # contributor, steward, backer, prs, issues
+    for e in led:
+        at = e[2] or ''
+        i = bisect.bisect_right(starts, at) - 1
+        if i < 0 or (ws[i]['end'] and at >= ws[i]['end']):
+            continue
+        pts = e[5] if len(e) > 5 else RULES[e[1]][0]
+        a = agg[i][e[0]]
+        if e[1] in STEWARD_RULES:
+            a[1] += pts
+        elif e[1] in BACKER_RULES:
+            a[2] += pts
+        else:
+            a[0] += pts
+            cat = RULES[e[1]][1]
+            a[3] += pts if cat == 'prs' else 0
+            a[4] += pts if cat == 'issues' else 0
+    awards = defaultdict(lambda: defaultdict(list))
+    for w, a in zip(ws, agg):
+        elig = {l: v for l, v in a.items()
+                if role_of(l, (people.get(l) or ('User',))[0]) == 'contributor'}
+        for idx, kind in ((0, 'contributor'), (1, 'steward'), (2, 'backer')):
+            cand = [(v[idx], v[3], v[4], l) for l, v in elig.items() if v[idx] > 0]
+            if cand:
+                top = max(cand, key=lambda c: (c[0], c[1], c[2], [-ord(ch) for ch in c[3].lower()]))
+                awards[top[3]][kind].append(w['tag'])
+    out = {}
+    for login in (want if want is not None else set(first)):
+        kind, avatar, display = people.get(login, ('User', '', None))
+        name, bio = prof.get(login, (None, None))
+        a = areas.get(login, {})
+        out[login] = {
+            'name': display or name or None,
+            'callsign': find_callsign(login, name, display, bio),
+            'avatar': avatar or None,
+            'github': None if login.startswith('oc:') else f'https://github.com/{login}',
+            'first_at': first.get(login),
+            'first_merged': ({'at': first_merge[login][0], 'pr': int(first_merge[login][1].split('#')[1])}
+                             if login in first_merge else None),
+            'counts': {'issues': issues.get(login, 0), 'prs': prs.get(login, 0), 'merged': merged.get(login, 0),
+                       'comments': comments.get(login, 0), 'reviews': reviewed.get(login, 0),
+                       'merges': merges.get(login, 0), 'discussions': discussions.get(login, 0)},
+            'donated': round(donated.get(login, 0), 2),
+            'awards': {k: {'count': len(v), 'latest': v[-1]} for k, v in awards.get(login, {}).items()},
+            'areas': [l for l, _ in sorted(a.items(), key=lambda kv: -kv[1])[:4]],
+        }
     return out
 
 

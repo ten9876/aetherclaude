@@ -2363,7 +2363,9 @@ def leaderboard_data():
                     'rules': {k: {'points': v[0], 'category': v[1], 'board': cp.board_of(k)}
                               for k, v in cp.RULES.items()},
                     'windows': [dict(w, standings=cp.standings(db, led, w['start'], w['end'])) for w in ws],
-                    'all_time': all_time, 'breaks': breaks}
+                    'all_time': all_time, 'breaks': breaks,
+                    # All-time bio for everyone on the board (the expanded row).
+                    'bios': cp.bios(db, led, [r['login'] for r in all_time])}
             # Fingerprints the public mirror reports back, so drift is
             # detectable: the standings' content (not when they were built)
             # and the page they render with.
