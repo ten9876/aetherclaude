@@ -4614,6 +4614,25 @@ body.view-ops #view-exec{display:none}
 .x-rows .tm{color:var(--muted-dim);font-size:11px;width:88px;flex:0 0 auto;font-family:var(--mono)}
 .x-mci-jobs{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
 .x-mci-ph{cursor:default}
+.mci-modal{font-size:12px;color:var(--ink-soft)}
+.mci-modal a{color:#5de3ff;text-decoration:none}
+.mci-modal .dim{color:#8598b4}
+.mci-modal .mono,.mci-modal code{font-family:var(--mono)}
+.mci-kv code{color:var(--crit)}
+.mci-block{border-left:3px solid var(--line-hi);background:var(--bg-1);border-radius:8px;padding:10px 12px;margin-bottom:10px}
+.mci-bh{display:flex;align-items:baseline;gap:10px;white-space:nowrap}
+.mci-bh .pill{font-weight:700;letter-spacing:.3px}
+.mci-bh .right{margin-left:auto}
+.mci-title{margin-top:4px;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mci-kv{display:grid;grid-template-columns:88px minmax(0,1fr);column-gap:12px;row-gap:3px;margin-top:6px;font-size:11px;align-items:baseline}
+.mci-kv .k{color:#5f708a;text-align:right;white-space:nowrap}
+.mci-kv .v{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mci-kv .v.wrap{white-space:normal}
+.mci-run{display:grid;grid-template-columns:76px 66px minmax(0,1fr) 64px 60px;column-gap:12px;align-items:baseline;padding:4px 2px;border-bottom:1px solid var(--line);font-size:11px}
+.mci-run.hdr{color:#5f708a}
+.mci-run .r{text-align:right;white-space:nowrap}
+.mci-run .c{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mci-run .detail{grid-column:3/6;padding:2px 0 4px}
 .x-mci-ph .val{color:var(--muted-dim)}
 .x-mci-ph .spark{border-radius:4px;background:linear-gradient(90deg,var(--bg-2) 0%,var(--bg-3) 50%,var(--bg-2) 100%);background-size:200% 100%;animation:mciShimmer 1.4s linear infinite;width:110px;height:22px;margin-top:12px}
 @keyframes mciShimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
@@ -5108,25 +5127,25 @@ function mciHitCell(f){
   if(f.hit_pct==null)return `<span style="color:#5f708a" title="${mciU(f.ref==='main'?'not a compiler cache, or no stats parsed yet':'not tracked off main')}">—</span>`;
   const c=f.hit_pct>=90?'var(--good)':f.hit_pct>=70?'var(--warn)':'var(--crit)';
   return `<span style="font-weight:600;color:${c}" title="${mciU(`${f.job} · latest ${f.tool} run`+(f.avg_hit_pct!=null?` · ${f.avg_hit_pct}% average`:''))}">${f.hit_pct}%</span>`}
-// One failed job: name, issue link, then each failed test on its own line
-// (or the step the job stopped at when no test list exists).
-function mciJobFailHtml(f,repo){
-  const ft=f.failed_tests||[],U=mciU;
-  let h=`<div class="x-mci-fail"><b style="color:var(--ink-soft)">${esc(String(f.job))}</b>`+
-    (ft.length?` &middot; ${ft.length} test${ft.length===1?'':'s'} failed`
-              :(f.failed_step?` &middot; failed at step <i>${esc(String(f.failed_step))}</i>`:` &middot; ${esc(String(f.conclusion||'failed'))}`))+
-    (f.issue?` &middot; <a href="https://github.com/${U(repo)}/issues/${f.issue}" target="_blank">#${f.issue} &#x2197;</a>`:'');
-  const d=f.diagnosis;
+// One failed job as an aligned key/value grid: job + where it stopped,
+// cause, file, then each failed test on its own row. Long values stay on
+// one line (ellipsis, full text on hover) so nothing wraps by a few chars.
+function mciKv(k,v,opt){opt=opt||{};
+  return `<span class="k">${k}</span><span class="v${opt.wrap?' wrap':''}"${opt.title?` title="${mciU(opt.title)}"`:''}${opt.style?` style="${opt.style}"`:''}>${v}</span>`}
+function mciJobFailHtml(f,repo,opt){opt=opt||{};
+  const ft=f.failed_tests||[],U=mciU,d=f.diagnosis;
+  const where=ft.length?`${ft.length} test${ft.length===1?'':'s'} failed`
+    :(f.failed_step?`failed at <i>${esc(String(f.failed_step))}</i>`:esc(String(f.conclusion||'failed')));
+  let h=`<div class="mci-kv">`+mciKv('job',`<b>${esc(String(f.job))}</b> <span class="dim">${where}</span>`+
+    (f.issue?` <a href="https://github.com/${U(repo)}/issues/${f.issue}" target="_blank">#${f.issue} &#x2197;</a>`:''));
   if(d&&!(d.kind==='tests'&&ft.length)){
-    h+=`<div style="margin:3px 0 0 12px;color:var(--warn)">&#9888; <b>${esc(d.summary)}</b>`+
-      (d.disk_free?` <span style="color:#8598b4">(${esc(d.disk_free)} free)</span>`:'')+
-      (d.file?` <span style="color:#8598b4">&middot; ${d.kind==='disk'||d.kind==='oom'?'while compiling ':''}</span><code>${esc(d.file)}</code>`:'')+`</div>`;
-    if(d.detail&&d.kind!=='disk')h+=`<div style="margin:2px 0 0 12px;font-family:var(--mono);color:#8598b4;overflow-wrap:anywhere">${esc(d.detail)}</div>`;
+    h+=mciKv('cause',`<b>${esc(d.summary)}</b>${d.disk_free?` <span class="dim">${esc(d.disk_free)} free</span>`:''}`,{style:'color:var(--warn)'});
+    if(d.file)h+=mciKv(d.kind==='disk'||d.kind==='oom'?'compiling':'at',`<code>${esc(d.file)}</code>`,{title:d.file});
+    if(d.detail&&d.kind!=='disk')h+=mciKv('error',`<span class="mono dim">${esc(d.detail)}</span>`,{title:d.detail});
   }
-  for(const t of ft)
-    h+=`<div style="margin:3px 0 0 12px;font-family:var(--mono);color:var(--crit);overflow-wrap:anywhere">${esc(t.name)}${t.status?` <span style="color:#8598b4">(${esc(t.status)})</span>`:''}</div>`;
-  for(const x of (f.warnings||[]).filter(x=>!(d&&d.kind==='disk'&&/disk space/.test(x))))
-    h+=`<div style="margin:2px 0 0 12px;color:#5f708a">runner warning: ${esc(x)}</div>`;
+  ft.forEach((t,i)=>{h+=mciKv(i?'':'tests',`<span class="mono" style="color:var(--crit)">${esc(t.name)}</span>${t.status?` <span class="dim">${esc(t.status)}</span>`:''}`)});
+  if(!opt.noWarnings)for(const x of (f.warnings||[]).filter(x=>!(d&&d.kind==='disk'&&/disk space/.test(x))))
+    h+=mciKv('runner',`<span class="dim">${esc(x)}</span>`,{title:x});
   return h+'</div>';
 }
 function mciGb(b){return (b/1073741824).toFixed(b>=10737418240?0:2)+' GB'}
@@ -5138,10 +5157,16 @@ const MCI_ROW='display:grid;gap:10px;align-items:center;padding:4px 2px;border-b
 // runs on main (a failed build stops early and would drag the mean down).
 function mciPerfHtml(w,m){
   const p=w.perf;let h='';
-  if(p&&p.jobs&&p.jobs.length){
+  if(p&&p.jobs&&p.jobs.length&&!p.runs){
+    const fd=(w.history||[]).filter(x=>x.status==='completed'&&MCI_RED.includes(x.conclusion)&&x.dur).map(x=>x.dur);
+    h+=`<div style="${MCI_SEC}"><div style="${MCI_HDR}">BUILD TIME</div><div class="mci-kv" style="padding-left:15px">`+
+      mciKv('average','<span class="dim">no successful run on main in the recent window</span>')+
+      (fd.length?mciKv('failed runs',`${mciDur(Math.min(...fd))} &ndash; ${mciDur(Math.max(...fd))} <span class="dim">average ${mciDur(fd.reduce((a,b)=>a+b,0)/fd.length)}</span>`):'')+`</div></div>`;
+  }
+  else if(p&&p.jobs&&p.jobs.length){
     h+=`<div style="${MCI_SEC}"><div style="${MCI_HDR}">BUILD TIME &middot; average of the last ${p.runs} successful run${p.runs===1?'':'s'} on main</div>`;
     const cols='grid-template-columns:minmax(120px,1.4fr) 70px 90px 120px';
-    h+=`<div style="${MCI_ROW};${cols};color:#5f708a"><span>job</span><span>average</span><span>last</span><span>trend (oldest &rarr; newest)</span></div>`;
+    h+=`<div style="${MCI_ROW};${cols};color:#5f708a"><span>job</span><span>average</span><span>last</span><span title="oldest &rarr; newest">trend</span></div>`;
     const row=(nm,avg,last,series,bold)=>{
       const slow=avg&&last&&last>avg*1.15,fast=avg&&last&&last<avg*0.85;
       return `<div style="${MCI_ROW};${cols}"><span style="${bold?'font-weight:600':''}">${esc(nm)}</span><span style="font-family:var(--mono)">${mciDur(avg)}</span>`+
@@ -5149,8 +5174,6 @@ function mciPerfHtml(w,m){
         `<span>${svgSparkline((series||[]).filter(x=>x!=null),120,22)}</span></div>`};
     h+=row('Whole run (wall clock)',p.avg_run_s,p.last_run_s,p.run_durations,true);
     for(const j of p.jobs)h+=row(j.name,j.avg_s,j.last_s,j.durations,false);
-    const fd=(w.history||[]).filter(x=>x.status==='completed'&&MCI_RED.includes(x.conclusion)&&x.dur).map(x=>x.dur);
-    if(!p.runs)h+=`<p style="color:#8598b4;font-size:11px;margin-top:6px">No successful runs in the recent window, so there is no average yet.${fd.length?` Failed runs took ${mciDur(Math.min(...fd))}&ndash;${mciDur(Math.max(...fd))} (average ${mciDur(fd.reduce((a,b)=>a+b,0)/fd.length)}).`:''}</p>`;
     h+='</div>';
     const cj=p.jobs.filter(j=>j.cache);
     if(cj.length){
@@ -5186,57 +5209,64 @@ function mciPerfHtml(w,m){
 function showMainCiCheck(i){
   const m=lastMci,w=m&&m.workflows[i];if(!w)return;
   const v=w.last_completed,l=w.latest,live=l&&l.status!=='completed',U=mciU;
-  const jobsHtml=run=>{
-    let jobs='',fails='';
-    for(const j of (run&&run.jobs)||[]){
-      const js=j.status!=='completed'?['','var(--accent)']:(MCI_ST[j.conclusion]||['','var(--warn)']);
-      jobs+=`<a class="x-mci-job" href="${U(j.url)}" target="_blank" title="${U(j.status==='completed'?j.conclusion:j.status)}"><span class="d" style="background:${js[1]}"></span>${esc(String(j.name))}</a>`;
-      if(j.status==='completed'&&j.conclusion&&j.conclusion!=='success'&&j.conclusion!=='skipped'){
-        fails+=mciJobFailHtml({job:j.name,conclusion:j.conclusion,failed_step:j.failed_step,issue:j.issue,failed_tests:j.failed_tests,diagnosis:j.diagnosis,warnings:j.warnings},m.repo);
-      }
-    }
-    return `<div class="x-mci-jobs" style="margin-top:8px">${jobs}${fails}</div>`;
-  };
-  const runHead=(run,label)=>{const st=mciSt(run);const sev=run.status!=='completed'?'MEDIUM':(MCI_RED.includes(run.conclusion)?'HIGH':'SAFE');
-    return `<div class="modal-finding ${sev}"><span class="sev ${sev}">${st[0]}</span> ${label} &middot; <a href="${U(run.url)}" target="_blank" style="color:#5de3ff;text-decoration:none">${esc(run.sha)} &#x2197;</a> ${esc(run.title||'')} &middot; ${mciAgo(run.updated_at||run.created_at)}${run.event&&run.event!=='push'?' &middot; '+esc(run.event):''}</div>`};
-  let h='';
+  const link=(url,txt)=>`<a href="${U(url)}" target="_blank">${esc(txt)}</a>`;
+  const chips=run=>((run&&run.jobs)||[]).map(j=>{
+    const js=j.status!=='completed'?'var(--accent)':((MCI_ST[j.conclusion]||[,'var(--warn)'])[1]);
+    return `<a class="x-mci-job" href="${U(j.url)}" target="_blank" title="${U(j.status==='completed'?j.conclusion:j.status)}"><span class="d" style="background:${js}"></span>${esc(String(j.name))}</a>`}).join('');
+  const fails=run=>((run&&run.jobs)||[]).filter(j=>j.status==='completed'&&j.conclusion&&!['success','skipped'].includes(j.conclusion))
+    .map(j=>mciJobFailHtml({job:j.name,conclusion:j.conclusion,failed_step:j.failed_step,issue:j.issue,failed_tests:j.failed_tests,diagnosis:j.diagnosis,warnings:j.warnings},m.repo)).join('');
+  // Run block: status, label, sha and age on one line; commit title on the
+  // next, single line with ellipsis.
+  const runBlock=(run,label,body)=>{const st=mciSt(run);
+    return `<div class="mci-block" style="border-left-color:${st[1]}"><div class="mci-bh"><span class="pill" style="color:${st[1]}">${st[0]}</span>`+
+      `<span class="dim">${label}</span>${link(run.url,run.sha)}<span class="dim right">${run.event&&run.event!=='push'?esc(run.event)+' &middot; ':''}${mciAgo(run.updated_at||run.created_at)}</span></div>`+
+      `<div class="mci-title" title="${U(run.title)}">${esc(run.title||'')}</div>`+
+      `<div class="x-mci-jobs" style="margin:8px 0 2px">${chips(run)}</div>${body||''}</div>`};
   const failDurs=(w.history||[]).filter(x=>x.status==='completed'&&MCI_RED.includes(x.conclusion)&&x.dur).map(x=>x.dur);
+  const durRange=failDurs.length?mciDur(Math.min(...failDurs))+(failDurs.length>1?' &ndash; '+mciDur(Math.max(...failDurs)):''):'';
+  let h='';
   if(w.streak&&w.streak.count>1){
     const st=w.streak,kinds={};let diagnosed=0;
-    for(const x of w.history||[])for(const f of x.failures||[])if(f.diagnosis){diagnosed++;kinds[f.diagnosis.summary]=(kinds[f.diagnosis.summary]||0)+1}
-    const ks=Object.entries(kinds).sort((a,b)=>b[1]-a[1]);
-    const cause=!ks.length?'':(ks.length===1?` &middot; cause: <b>${esc(ks[0][0])}</b> (all ${diagnosed} diagnosed)`
-      :` &middot; causes: `+ks.map(([k,n])=>`<b>${esc(k)}</b> &times;${n}`).join(', '));
-    const lg=w.last_green;
-    h+=`<div class="modal-finding HIGH"><span class="sev HIGH">&#10008; ${st.count}${st.capped?'+':''} IN A ROW</span> consecutive failures on main since `+
-      `<a href="${U(st.url)}" target="_blank" style="color:#5de3ff;text-decoration:none">${esc(st.since_sha)}</a> (${mciAgo(st.since_at)})${cause}`+
-      ` &middot; last green: ${lg?`<a href="${U(lg.url)}" target="_blank" style="color:#5de3ff;text-decoration:none">${esc(lg.sha)}</a> (${mciAgo(lg.at)})`:'none on main'}</div>`;
+    for(const x of w.history||[])for(const f of x.failures||[])if(f.diagnosis){diagnosed++;const k=f.diagnosis.kind==='tests'?'tests failed':f.diagnosis.summary;kinds[k]=(kinds[k]||0)+1}
+    const ks=Object.entries(kinds).sort((a,b)=>b[1]-a[1]),lg=w.last_green;
+    h+=`<div class="mci-block" style="border-left-color:var(--crit)"><div class="mci-bh"><span class="pill" style="color:var(--crit)">&#10008; ${st.count}${st.capped?'+':''} FAILURES IN A ROW</span></div><div class="mci-kv" style="margin-top:6px">`+
+      mciKv('since',`${link(st.url,st.since_sha)} <span class="dim">${mciAgo(st.since_at)}</span>`)+
+      (ks.length?mciKv(ks.length===1?'cause':'causes',ks.map(([k,n])=>`<b style="color:var(--warn)">${esc(k)}</b> <span class="dim">${n} of ${diagnosed} diagnosed</span>`).join('<br>'),{wrap:true}):'')+
+      mciKv('last green',lg?`${link(lg.url,lg.sha)} <span class="dim">${mciAgo(lg.at)}</span>`:'<span class="dim">none on main</span>')+
+      (durRange?mciKv('failed runs',`<span class="dim">took ${durRange}</span>`):'')+`</div></div>`;
   }
-  const runningHtml=run=>{
-    const rj=((run&&run.jobs)||[]).filter(j=>j.status!=='completed'&&j.current_step);
-    if(!rj.length)return '';
-    const rng=failDurs.length?` &middot; recent failed runs ended after ${mciDur(Math.min(...failDurs))}${failDurs.length>1?'&ndash;'+mciDur(Math.max(...failDurs)):''}`:'';
-    return rj.map(j=>`<div class="x-mci-fail" style="color:var(--accent)">&#9711; <b style="color:var(--ink-soft)">${esc(j.name)}</b> &middot; step <i>${esc(j.current_step)}</i> running ${mciDur((Date.now()-new Date(j.current_step_started))/1000)}`+
-      ` <span style="color:#8598b4">(job ${mciDur((Date.now()-new Date(j.started_at))/1000)}${rng})</span></div>`).join('');
-  };
-  if(v){h+=runHead(v,'last verdict')+jobsHtml(v)}
-  if(live&&l!==v){h+='<div style="margin-top:14px">'+runHead(l,'in progress')+jobsHtml(l)+runningHtml(l)+'</div>'}
-  else if(live&&!v){h+=runningHtml(l)}
-  if(!v&&!live)h+=`<p style="color:#8598b4">${w.error?'Fetch error: '+esc(w.error):'No runs on main yet.'}</p>`;
+  if(v)h+=runBlock(v,'last verdict',fails(v));
+  if(live&&l!==v){
+    const rj=(l.jobs||[]).filter(j=>j.status!=='completed'&&j.current_step);
+    const body=rj.length?`<div class="mci-kv">`+rj.map(j=>mciKv('running',`<b>${esc(j.name)}</b> <span class="dim">step</span> ${esc(j.current_step)} <span style="color:var(--accent)">${mciDur((Date.now()-new Date(j.current_step_started))/1000)}</span>`+
+      ` <span class="dim">&middot; job ${mciDur((Date.now()-new Date(j.started_at))/1000)}</span>`)).join('')+
+      (durRange?mciKv('failed runs',`<span class="dim">ended after ${durRange}</span>`):'')+`</div>`:'';
+    h+=runBlock(l,'in progress',body);
+  }
+  if(!v&&!live)h+=`<p class="dim">${w.error?'Fetch error: '+esc(w.error):'No runs on main yet.'}</p>`;
   h+=mciPerfHtml(w,m);
   const hist=(w.history||[]).slice().reverse();
   if(hist.length){
-    h+='<div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px"><div style="font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:6px">RECENT RUNS ON MAIN</div>';
-    for(const x of hist){const st=mciSt(x);
-      h+=`<div style="display:flex;gap:10px;align-items:center;padding:3px 2px;border-bottom:1px solid var(--line);font-size:11px"><span style="color:${st[1]};width:80px;font-weight:600">${st[0]}</span><a href="${U(x.url)}" target="_blank" style="color:#5de3ff;text-decoration:none;font-family:var(--mono)">${esc(x.sha)}</a><span style="color:#8598b4;margin-left:auto;font-family:var(--mono)" title="run duration">${x.dur?mciDur(x.dur):''}</span><span style="color:#5f708a;width:64px;text-align:right">${mciAgo(x.created_at)}</span></div>`;
-      if(x.failures&&x.failures.length)
-        h+=`<div style="padding:2px 2px 8px 92px;border-bottom:1px solid var(--line)">${x.failures.map(f=>mciJobFailHtml(Object.assign({},f,{warnings:[]}),m.repo)).join('')}</div>`;
+    h+=`<div style="${MCI_SEC}"><div style="${MCI_HDR}">RECENT RUNS ON MAIN</div>`;
+    h+=`<div class="mci-run hdr"><span>result</span><span>commit</span><span>failure</span><span class="r">duration</span><span class="r">started</span></div>`;
+    for(const x of hist){const st=mciSt(x),fs=x.failures||[];
+      const multi=fs.length>1||((v||l||{}).jobs||[]).length>1;
+      const sum=fs.map(f=>{const d=f.diagnosis,ft=f.failed_tests||[];
+        return (multi?`${esc(f.job)}: `:'')+(ft.length?`${ft.length} test${ft.length===1?'':'s'} failed`:(d?esc(d.summary)+(d.file?' &middot; '+esc(d.file):''):'failed at '+esc(f.failed_step||'?')))}).join(' &nbsp;|&nbsp; ');
+      h+=`<div class="mci-run"><span style="color:${st[1]};font-weight:600">${st[0]}</span>${link(x.url,x.sha)}`+
+        `<span class="c dim" title="${U(sum.replace(/&middot;/g,'·').replace(/&nbsp;\|&nbsp;/g,' | '))}">${sum}</span>`+
+        `<span class="r mono">${x.dur?mciDur(x.dur):''}</span><span class="r dim">${mciAgo(x.created_at)}</span>`;
+      // Failed tests, one per row, aligned under the failure column.
+      const tests=fs.flatMap(f=>(f.failed_tests||[]).map(t=>({job:f.job,issue:f.issue,...t})));
+      if(tests.length)h+=`<div class="detail">`+tests.map(t=>`<div class="c"><span class="mono" style="color:var(--crit)">${esc(t.name)}</span> <span class="dim">${esc(t.status||'')}${fs.length>1?' &middot; '+esc(t.job):''}</span></div>`).join('')+
+        [...new Set(fs.filter(f=>f.issue).map(f=>f.issue))].map(n=>`<div class="c"><a href="https://github.com/${U(m.repo)}/issues/${n}" target="_blank">tracking issue #${n} &#x2197;</a></div>`).join('')+`</div>`;
+      h+=`</div>`;
     }
     h+='</div>';
   }
-  h+=`<div class="detail" style="margin-top:12px;color:#8598b4"><a href="${U(w.url)}" target="_blank" style="color:#5de3ff;text-decoration:none">All ${esc(w.name)} runs &#x2197;</a> &middot; refreshed ${mciAgo(m.fetched_at)}</div>`;
+  h+=`<div class="dim" style="margin-top:12px;font-size:11px">${link(w.url,'All '+w.name+' runs ↗')} &middot; refreshed ${mciAgo(m.fetched_at)}</div>`;
   document.getElementById('modal-title').textContent=`${w.name} — state on main`+(m.head&&m.head.sha?` (${m.head.sha})`:'');
-  document.getElementById('modal-body').innerHTML=h;
+  document.getElementById('modal-body').innerHTML=`<div class="mci-modal">${h}</div>`;
   document.getElementById('modal').classList.add('show');
 }
 function renderExec(d){
