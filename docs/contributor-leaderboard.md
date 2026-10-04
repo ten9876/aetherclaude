@@ -35,9 +35,9 @@ merger.
 | Your merged PR closes a linked issue | +5 |
 | Your merged PR adds or changes tests | +2 |
 | First merged PR ever | +25 |
-| Review that approves | 4 |
-| Review that requests changes | 3 |
-| Comment-only review | 4 |
+| Review that approves | 10 |
+| Review that requests changes | 8 |
+| Comment-only review | 6 |
 | Merge someone else's PR | 5 |
 | Your merged PR turns a red `main` green | +15 |
 | Your revert is merged | +3 |
