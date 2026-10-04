@@ -26,15 +26,11 @@ h1{font-size:20px;font-weight:400;color:var(--accent-bright);letter-spacing:.5px
 .ph{font-size:12px;font-weight:600;letter-spacing:.4px;color:var(--muted);text-transform:uppercase;margin-bottom:10px;display:flex;justify-content:space-between}
 table{width:100%;border-collapse:collapse;min-width:860px}
 th{font-size:11px;font-weight:500;color:var(--muted-dim);text-align:right;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
-th:nth-child(-n+3){text-align:left}
+th:nth-child(-n+4){text-align:left}
 td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:right;font-family:var(--mono);font-size:12px;white-space:nowrap}
-td:nth-child(-n+3){text-align:left;font-family:var(--sans)}
-td.badges{white-space:nowrap}
-td.badges>span{margin-right:6px;vertical-align:middle}
-/* Fixed slots so each kind of badge sits in the same place on every row. */
-td.badges .slot{display:inline-flex;justify-content:center}
-td.badges .s-core{width:16px}
-td.badges .s-first{width:22px}
+td:nth-child(-n+4){text-align:left;font-family:var(--sans)}
+th.ic,td.ic{width:22px;padding-left:2px;padding-right:2px;text-align:center}
+td.ic>span{vertical-align:middle}
 tr.row{cursor:pointer}
 tr.row:hover td{background:var(--bg-2)}
 tr.lead td{background:rgba(224,184,74,.07)}
@@ -96,8 +92,8 @@ td.pts.soft{color:var(--muted);font-weight:500}
 <div class="tabs" id="tabs"></div>
 <div id="hero"></div>
 <div class="panel"><div class="ph"><span id="tbl-title">Standings</span><span class="dim" style="text-transform:none;letter-spacing:0;font-weight:400">Click a row for the point-by-point breakdown</span></div>
-<table><thead><tr class="grp"><th colspan="3"></th><th colspan="4">Score</th><th colspan="6" class="gc">Contributor points</th><th colspan="4" class="gs">Steward points</th></tr>
-<tr><th>#</th><th title="Core dev team · 1st: a first that week · Backer · Maintainer">Badges</th><th>Contributor</th><th title="Contributor plus steward points">Total</th><th title="Contributor points: ranks the contributor of the week">Contributor</th><th title="Steward points: ranks the steward of the week">Steward</th><th title="Backer points: 10 per $1 given on Open Collective; ranks the backer of the week">Backer</th><th class="gc">Comments</th><th>Discussions</th><th>Issues</th><th>PRs</th><th title="Fixing main, reverts, and the refund for fixing your own break within 24h">Main health</th><th title="Breaking main as the author, and issues or PRs labelled spam">Penalties</th><th class="gs">Reviews</th><th>Merges</th><th>Stewardship</th><th title="Approver and merger breaking-main penalties">Penalties</th></tr></thead><tbody id="tb"></tbody></table></div>
+<table><thead><tr class="grp"><th colspan="4"></th><th colspan="4">Score</th><th colspan="6" class="gc">Contributor points</th><th colspan="4" class="gs">Steward points</th></tr>
+<tr><th>#</th><th class="ic" title="Core dev team"></th><th class="ic" title="1st: did something for the first time that week"></th><th>Contributor</th><th title="Contributor plus steward points">Total</th><th title="Contributor points: ranks the contributor of the week">Contributor</th><th title="Steward points: ranks the steward of the week">Steward</th><th title="Backer points: 10 per $1 given on Open Collective; ranks the backer of the week">Backer</th><th class="gc">Comments</th><th>Discussions</th><th>Issues</th><th>PRs</th><th title="Fixing main, reverts, and the refund for fixing your own break within 24h">Main health</th><th title="Breaking main as the author, and issues or PRs labelled spam">Penalties</th><th class="gs">Reviews</th><th>Merges</th><th>Stewardship</th><th title="Approver and merger breaking-main penalties">Penalties</th></tr></thead><tbody id="tb"></tbody></table></div>
 <div class="panel" id="breaks"></div>
 <p class="dim" style="font-size:11px;text-align:center;margin-top:4px">Points depend on the kind of action, never its size. <a href="#" onclick="openRules();return false">How points work</a></p>
 </div>
@@ -201,19 +197,19 @@ function render(){
   rows.forEach((r,i)=>{
     const lead=r.login===leadLogin,rk=rankBy==='steward'?r.steward_rank:rankBy==='backer'?r.backer_rank:rankBy==='total'?totRank[r.login]:r.rank;
     h+=`<tr class="row${lead?' lead':''}" onclick="tog(${i})"><td class="rank">${r.eligible&&rk?(lead?'<span class="gold">1</span>':rk):'&mdash;'}</td>`+
-      // Badges get their own column so names line up: core shield, 1st,
-      // then the BACKER and MAINTAINER tags.
-      `<td class="badges"><span class="slot s-core">${r.core?CORE_ICON:''}</span><span class="slot s-first">${firstIcon(r)}</span>${backers.has(r.login)?`<span class="badge backer" title="${r.login.startsWith('oc:')?'Supports AetherSDR on Open Collective (no linked GitHub account)':'Supports AetherSDR on Open Collective'}">BACKER</span>`:''}${r.eligible?'':`<span class="badge" title="Maintainer: scored and shown, but not eligible to win">MAINTAINER</span>`}</td>`+
-      `<td><div class="who"><img src="${esc(avatarOf(r))}" alt="" loading="lazy"><b>${esc(r.name||r.login)}</b></div></td>`+
+      // Icon badges get their own columns (core shield, then 1st) so they
+      // line up; the BACKER and MAINTAINER labels stay beside the name.
+      `<td class="ic">${r.core?CORE_ICON:''}</td><td class="ic">${firstIcon(r)}</td>`+
+      `<td><div class="who"><img src="${esc(avatarOf(r))}" alt="" loading="lazy"><b>${esc(r.name||r.login)}</b>${backers.has(r.login)?`<span class="badge backer" title="${r.login.startsWith('oc:')?'Supports AetherSDR on Open Collective (no linked GitHub account)':'Supports AetherSDR on Open Collective'}">BACKER</span>`:''}${r.eligible?'':`<span class="badge" title="Maintainer: scored and shown, but not eligible to win">MAINTAINER</span>`}</div></td>`+
       `<td class="pts${tot(r)<0?' neg':''}${rankBy==='total'?'':' soft'}">${tot(r)}</td>`+
       `<td class="pts${r.points<0?' neg':''}${rankBy==='contributor'?'':' soft'}">${r.points}</td><td class="pts${r.steward<0?' neg':''}${rankBy==='steward'?'':' soft'}">${r.steward||'<span class="zero">·</span>'}</td>`+
       `<td class="pts${rankBy==='backer'?'':' soft'}">${r.backer||'<span class="zero">·</span>'}</td>`+
       CATS.map((c,ci)=>`<td class="${ci===0?'gc':ci===6?'gs':''}">${num(r.cats[c]||0)}</td>`).join('')+`</tr>`+
-      `<tr class="ev" id="ev${i}" style="display:none"><td colspan="17"><div class="evs">`+
+      `<tr class="ev" id="ev${i}" style="display:none"><td colspan="18"><div class="evs">`+
       (r.event_count>r.events.length?`<span class="dim" style="grid-column:1/-1">Newest entries of ${r.event_count}, plus every penalty and refund</span>`:'')+r.events.map(e=>`<span class="dim">${fmtD(e.at)}</span><span>${esc(LABEL[e.rule]||e.rule)}</span><span style="text-align:right" class="${e.points<0?'neg':''}">${e.points>0?'+':''}${e.points}</span>`+
         `<span><a href="${refUrl(e.ref)}" target="_blank">${esc(e.ref.replace('discussion','disc'))}</a> <span class="dim">${esc(e.note||'')}</span></span>`).join('')+`</div></td></tr>`;
   });
-  document.getElementById('tb').innerHTML=h||'<tr><td colspan="17" class="dim" style="text-align:left">No activity in this window yet.</td></tr>';
+  document.getElementById('tb').innerHTML=h||'<tr><td colspan="18" class="dim" style="text-align:left">No activity in this window yet.</td></tr>';
   const brks=(D.breaks||[]).filter(b=>(!w.start||b.at>=w.start)&&(!w.end||b.at<w.end)&&b.pr).slice().reverse();
   document.getElementById('breaks').innerHTML=`<div class="ph"><span>Main breaks in this window</span><span class="dim" style="text-transform:none;letter-spacing:0;font-weight:400">${brks.length} counted</span></div>`+
     (brks.length?brks.map(b=>`<div class="brk"><span class="dim">${fmtD(b.at)}</span><a href="${refUrl('pr#'+b.pr)}" target="_blank">#${b.pr}</a><span title="${esc((b.new||[]).join(', '))}">${esc(b.workflow.replace('.yml',''))} ${b.first===false?'new failure while red':'red'} at <a href="${esc(b.url)}" target="_blank">${esc(b.sha.slice(0,7))}</a> <span class="dim">${esc((b.new||[]).slice(0,3).join(', ')||b.cause)}${(b.new||[]).length>3?` +${b.new.length-3} more`:''}</span></span><span class="dim">${b.fixed_at?'green again '+fmtD(b.fixed_at):'still red'}</span></div>`).join(''):'<p class="dim">None. Main stayed green.</p>');
