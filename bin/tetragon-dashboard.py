@@ -1683,6 +1683,11 @@ def fetch_main_ci(opener, hdrs):
             # A cancelled/skipped run is not a verdict on main; prefer the
             # newest run that actually concluded success or failure.
             latest = runs[0] if runs else None
+            rec['history'] = [{'sha': (r.get('head_sha') or '')[:7], 'status': r.get('status', ''),
+                               'conclusion': r.get('conclusion'), 'created_at': r.get('created_at', ''),
+                               'url': r.get('html_url', '')} for r in reversed(runs)]
+            rec['url'] = f'https://github.com/{MAIN_CI_REPO}/actions/workflows/{path.split("/")[-1]}' \
+                if not path.startswith('dynamic/') else f'https://github.com/{MAIN_CI_REPO}/actions'
             completed = next((r for r in runs if r.get('status') == 'completed'
                               and r.get('conclusion') not in ('cancelled', 'skipped')), None)
             if latest:
@@ -4109,23 +4114,12 @@ body.view-ops #view-exec{display:none}
 .x-rows .x-row{display:flex;align-items:center;gap:10px;padding:6px 2px;border-bottom:1px solid var(--line);font-size:12px}
 .x-rows .x-row:last-child{border-bottom:none}
 .x-rows .tm{color:var(--muted-dim);font-size:11px;width:88px;flex:0 0 auto;font-family:var(--mono)}
-.x-mci-sum{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;color:var(--muted)}
-.x-mci-sum a{color:var(--accent-bright);text-decoration:none;font-family:var(--mono)}
-.x-mci-row{display:grid;grid-template-columns:96px minmax(150px,210px) 1fr auto;gap:12px;align-items:start;padding:8px 2px;border-bottom:1px solid var(--line);font-size:12px}
-.x-mci-row:last-child{border-bottom:none}
-.x-mci-pill{font-weight:700;font-size:11px;letter-spacing:.3px;white-space:nowrap}
-.x-mci-nm{color:var(--ink-soft);font-weight:600}
-.x-mci-nm .cad{display:block;color:var(--muted-dim);font-weight:400;font-size:10px;margin-top:2px}
 .x-mci-jobs{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
 .x-mci-job{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:100px;border:1px solid var(--line-hi);font-size:11px;color:var(--ink-soft);text-decoration:none;white-space:nowrap}
 .x-mci-job .d{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
 .x-mci-fail{flex-basis:100%;font-size:11px;color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
 .x-mci-fail code{font-family:var(--mono);color:var(--crit);background:rgba(232,80,106,.08);border-radius:4px;padding:0 4px;margin:0 4px 2px 0;display:inline-block}
 .x-mci-fail a{color:var(--accent-bright);text-decoration:none}
-.x-mci-meta{color:var(--muted-dim);font-size:11px;text-align:right;white-space:nowrap}
-.x-mci-meta a{color:var(--accent-bright);text-decoration:none}
-.x-mci-run{display:block;color:var(--accent);font-size:10px;margin-top:2px}
-@media (max-width:760px){.x-mci-row{grid-template-columns:86px 1fr}.x-mci-jobs,.x-mci-meta{grid-column:1/-1;text-align:left}}
 .x-rows a{color:var(--ink-soft);text-decoration:none}
 .x-rows a:hover{color:var(--accent-bright)}
 #x-tt{position:fixed;display:none;background:var(--bg-2);border:1px solid var(--line-hi);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--ink-soft);pointer-events:none;z-index:500;white-space:nowrap}
@@ -4182,11 +4176,9 @@ body.view-ops #view-exec{display:none}
 <div class="x-kpis" id="x-kpis"></div>
 
 <!-- State of main: latest verdict of every workflow that guards main
-     (ring_stats.main_ci, refreshed ~90s server-side). -->
-<div class="x-panel" id="x-mci">
-  <div class="x-ph"><span>State of main &middot; CI, tests, CodeQL, sanitizers</span><span id="x-mci-fetched" style="text-transform:none;letter-spacing:0;font-weight:400"></span></div>
-  <div id="x-mci-body"><p style="color:var(--muted);font-size:12px">Waiting for the first GitHub Actions fetch&hellip;</p></div>
-</div>
+     (ring_stats.main_ci, refreshed ~90s server-side), one tile per workflow
+     in the same grid as the agent KPI tiles; click for jobs + failed tests. -->
+<div class="x-kpis" id="x-mci"></div>
 
 <div class="x-panel">
   <div class="x-ph"><span><span id="x-act-label">Activity &middot; last 24 hours</span><button id="x-zoom-back" onclick="drawActivity(null,null)" style="display:none;margin-left:10px;background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:6px;padding:1px 8px;font-size:10px;cursor:pointer;vertical-align:middle">&#8592; back to 24h</button></span><span id="x-trend-total" style="text-transform:none;letter-spacing:0"></span></div>
@@ -4544,58 +4536,93 @@ const X_STATUS={green:{col:'var(--good)',glyph:'●',word:'Strong'},
                 red:{col:'var(--crit)',glyph:'✖',word:'At risk'}};
 let lastTrends=null;
 let lastKpisHtml='';
-// State of main panel. The verdict per workflow is its newest COMPLETED run
-// on main (a run still in progress shows alongside as "running on <sha>"),
-// so the panel never reads as unknown for the ~10-60 min after each push.
-let lastMciKey='';
+// State of main tiles. The verdict per workflow is its newest COMPLETED run
+// on main (a run still in progress shows under it as "running"), so a tile
+// never reads as unknown for the ~10-60 min after each push. The strip is the
+// last ten runs on main, oldest left, in place of the KPI sparkline.
+let lastMci=null,lastMciHtml='';
 function mciAgo(s){const t=new Date(s).getTime();if(!s||isNaN(t))return '';const m=Math.round((Date.now()-t)/60000);
   return m<1?'just now':m<60?m+'m ago':m<2880?Math.round(m/60)+'h ago':Math.round(m/1440)+'d ago'}
-const MCI_ST={success:['&#9679; PASS','var(--good)'],failure:['&#10008; FAIL','var(--crit)'],timed_out:['&#10008; TIMEOUT','var(--crit)'],
-  cancelled:['&#8856; CANCELLED','var(--muted-dim)'],skipped:['&#8856; SKIPPED','var(--muted-dim)'],action_required:['&#9650; ACTION','var(--warn)'],
-  startup_failure:['&#10008; STARTUP','var(--crit)']};
-function mciSt(run){if(!run)return ['&mdash; NO RUNS','var(--muted-dim)'];
-  if(run.status!=='completed')return ['&#9711; RUNNING','var(--accent)'];
-  return MCI_ST[run.conclusion]||['&#9650; '+esc(String(run.conclusion||'?').toUpperCase()),'var(--warn)']}
+const MCI_ST={success:['PASS','var(--good)'],failure:['FAIL','var(--crit)'],timed_out:['TIMEOUT','var(--crit)'],
+  cancelled:['CANCELLED','var(--muted-dim)'],skipped:['SKIPPED','var(--muted-dim)'],action_required:['ACTION','var(--warn)'],
+  startup_failure:['STARTUP','var(--crit)']};
+const MCI_RED=['failure','timed_out','startup_failure'];
+function mciSt(run){if(!run)return ['—','var(--muted-dim)'];
+  if(run.status!=='completed')return ['RUNNING','var(--accent)'];
+  return MCI_ST[run.conclusion]||[esc(String(run.conclusion||'?').toUpperCase()),'var(--warn)']}
+function mciU(s){return esc(String(s||'')).replace(/"/g,'&quot;')}
+function svgRunStrip(hist,w,h){
+  const n=10,gap=3,bw=(w-gap*(n-1))/n,pad=n-Math.min(n,hist.length);
+  let r='';
+  hist.slice(-n).forEach((x,i)=>{
+    const c=x.status!=='completed'?'var(--accent)':((MCI_ST[x.conclusion]||[,'var(--warn)'])[1]);
+    const hh=x.status!=='completed'?h*.5:(MCI_RED.includes(x.conclusion)?h:h*.75);
+    r+=`<rect x="${((pad+i)*(bw+gap)).toFixed(1)}" y="${(h-hh).toFixed(1)}" width="${bw.toFixed(1)}" height="${hh.toFixed(1)}" rx="2" fill="${c}" opacity="${x.status!=='completed'?.55:.9}"><title>${esc(x.sha)} · ${esc(x.status==='completed'?String(x.conclusion):x.status)} · ${mciAgo(x.created_at)}</title></rect>`;
+  });
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${r}</svg>`;
+}
+function mciFailSummary(run){
+  const bad=((run&&run.jobs)||[]).filter(j=>j.status==='completed'&&MCI_RED.includes(j.conclusion));
+  if(!bad.length)return '';
+  const tests=bad.reduce((a,j)=>a+((j.failed_tests||[]).length),0);
+  if(tests)return `${tests} test${tests===1?'':'s'} failed`;
+  const steps=[...new Set(bad.map(j=>j.failed_step).filter(Boolean))];
+  return steps.length?'failed at '+esc(steps.join(', ')):`${bad.length} job${bad.length===1?'':'s'} failed`;
+}
 function renderMainCi(m){
-  const body=document.getElementById('x-mci-body');if(!body)return;
-  if(!m||!m.workflows)return;
-  const key=JSON.stringify(m)+'|'+Math.floor(Date.now()/60000);
-  if(key===lastMciKey)return;lastMciKey=key;
-  document.getElementById('x-mci-fetched').textContent=m.fetched_at?'updated '+mciAgo(m.fetched_at):'';
-  const U=s=>esc(String(s||'')).replace(/"/g,'&quot;');
-  let red=0,green=0,running=0,h='';
-  for(const w of m.workflows){
+  const el=document.getElementById('x-mci');if(!el||!m||!m.workflows)return;
+  lastMci=m;
+  const tiles=m.workflows.map((w,i)=>{
     const v=w.last_completed,l=w.latest,live=l&&l.status!=='completed';
-    if(live)running++;
-    const st=v?mciSt(v):(live?mciSt(l):mciSt(null));
-    if(v&&v.conclusion==='success')green++;else if(v&&['failure','timed_out','startup_failure'].includes(v.conclusion))red++;
-    const shown=v||l;
+    const st=v?mciSt(v):mciSt(l),shown=v||l,red=v&&MCI_RED.includes(v.conclusion);
+    let sub=shown?(red?`<span style="color:var(--crit)">${mciFailSummary(v)}</span> &middot; `:'')+`${esc(shown.sha)} &middot; ${mciAgo(shown.updated_at||shown.created_at)}`
+                 :(w.error?'fetch error':'no runs on main');
+    if(live&&l!==v)sub+=` &middot; <span style="color:var(--accent)">&#9711; running</span>`;
+    return `<div class="x-tile" onclick="showMainCiCheck(${i})"${red?' style="border-color:var(--crit)"':''} title="${mciU(w.cadence)}">`+
+      `<div class="lbl">${esc(w.name)}</div><div class="val" style="color:${st[1]}">${st[0]}</div>`+
+      `<div class="sub" style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sub}</div>`+
+      `<div class="spark">${svgRunStrip(w.history||[],110,30)}</div></div>`;
+  }).join('');
+  // Ages tick, so refresh at most once a minute when the data is unchanged.
+  const key=tiles+Math.floor(Date.now()/60000);
+  if(key!==lastMciHtml){lastMciHtml=key;el.innerHTML=tiles}
+}
+function showMainCiCheck(i){
+  const m=lastMci,w=m&&m.workflows[i];if(!w)return;
+  const v=w.last_completed,l=w.latest,live=l&&l.status!=='completed',U=mciU;
+  const jobsHtml=run=>{
     let jobs='',fails='';
-    for(const j of (shown&&shown.jobs)||[]){
+    for(const j of (run&&run.jobs)||[]){
       const js=j.status!=='completed'?['','var(--accent)']:(MCI_ST[j.conclusion]||['','var(--warn)']);
-      jobs+=`<a class="x-mci-job" href="${U(j.url)}" target="_blank" title="${U(j.name)}: ${U(j.status==='completed'?j.conclusion:j.status)}"><span class="d" style="background:${js[1]}"></span>${esc(String(j.name))}</a>`;
+      jobs+=`<a class="x-mci-job" href="${U(j.url)}" target="_blank" title="${U(j.status==='completed'?j.conclusion:j.status)}"><span class="d" style="background:${js[1]}"></span>${esc(String(j.name))}</a>`;
       if(j.status==='completed'&&j.conclusion&&j.conclusion!=='success'&&j.conclusion!=='skipped'){
         const ft=j.failed_tests||[];
         fails+=`<div class="x-mci-fail"><b style="color:var(--ink-soft)">${esc(String(j.name))}</b>`+
-          (ft.length?` &middot; ${ft.length} test${ft.length===1?'':'s'} failed: `+ft.map(t=>`<code title="${U(t.status)}">${esc(t.name)}${t.status&&t.status!=='Failed'?' ('+esc(t.status)+')':''}</code>`).join('')
+          (ft.length?` &middot; ${ft.length} test${ft.length===1?'':'s'} failed:<br>`+ft.map(t=>`<code title="${U(t.status)}">${esc(t.name)}${t.status&&t.status!=='Failed'?' ('+esc(t.status)+')':''}</code>`).join('')
                     :(j.failed_step?` &middot; failed at step <i>${esc(String(j.failed_step))}</i>`:` &middot; ${esc(String(j.conclusion))}`))+
           (j.issue?` &middot; <a href="https://github.com/${U(m.repo)}/issues/${j.issue}" target="_blank">#${j.issue} &#x2197;</a>`:'')+`</div>`;
       }
     }
-    if(!jobs&&w.error)jobs=`<span style="color:var(--warn)">fetch error: ${esc(w.error)}</span>`;
-    const meta=shown?`<a href="${U(shown.url)}" target="_blank" title="${U(shown.title)}">${esc(shown.sha)}</a> &middot; ${mciAgo(shown.updated_at||shown.created_at)}${shown.event&&shown.event!=='push'?' &middot; '+esc(shown.event):''}`:'';
-    const runNote=live&&l!==v?`<span class="x-mci-run">&#9711; running on <a href="${U(l.url)}" target="_blank" style="color:var(--accent)">${esc(l.sha)}</a> &middot; ${(l.jobs||[]).filter(j=>j.status==='completed').length}/${(l.jobs||[]).length} jobs done</span>`:'';
-    h+=`<div class="x-mci-row"><span class="x-mci-pill" style="color:${st[1]}">${st[0]}</span>`+
-       `<span class="x-mci-nm">${esc(w.name)}<span class="cad">${esc(w.cadence||'')}</span></span>`+
-       `<div class="x-mci-jobs">${jobs}${fails}</div>`+
-       `<span class="x-mci-meta">${meta}${runNote}</span></div>`;
+    return `<div class="x-mci-jobs" style="margin-top:8px">${jobs}${fails}</div>`;
+  };
+  const runHead=(run,label)=>{const st=mciSt(run);const sev=run.status!=='completed'?'MEDIUM':(MCI_RED.includes(run.conclusion)?'HIGH':'SAFE');
+    return `<div class="modal-finding ${sev}"><span class="sev ${sev}">${st[0]}</span> ${label} &middot; <a href="${U(run.url)}" target="_blank" style="color:#5de3ff;text-decoration:none">${esc(run.sha)} &#x2197;</a> ${esc(run.title||'')} &middot; ${mciAgo(run.updated_at||run.created_at)}${run.event&&run.event!=='push'?' &middot; '+esc(run.event):''}</div>`};
+  let h=`<p style="color:#8598b4;margin-bottom:12px">Runs: ${esc(w.cadence||'')}. The verdict is the newest completed run on main; a run still in progress is shown below it.`+
+    (m.head&&m.head.sha?` main is at <a href="${U(m.head.url)}" target="_blank" style="color:#5de3ff;text-decoration:none">${esc(m.head.sha)}</a> (${mciAgo(m.head.date)}).`:'')+`</p>`;
+  if(v){h+=runHead(v,'last verdict')+jobsHtml(v)}
+  if(live&&l!==v){h+='<div style="margin-top:14px">'+runHead(l,'in progress')+jobsHtml(l)+'</div>'}
+  if(!v&&!live)h+=`<p style="color:#8598b4">${w.error?'Fetch error: '+esc(w.error):'No runs on main yet.'}</p>`;
+  const hist=(w.history||[]).slice().reverse();
+  if(hist.length){
+    h+='<div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px"><div style="font-size:12px;font-weight:600;color:#8598b4;letter-spacing:.3px;margin-bottom:6px">RECENT RUNS ON MAIN</div>';
+    for(const x of hist){const st=mciSt(x);
+      h+=`<div style="display:flex;gap:10px;align-items:center;padding:3px 2px;border-bottom:1px solid var(--line);font-size:11px"><span style="color:${st[1]};width:80px;font-weight:600">${st[0]}</span><a href="${U(x.url)}" target="_blank" style="color:#5de3ff;text-decoration:none;font-family:var(--mono)">${esc(x.sha)}</a><span style="color:#5f708a;margin-left:auto">${mciAgo(x.created_at)}</span></div>`}
+    h+='</div>';
   }
-  const hd=m.head;
-  let sum=`<span class="x-chip" style="color:${red?'var(--crit)':'var(--good)'};border-color:${red?'var(--crit)':'var(--good)'}">${red?'&#10008; '+red+' failing':'&#9679; all green'}</span>`+
-    `<span>${green} passing${running?` &middot; ${running} running`:''}</span>`;
-  if(hd&&hd.sha)sum+=`<span>main @ <a href="${U(hd.url)}" target="_blank">${esc(hd.sha)}</a> ${esc(hd.title||'')} &middot; ${mciAgo(hd.date)}</span>`;
-  body.innerHTML=`<div class="x-mci-sum">${sum}</div>${h}`;
-  document.getElementById('x-mci').style.borderColor=red?'var(--crit)':'';
+  h+=`<div class="detail" style="margin-top:12px;color:#8598b4"><a href="${U(w.url)}" target="_blank" style="color:#5de3ff;text-decoration:none">All ${esc(w.name)} runs &#x2197;</a> &middot; refreshed ${mciAgo(m.fetched_at)}</div>`;
+  document.getElementById('modal-title').textContent=`${w.name} — state on main`;
+  document.getElementById('modal-body').innerHTML=h;
+  document.getElementById('modal').classList.add('show');
 }
 function renderExec(d){
   const s=d.stats||{},r=d.rings||{},t=(s.tokens)||{},p=r.posture;
