@@ -12,15 +12,15 @@ h1{font-size:20px;font-weight:400;color:var(--accent-bright);letter-spacing:.5px
 .tabs{display:flex;gap:6px;margin:18px 0 14px;flex-wrap:wrap}
 .tab{background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12px}
 .tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
-.hero{display:grid;grid-template-columns:56px minmax(0,1fr) auto;grid-template-areas:"img t t" "img n p" "img d p";column-gap:16px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px 20px;margin-bottom:14px}
-.hero img{grid-area:img;width:56px;height:56px;border-radius:50%;border:2px solid var(--gold)}
-/* The award title spans the name and points columns so it stays on one line. */
+.hero{display:grid;grid-template-columns:64px minmax(0,1fr) auto;grid-template-areas:"img t t" "img n p" "img d d";column-gap:18px;row-gap:2px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px 22px;margin-bottom:14px}
+.hero img{grid-area:img;width:64px;height:64px;border-radius:50%;border:2px solid var(--gold)}
+/* Same rows on every card (title; name and score; detail) so the three
+   cards line up; the title and detail span the name and score columns. */
 .hero .t{grid-area:t;font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--gold);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hero .n{grid-area:n;font-size:22px;color:var(--ink);font-weight:600;margin-top:2px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.hero .d{grid-area:d;margin-top:2px;min-width:0}
-.hero.nod{grid-template-areas:"img t t" "img n p"}
-.hero .p{grid-area:p;text-align:right;align-self:center}
-.hero .p b{font-size:28px;color:var(--ink);font-weight:600;display:block}
+.hero .n{grid-area:n;font-size:30px;line-height:1.15;color:var(--ink);font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hero .p{grid-area:p;font-size:30px;line-height:1.15;color:var(--ink);font-weight:600;text-align:right}
+.hero .d{grid-area:d;min-width:0;min-height:1.35em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hero .p small{font-size:13px;font-weight:400;color:var(--muted);margin-left:5px}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px 16px;margin-bottom:14px;overflow-x:auto}
 .ph{font-size:12px;font-weight:600;letter-spacing:.4px;color:var(--muted);text-transform:uppercase;margin-bottom:10px;display:flex;justify-content:space-between}
 table{width:100%;border-collapse:collapse;min-width:860px}
@@ -150,13 +150,13 @@ function render(){
   const stew=st.filter(r=>r.steward_rank).sort((a,b)=>a.steward_rank-b.steward_rank)[0];
   const back=st.filter(r=>r.backer_rank).sort((a,b)=>a.backer_rank-b.backer_rank)[0];
   const isCur=w.tag==='current',all=!w.tag;
-  const card=(r,title,val,unit,detail)=>`<div class="hero${detail?'':' nod'}"><img src="${esc(avatarOf(r))}" alt=""><div class="t">${title}</div><div class="n">${esc(r.name||r.login)}</div>`+
-    (detail?`<div class="d dim">${detail}</div>`:'')+`<div class="p"><b>${val}</b><span class="dim">${unit}</span></div></div>`;
+  const card=(r,title,val,unit,detail)=>`<div class="hero"><img src="${esc(avatarOf(r))}" alt=""><div class="t">${title}</div>`+
+    `<div class="n">${esc(r.name||r.login)}</div><div class="p">${val}<small>${unit}</small></div><div class="d dim">${detail||''}</div></div>`;
   document.getElementById('hero').innerHTML='<div class="heroes">'+
-    (top?card(top,isCur?'Leading contributor this week':all?'All-time contributor':`Contributor of the week &middot; ${esc(w.tag)}`,top.points,'contributor points',''):'')+
-    (stew?card(stew,isCur?'Leading steward this week':all?'All-time steward':`Steward of the week &middot; ${esc(w.tag)}`,stew.steward,'steward points',
+    (top?card(top,isCur?'Leading contributor this week':all?'All-time contributor':`Contributor of the week &middot; ${esc(w.tag)}`,top.points,'points',''):'')+
+    (stew?card(stew,isCur?'Leading steward this week':all?'All-time steward':`Steward of the week &middot; ${esc(w.tag)}`,stew.steward,'points',
       ''):'')+
-    (back?card(back,isCur?'Leading backer this week':all?'All-time backer':`Backer of the week &middot; ${esc(w.tag)}`,back.backer,'backer points',
+    (back?card(back,isCur?'Leading backer this week':all?'All-time backer':`Backer of the week &middot; ${esc(w.tag)}`,back.backer,'points',
       `$${(back.backer/10).toLocaleString(undefined,{maximumFractionDigits:2})} given on Open Collective`):'')+'</div>';
   document.getElementById('tbl-title').innerHTML=`Standings &middot; ${esc(v.name)} <span class="seg"><span class="${rankBy==='total'?'on':''}" onclick="rankBy='total';render()">Total</span><span class="${rankBy==='contributor'?'on':''}" onclick="rankBy='contributor';render()">Contributor</span><span class="${rankBy==='steward'?'on':''}" onclick="rankBy='steward';render()">Steward</span><span class="${rankBy==='backer'?'on':''}" onclick="rankBy='backer';render()">Backer</span></span>`;
   const tot=r=>r.total!=null?r.total:r.points+(r.steward||0);
