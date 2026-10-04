@@ -4973,8 +4973,7 @@ function showMainCiCheck(i){
   };
   const runHead=(run,label)=>{const st=mciSt(run);const sev=run.status!=='completed'?'MEDIUM':(MCI_RED.includes(run.conclusion)?'HIGH':'SAFE');
     return `<div class="modal-finding ${sev}"><span class="sev ${sev}">${st[0]}</span> ${label} &middot; <a href="${U(run.url)}" target="_blank" style="color:#5de3ff;text-decoration:none">${esc(run.sha)} &#x2197;</a> ${esc(run.title||'')} &middot; ${mciAgo(run.updated_at||run.created_at)}${run.event&&run.event!=='push'?' &middot; '+esc(run.event):''}</div>`};
-  let h=`<p style="color:#8598b4;margin-bottom:12px">Runs: ${esc(w.cadence||'')}. The verdict is the newest completed run on main; a run still in progress is shown below it.`+
-    (m.head&&m.head.sha?` main is at <a href="${U(m.head.url)}" target="_blank" style="color:#5de3ff;text-decoration:none">${esc(m.head.sha)}</a> (${mciAgo(m.head.date)}).`:'')+`</p>`;
+  let h='';
   if(v){h+=runHead(v,'last verdict')+jobsHtml(v)}
   if(live&&l!==v){h+='<div style="margin-top:14px">'+runHead(l,'in progress')+jobsHtml(l)+'</div>'}
   if(!v&&!live)h+=`<p style="color:#8598b4">${w.error?'Fetch error: '+esc(w.error):'No runs on main yet.'}</p>`;
@@ -4987,7 +4986,7 @@ function showMainCiCheck(i){
     h+='</div>';
   }
   h+=`<div class="detail" style="margin-top:12px;color:#8598b4"><a href="${U(w.url)}" target="_blank" style="color:#5de3ff;text-decoration:none">All ${esc(w.name)} runs &#x2197;</a> &middot; refreshed ${mciAgo(m.fetched_at)}</div>`;
-  document.getElementById('modal-title').textContent=`${w.name} — state on main`;
+  document.getElementById('modal-title').textContent=`${w.name} — state on main`+(m.head&&m.head.sha?` (${m.head.sha})`:'');
   document.getElementById('modal-body').innerHTML=h;
   document.getElementById('modal').classList.add('show');
 }
