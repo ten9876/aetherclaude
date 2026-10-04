@@ -114,7 +114,8 @@ The rules popup on the page builds this example from the live point values.
 | Authored it | −45 |
 | Merged it | −30 |
 | Author fixes their own break within 24 hours | +15 back |
-| Issue or PR labelled `spam` or `invalid` | −3 (and no points for opening it) |
+| Issue or PR labelled `spam` | −3 (and no points for opening it) |
+| Issue or PR labelled `invalid` | no points for opening it, no penalty |
 
 - A **break** is the first failed `CI` or `Full Suite` run on `main` after a
   green one; both run on every push, so the commit is attributable. The PR is

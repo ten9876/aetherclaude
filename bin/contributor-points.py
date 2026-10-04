@@ -39,7 +39,8 @@ BOTS = {'aethersdr-agent[bot]', 'aethersdr-agent', 'dependabot[bot]', 'dependabo
 BREAK_WORKFLOWS = ('ci.yml', 'full-suite.yml')   # run on every push to main
 INFRA_CAUSES = {'disk', 'oom', 'timeout', 'runner'}
 CONFIRM_LABELS = {'bug', 'enhancement'}
-SPAM_LABELS = {'spam', 'invalid'}
+SPAM_LABELS = {'spam'}          # -3, and no points for opening it
+VOID_LABELS = {'invalid'}        # no points for opening it, no penalty
 TRIVIAL_COMMENT = re.compile(r'^\W*(\+1|thanks?( you)?|thx|ty|lgtm|same( here)?|bump|me too)\W*$', re.I)
 MIN_COMMENT_CHARS = 15              # a floor, not a scale
 
@@ -563,6 +564,8 @@ def score(db):
             spam.add((t, n))
             add(it['author'], 'spam', it['closed_at'] or it['created_at'], f'{t}#{n}')
             continue
+        if labs & VOID_LABELS:
+            continue   # an honest report that didn't pan out: no points either way
         if t == 'issue':
             add(it['author'], 'issue_open', it['created_at'], f'issue#{n}')
             conf = sorted((at, actor) for lab, actor, at in labels[n]
