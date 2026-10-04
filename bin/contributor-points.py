@@ -71,10 +71,10 @@ RULES = {
     'main_fixed':          (15, 'main'),
     'revert_merged':       (3, 'main'),
     'break_approver':      (-60, 'penalties'),
-    'break_author':        (-45, 'main'),        # contributor side
+    'break_author':        (-45, 'cpenalties'),  # contributor-side penalties
     'break_merger':        (-30, 'penalties'),
-    'break_self_fix':      (15, 'main'),
-    'spam':                (-3, 'issues'),
+    'break_self_fix':      (15, 'cpenalties'),
+    'spam':                (-3, 'cpenalties'),
 }
 CAP_COMMENT_PER_THREAD_DAY = 1
 CAP_OWN_PR_REPLIES = 2

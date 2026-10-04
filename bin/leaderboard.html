@@ -82,8 +82,8 @@ td.pts.soft{color:var(--muted);font-weight:500}
 <div class="tabs" id="tabs"></div>
 <div id="hero"></div>
 <div class="panel"><div class="ph"><span id="tbl-title">Standings</span><span class="dim" style="text-transform:none;letter-spacing:0;font-weight:400">Click a row for the point-by-point breakdown</span></div>
-<table><thead><tr class="grp"><th colspan="2"></th><th colspan="3">Score</th><th colspan="5" class="gc">Contributor points</th><th colspan="4" class="gs">Steward points</th></tr>
-<tr><th>#</th><th>Contributor</th><th title="Contributor plus steward points">Total</th><th title="Contributor points: ranks the contributor of the week">Contributor</th><th title="Steward points: ranks the steward of the week">Steward</th><th class="gc">Comments</th><th>Discussions</th><th>Issues</th><th>PRs</th><th title="Fixing main, reverts, and the author's breaking-main penalty">Main health</th><th class="gs">Reviews</th><th>Merges</th><th>Stewardship</th><th title="Approver and merger breaking-main penalties">Penalties</th></tr></thead><tbody id="tb"></tbody></table></div>
+<table><thead><tr class="grp"><th colspan="2"></th><th colspan="3">Score</th><th colspan="6" class="gc">Contributor points</th><th colspan="4" class="gs">Steward points</th></tr>
+<tr><th>#</th><th>Contributor</th><th title="Contributor plus steward points">Total</th><th title="Contributor points: ranks the contributor of the week">Contributor</th><th title="Steward points: ranks the steward of the week">Steward</th><th class="gc">Comments</th><th>Discussions</th><th>Issues</th><th>PRs</th><th title="Fixing main and reverts">Main health</th><th title="Breaking main as the author (less the refund for fixing it within 24h), and spam">Penalties</th><th class="gs">Reviews</th><th>Merges</th><th>Stewardship</th><th title="Approver and merger breaking-main penalties">Penalties</th></tr></thead><tbody id="tb"></tbody></table></div>
 <div class="panel" id="breaks"></div>
 <p class="dim" style="font-size:11px;text-align:center;margin-top:4px">Points depend on the kind of action, never its size. <a href="#" onclick="openRules();return false">How points work</a></p>
 </div>
@@ -119,8 +119,8 @@ td.pts.soft{color:var(--muted);font-weight:500}
 </div></div>
 <script>
 let D=null,views=[],cur=null;
-const CATS=['comments','discussions','issues','prs','main','reviews','merges','stewardship','penalties'];
-const C_CATS=['comments','discussions','issues','prs','main'],S_CATS=['reviews','merges','stewardship'];
+const CATS=['comments','discussions','issues','prs','main','cpenalties','reviews','merges','stewardship','penalties'];
+const C_CATS=['comments','discussions','issues','prs','main','cpenalties'],S_CATS=['reviews','merges','stewardship'];
 let rankBy='total';
 const LABEL={discussion_comment:'Discussion comment',issue_comment:'Issue comment',pr_comment:'PR comment',discussion_open:'Started discussion',discussion_answer:'Accepted answer',issue_open:'Opened issue',issue_confirmed:'Issue confirmed',issue_fixed:'Issue fixed',pr_open:'Opened PR',pr_merged:'PR merged',pr_closes_issue:'PR closes issue',pr_tests:'PR adds tests',first_merged_pr:'First merged PR',review_approve:'Approved',review_changes:'Requested changes',review_comment:'Review comments',merge_other:'Merged a PR',main_fixed:'Fixed main',revert_merged:'Revert merged',issue_triaged:'Triaged an issue',issue_closed:'Closed an issue',pr_shepherd:'Shepherded a PR',review_first_fast:'First review within 24h',release_published:'Published a release',break_approver:'Approved a break',break_author:'Broke main',break_merger:'Merged a break',break_self_fix:'Fixed own break',spam:'Spam/invalid'};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -144,7 +144,7 @@ function render(){
   const isCur=w.tag==='current',all=!w.tag;
   const card=(r,title,val,unit,detail)=>`<div class="hero"><img src="${esc(r.avatar||`https://github.com/${r.login}.png`)}" alt=""><div style="min-width:0"><div class="t">${title}</div><div class="n">${esc(r.login)}</div>`+
     `<div class="dim" style="margin-top:2px">${detail}</div></div><div class="p"><b>${val}</b><span class="dim">${unit}</span></div></div>`;
-  const catLine=(r,cats)=>cats.filter(c=>r.cats[c]).map(c=>`${c==='prs'?'PRs':c==='main'?'main health':c} ${r.cats[c]}`).join(' &middot; ');
+  const catLine=(r,cats)=>cats.filter(c=>r.cats[c]).map(c=>`${c==='prs'?'PRs':c==='main'?'main health':c==='cpenalties'?'penalties':c} ${r.cats[c]}`).join(' &middot; ');
   document.getElementById('hero').innerHTML='<div class="heroes">'+
     (top?card(top,isCur?'Leading contributor this week':all?'All-time contributor':`Contributor of the week &middot; ${esc(w.tag)}`,top.points,'contributor points',catLine(top,C_CATS)):'')+
     (stew?card(stew,isCur?'Leading steward this week':all?'All-time steward':`Steward of the week &middot; ${esc(w.tag)}`,stew.steward,'steward points',
@@ -163,12 +163,12 @@ function render(){
       `<td><div class="who"><img src="${esc(r.avatar||`https://github.com/${r.login}.png`)}" alt="" loading="lazy"><b>${esc(r.login)}</b>${r.eligible?'':`<span class="badge" title="Scored and shown, but not eligible to win">MAINTAINER &middot; NOT ELIGIBLE</span>`}</div></td>`+
       `<td class="pts${tot(r)<0?' neg':''}${rankBy==='total'?'':' soft'}">${tot(r)}</td>`+
       `<td class="pts${r.points<0?' neg':''}${rankBy==='contributor'?'':' soft'}">${r.points}</td><td class="pts${r.steward<0?' neg':''}${rankBy==='steward'?'':' soft'}">${r.steward||'<span class="zero">·</span>'}</td>`+
-      CATS.map((c,ci)=>`<td class="${ci===0?'gc':ci===5?'gs':''}">${num(r.cats[c]||0)}</td>`).join('')+`</tr>`+
-      `<tr class="ev" id="ev${i}" style="display:none"><td colspan="14"><div class="evs">`+
+      CATS.map((c,ci)=>`<td class="${ci===0?'gc':ci===6?'gs':''}">${num(r.cats[c]||0)}</td>`).join('')+`</tr>`+
+      `<tr class="ev" id="ev${i}" style="display:none"><td colspan="15"><div class="evs">`+
       (r.event_count>r.events.length?`<span class="dim" style="grid-column:1/-1">Newest ${r.events.length} of ${r.event_count} entries</span>`:'')+r.events.map(e=>`<span class="dim">${fmtD(e.at)}</span><span>${esc(LABEL[e.rule]||e.rule)}</span><span style="text-align:right" class="${e.points<0?'neg':''}">${e.points>0?'+':''}${e.points}</span>`+
         `<span><a href="${refUrl(e.ref)}" target="_blank">${esc(e.ref.replace('discussion','disc'))}</a> <span class="dim">${esc(e.note||'')}</span></span>`).join('')+`</div></td></tr>`;
   });
-  document.getElementById('tb').innerHTML=h||'<tr><td colspan="14" class="dim" style="text-align:left">No activity in this window yet.</td></tr>';
+  document.getElementById('tb').innerHTML=h||'<tr><td colspan="15" class="dim" style="text-align:left">No activity in this window yet.</td></tr>';
   const brks=(D.breaks||[]).filter(b=>(!w.start||b.at>=w.start)&&(!w.end||b.at<w.end)&&b.pr).slice().reverse();
   document.getElementById('breaks').innerHTML=`<div class="ph"><span>Main breaks in this window</span><span class="dim" style="text-transform:none;letter-spacing:0;font-weight:400">${brks.length} counted</span></div>`+
     (brks.length?brks.map(b=>`<div class="brk"><span class="dim">${fmtD(b.at)}</span><a href="${refUrl('pr#'+b.pr)}" target="_blank">#${b.pr}</a><span title="${esc((b.new||[]).join(', '))}">${esc(b.workflow.replace('.yml',''))} ${b.first===false?'new failure while red':'red'} at <a href="${esc(b.url)}" target="_blank">${esc(b.sha.slice(0,7))}</a> <span class="dim">${esc((b.new||[]).slice(0,3).join(', ')||b.cause)}${(b.new||[]).length>3?` +${b.new.length-3} more`:''}</span></span><span class="dim">${b.fixed_at?'green again '+fmtD(b.fixed_at):'still red'}</span></div>`).join(''):'<p class="dim">None. Main stayed green.</p>');

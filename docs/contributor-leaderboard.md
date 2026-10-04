@@ -65,7 +65,8 @@ winner at every release:
 
 - **Contributor points** rank the **contributor of the week**: comments,
   discussions, issues, PRs, fixing `main` and reverts, less the author's own
-  breaking-main penalty (with its refund) and spam.
+  breaking-main penalty (with its refund) and spam. The page shows these
+  penalties in their own column, never netted against fixes.
 - **Steward points** rank the **steward of the week**: reviews, merges,
   triage, closing issues, shepherding PRs, fast first reviews and releases,
   less the approver and merger breaking-main penalties.
