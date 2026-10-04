@@ -172,7 +172,7 @@ function render(){
   rows.forEach((r,i)=>{
     const lead=r.login===leadLogin,rk=rankBy==='steward'?r.steward_rank:rankBy==='backer'?r.backer_rank:rankBy==='total'?totRank[r.login]:r.rank;
     h+=`<tr class="row${lead?' lead':''}" onclick="tog(${i})"><td class="rank">${r.eligible&&rk?(lead?'<span class="gold">1</span>':rk):'&mdash;'}</td>`+
-      `<td><div class="who"><img src="${esc(avatarOf(r))}" alt="" loading="lazy"><b>${esc(r.name||r.login)}</b>${backers.has(r.login)?`<span class="badge backer" title="${r.login.startsWith('oc:')?'Supports AetherSDR on Open Collective (no linked GitHub account)':'Supports AetherSDR on Open Collective'}">BACKER</span>`:''}${r.eligible?'':`<span class="badge" title="Scored and shown, but not eligible to win">MAINTAINER &middot; NOT ELIGIBLE</span>`}</div></td>`+
+      `<td><div class="who"><img src="${esc(avatarOf(r))}" alt="" loading="lazy"><b>${esc(r.name||r.login)}</b>${backers.has(r.login)?`<span class="badge backer" title="${r.login.startsWith('oc:')?'Supports AetherSDR on Open Collective (no linked GitHub account)':'Supports AetherSDR on Open Collective'}">BACKER</span>`:''}${r.eligible?'':`<span class="badge" title="Maintainer: scored and shown, but not eligible to win">MAINTAINER</span>`}</div></td>`+
       `<td class="pts${tot(r)<0?' neg':''}${rankBy==='total'?'':' soft'}">${tot(r)}</td>`+
       `<td class="pts${r.points<0?' neg':''}${rankBy==='contributor'?'':' soft'}">${r.points}</td><td class="pts${r.steward<0?' neg':''}${rankBy==='steward'?'':' soft'}">${r.steward||'<span class="zero">·</span>'}</td>`+
       `<td class="pts${rankBy==='backer'?'':' soft'}">${r.backer||'<span class="zero">·</span>'}</td>`+
