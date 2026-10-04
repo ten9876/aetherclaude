@@ -22,28 +22,34 @@ merger.
 
 | Action | Points |
 |---|---|
-| Comment on a discussion, issue or PR | 1 |
-| Start a discussion · open an issue · open a PR | 2 |
+| Comment on a discussion | 1 |
+| Comment on an issue | 2 |
+| Comment on a PR (or reply in a review thread) | 3 |
+| Start a discussion | 2 |
 | Your discussion answer is accepted | 4 |
+| Open an issue | 4 |
 | Your issue is confirmed (labelled `bug`/`enhancement` by someone else) | +2 |
-| Your issue is fixed by a merged PR | +2 |
-| Your PR is merged | +6 |
-| Your merged PR closes a linked issue · adds or changes tests | +2 · +2 |
-| First merged PR ever | +5 |
-| Review that approves or requests changes | 4 |
+| Your issue is fixed by a merged PR | +5 |
+| Open a PR | 6 |
+| Your PR is merged | +10 |
+| Your merged PR closes a linked issue | +5 |
+| Your merged PR adds or changes tests | +2 |
+| First merged PR ever | +25 |
+| Review that approves | 4 |
+| Review that requests changes | 3 |
 | Comment-only review | 2 |
-| Merge someone else's PR | 2 |
-| Your merged PR turns a red `main` green | +5 |
+| Merge someone else's PR | 5 |
+| Your merged PR turns a red `main` green | +15 |
 | Your revert is merged | +3 |
 
 ### Breaking main
 
 | Role in the PR that broke `main` | Points |
 |---|---|
-| Approved it | −10 |
-| Authored it | −8 |
-| Merged it | −4 |
-| Author fixes their own break within 24 hours | +4 back |
+| Approved it | −20 |
+| Authored it | −15 |
+| Merged it | −10 |
+| Author fixes their own break within 24 hours | +5 back |
 | Issue or PR labelled `spam` or `invalid` | −3 (and no points for opening it) |
 
 - A **break** is the first failed `CI` or `Full Suite` run on `main` after a
@@ -67,13 +73,13 @@ merger.
 ### Anti-farming rules
 
 - Comments must be at least 15 characters and not just `+1`/`thanks`/`LGTM`.
-- At most 1 comment point per person per thread per day, 10 per day overall.
-- Replies on your own PR: at most 2 points per PR.
+- At most one scored comment per person per thread per day, and 10 scored comments a day overall.
+- Replies on your own PR: at most 2 scored per PR.
 - One scored review per reviewer per PR per day (the strongest state that day).
 - A comment counts once, however it is threaded. GitHub stores each reply in
   an inline review thread as a review of its own; a comment-only review that
   has no summary and opens no new thread is a **reply**, scored as a PR comment
-  (1 point, under the comment caps), not as another review. Inline comments
+  (under the comment caps), not as another review. Inline comments
   are part of their review and never score separately, and a discussion
   comment and its replies share the thread's daily cap.
 - Once a reviewer's review scores on a PR, their other comments and replies on
