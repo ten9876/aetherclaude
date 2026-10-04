@@ -76,7 +76,14 @@ RULES = {
     'break_merger':        (-30, 'penalties'),
     'break_self_fix':      (15, 'main'),         # a fix credit, shown with main health
     'spam':                (-3, 'cpenalties'),
+    # Financial support on Open Collective: points per US dollar given.
+    'backer_contribution': (10, 'backer'),
 }
+BACKER_RULES = {'backer_contribution'}   # the Backer score; not contributor or steward points
+OC_SLUG = 'aethersdr'
+OC_API = 'https://api.opencollective.com/graphql/v2'
+OC_MAP_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                           'config', 'contributors', 'opencollective-map.json')
 CAP_COMMENT_PER_THREAD_DAY = 1
 CAP_OWN_PR_REPLIES = 2
 CAP_COMMENTS_PER_DAY = 10
@@ -219,6 +226,8 @@ CREATE TABLE IF NOT EXISTS ci_logs(job_id INTEGER PRIMARY KEY, run_id INTEGER, w
   log_bytes INTEGER, log BLOB);
 CREATE TABLE IF NOT EXISTS webhook_events(delivery TEXT PRIMARY KEY, event TEXT, action TEXT,
   received_at TEXT, payload TEXT, applied INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS oc_contributions(id TEXT PRIMARY KEY, created_at TEXT, amount_cents INTEGER,
+  currency TEXT, from_slug TEXT, from_name TEXT, from_type TEXT, from_image TEXT, refunded INTEGER, raw TEXT);
 CREATE TABLE IF NOT EXISTS http_cache(url TEXT PRIMARY KEY, etag TEXT, body TEXT, link TEXT, fetched_at TEXT);
 """
 # Columns added after the first schema; applied to existing databases.
@@ -238,6 +247,7 @@ MIGRATIONS = [
     'ALTER TABLE review_comments ADD COLUMN path TEXT',
     'ALTER TABLE review_comments ADD COLUMN line INTEGER',
     'ALTER TABLE items ADD COLUMN webhook_at TEXT',     # PR state last delivered by a webhook
+    'ALTER TABLE people ADD COLUMN display_name TEXT',  # for people without a GitHub login (backers)
 ]
 BODIES_V = 1    # 1 = item, comment, review and discussion bodies stored
 LOGS_V = 1      # 1 = failed-job logs kept back to GitHub's 90-day retention
@@ -488,10 +498,50 @@ def record_webhook(db, delivery, event, body):
     return True
 
 
+def collect_open_collective(db, proxy_handler=None):
+    """Every contribution to the Open Collective, stored with the raw record.
+    Public data, no token; the whole history is a page or two."""
+    opener = urllib.request.build_opener(*( [urllib.request.ProxyHandler(proxy_handler.proxies)] if proxy_handler else []))
+    query = ('query($slug:String!,$offset:Int!){account(slug:$slug){transactions(type:CREDIT,kind:[CONTRIBUTION],'
+             'limit:100,offset:$offset){totalCount nodes{id createdAt amount{valueInCents currency} isRefunded '
+             'fromAccount{slug name type imageUrl githubHandle}}}}}')
+    offset, n = 0, 0
+    while True:
+        req = urllib.request.Request(OC_API, data=json.dumps({'query': query, 'variables': {'slug': OC_SLUG, 'offset': offset}}).encode(),
+                                     headers={'Content-Type': 'application/json', 'User-Agent': 'AetherClaude-Contributors'})
+        with opener.open(req, timeout=30) as r:
+            tx = json.loads(r.read().decode())['data']['account']['transactions']
+        for t in tx['nodes']:
+            a = t.get('fromAccount') or {}
+            db.execute('INSERT OR REPLACE INTO oc_contributions VALUES(?,?,?,?,?,?,?,?,?,?)',
+                       (t['id'], t['createdAt'], t['amount']['valueInCents'], t['amount']['currency'], a.get('slug'),
+                        a.get('name'), a.get('type'), a.get('imageUrl'), int(bool(t.get('isRefunded'))), json.dumps(t)))
+            n += 1
+        offset += len(tx['nodes'])
+        if not tx['nodes'] or offset >= tx['totalCount']:
+            break
+    db.commit()
+    return n
+
+
+def _oc_identity(db, slug, name, github, oc_map):
+    """The leaderboard identity for an Open Collective donor: a GitHub login
+    from the mapping file (or the donor's own linked handle), else one row per
+    donor name (callsign), so the same person giving as several guests is
+    merged. Unnamed guests stay separate."""
+    login = oc_map.get((slug or '').lower()) or oc_map.get((name or '').strip().lower()) or github
+    if login:
+        return login, None
+    nm = (name or '').strip()
+    if not nm or nm.lower() in ('guest', 'incognito', 'anonymous'):
+        return f'oc:{slug}', nm or 'Anonymous backer'
+    return 'oc:' + re.sub(r'\s+', '-', nm.lower()), nm
+
+
 def note_person(db, user):
     if not user or not user.get('login'):
         return
-    db.execute('INSERT OR IGNORE INTO people VALUES(?,?,?,?)',
+    db.execute('INSERT OR IGNORE INTO people(login,kind,role,avatar) VALUES(?,?,?,?)',
                (user['login'], user.get('type', 'User'), role_of(user['login'], user.get('type')),
                 user.get('avatar_url', '')))
 
@@ -764,6 +814,12 @@ def collect(gh, db, since):
                         print(f'    {kept} logs kept ({gh.calls} calls)', file=sys.stderr, flush=True)
     db.commit()
 
+    print(f'  step: open collective ({gh.calls} calls)', file=sys.stderr, flush=True)
+    try:
+        print(f'    {collect_open_collective(db, gh.proxy)} contributions', file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f'    open collective unavailable: {str(e)[:100]}', file=sys.stderr)
+
     print(f'  step: prs behind the commits ({gh.calls} calls)', file=sys.stderr, flush=True)
     # PRs behind the commits that broke or fixed main.
     # Only the failing runs and the green run that follows each red stretch
@@ -838,9 +894,9 @@ def collect(gh, db, since):
 def score(db):
     led = []   # (login, rule, at, ref, note)
 
-    def add(login, rule, at, ref, note=''):
+    def add(login, rule, at, ref, note='', pts=None):
         if login and role_of(login, (db.execute('SELECT kind FROM people WHERE login=?', (login,)).fetchone() or [None])[0]) != 'bot':
-            led.append((login, rule, at, ref, note))
+            led.append((login, rule, at, ref, note) + ((pts,) if pts is not None else ()))
 
     items = {(t, n): dict(zip(('author', 'created_at', 'closed_at', 'state_reason', 'labels', 'title', 'merged_at',
                                'merged_by', 'head_sha', 'merge_sha', 'closes', 'touches_tests'), rest))
@@ -964,6 +1020,25 @@ def score(db):
         if it and it['merged_at'] and who and who not in ('web-flow', it['author']) and role_of(who) != 'bot':
             add(who, 'pr_shepherd', it['merged_at'], f'pr#{pr}')
 
+    # Financial support: 10 points per dollar (USD), refunds excluded.
+    try:
+        oc_map = {k.lower(): v for k, v in json.load(open(OC_MAP_FILE)).items() if not k.startswith('_')}
+    except (OSError, ValueError):
+        oc_map = {}
+    for tid, at, cents, cur, slug, name, img, raw in db.execute(
+            'SELECT id, created_at, amount_cents, currency, from_slug, from_name, from_image, raw FROM oc_contributions'
+            ' WHERE refunded=0'):
+        if (cur or 'USD') != 'USD' or not cents:
+            continue
+        github = (json.loads(raw).get('fromAccount') or {}).get('githubHandle')
+        login, display = _oc_identity(db, slug, name, github, oc_map)
+        if display is not None:
+            db.execute('INSERT OR IGNORE INTO people(login,kind,role,avatar,display_name) VALUES(?,?,?,?,?)',
+                       (login, 'Backer', 'contributor', img or '', display))
+        dollars = cents / 100
+        add(login, 'backer_contribution', at.replace('.000Z', 'Z') if at else at, f'oc#{tid}',
+            f'${dollars:,.2f} on Open Collective', round(dollars * RULES['backer_contribution'][0]))
+
     # Releases.
     for tag, at, author in db.execute('SELECT tag, published_at, author FROM releases WHERE prerelease=0'
                                       ' AND author IS NOT NULL'):
@@ -1075,6 +1150,10 @@ def _secs(a, b):
         return float('inf')
 
 
+def board_of(rule):
+    return 'steward' if rule in STEWARD_RULES else 'backer' if rule in BACKER_RULES else 'contributor'
+
+
 def windows(db):
     rel = [(t, p) for t, p, pre in db.execute('SELECT tag, published_at, prerelease FROM releases ORDER BY published_at')
            if not pre and p]
@@ -1084,23 +1163,25 @@ def windows(db):
 
 
 def standings(db, led, start=None, end=None):
-    people = {l: (k, r, a) for l, k, r, a in db.execute('SELECT login, kind, role, avatar FROM people')}
+    people = {l: (k, r, a, n) for l, k, r, a, n in db.execute('SELECT login, kind, role, avatar, display_name FROM people')}
     rows = defaultdict(lambda: {'points': 0, 'cats': defaultdict(int), 'events': []})
-    for login, rule, at, ref, note in led:
+    for e in led:
+        login, rule, at, ref, note = e[:5]
         if (start and (at or '') < start) or (end and (at or '') >= end):
             continue
-        pts, cat = RULES[rule]
+        pts, cat = (e[5] if len(e) > 5 else RULES[rule][0]), RULES[rule][1]
         r = rows[login]
         r['points'] += pts
         r['cats'][cat] += pts
         r['events'].append({'rule': rule, 'points': pts, 'at': at, 'ref': ref, 'note': note})
     out = []
     for login, r in rows.items():
-        kind, role, avatar = people.get(login, ('User', role_of(login), ''))
+        kind, role, avatar, name = people.get(login, ('User', role_of(login), '', None))
         steward = sum(e['points'] for e in r['events'] if e['rule'] in STEWARD_RULES)
-        out.append({'login': login, 'role': role, 'eligible': role == 'contributor', 'avatar': avatar,
-                    'points': r['points'] - steward,   # contributor points
-                    'steward': steward, 'total': r['points'], 'cats': dict(r['cats']),
+        backer = sum(e['points'] for e in r['events'] if e['rule'] in BACKER_RULES)
+        out.append({'login': login, 'name': name, 'role': role, 'eligible': role == 'contributor', 'avatar': avatar,
+                    'points': r['points'] - steward - backer,   # contributor points
+                    'steward': steward, 'backer': backer, 'total': r['points'], 'cats': dict(r['cats']),
                     'events': sorted(r['events'], key=lambda e: e['at'] or '', reverse=True)})
     out.sort(key=lambda r: (-r['points'], -r['cats'].get('prs', 0), -r['cats'].get('issues', 0), r['login'].lower()))
     rank = 0
@@ -1108,6 +1189,12 @@ def standings(db, led, start=None, end=None):
         if r['eligible']:
             rank += 1
             r['rank'] = rank
+    # Backer of the week: ranked on backer points alone.
+    brank = 0
+    for r in sorted(out, key=lambda r: (-r['backer'], r['login'].lower())):
+        if r['eligible'] and r['backer'] > 0:
+            brank += 1
+            r['backer_rank'] = brank
     # Steward of the week: ranked on steward points alone.
     srank = 0
     for r in sorted(out, key=lambda r: (-r['steward'], -r['cats'].get('reviews', 0), r['login'].lower())):
@@ -1147,8 +1234,7 @@ def main():
     led, breaks = score(db)
     ws = windows(db)[-a.windows:]
     out = {'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'repo': REPO,
-           'rules': {k: {'points': v[0], 'category': v[1], 'board': 'steward' if k in STEWARD_RULES else 'contributor'}
-                     for k, v in RULES.items()},
+           'rules': {k: {'points': v[0], 'category': v[1], 'board': board_of(k)} for k, v in RULES.items()},
            'windows': [dict(w, standings=standings(db, led, w['start'], w['end'])) for w in ws],
            'all_time': standings(db, led),
            'breaks': breaks}

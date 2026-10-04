@@ -16,6 +16,8 @@
 # storage accounts. The dashboard reads build stats (compiler-cache hits) from them.
 # tinyproxy filters use POSIX basic regex here: `+` is literal, so no `[0-9]+`.
 ^productionresultssa[0-9][0-9]*\.blob\.core\.windows\.net$
+# Open Collective public API: financial contributions for the contributor leaderboard.
+^api\.opencollective\.com$
 
 # pip endpoints — added 2026-05-07 to allow mcp-scanner / Cisco AI scanners upgrades
 ^pypi\.org$

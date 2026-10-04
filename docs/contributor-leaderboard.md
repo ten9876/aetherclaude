@@ -58,6 +58,17 @@ overlook:
 Opening a PR pays 5 and merging it 10 more, so most of a PR's value
 arrives when it merges.
 
+### Financial support
+
+Contributions to the project's [Open Collective](https://opencollective.com/aethersdr)
+earn **10 backer points per $1** (USD, refunds excluded). Backer points are a
+third score of their own: they count in the Total ranking and name a
+**backer of the week**, but never count toward contributor or steward of the
+week. Donors appear under their Open Collective name (gifts under the same
+name are merged); `config/contributors/opencollective-map.json` links a
+donor's Open Collective slug or name to a GitHub login, merging their backer
+points into that person's row.
+
 ### Two separate scores
 
 Every action counts toward exactly one of two scores, and each names its own
@@ -181,6 +192,7 @@ green) is just a re-score, and the all-time board stays consistent.
 | `pr_commits` | the commits on each merged PR and who authored them (shepherding) |
 | `runs` | `CI`/`Full Suite` runs on `main`: commit, result, failure cause, and the failure signature (failing tests, else the failing file) |
 | `first_merges` | each person's first merged PR |
+| `oc_contributions` | every Open Collective contribution: amount, date, donor and the raw record |
 | `ci_logs` | every failed CI job's log (zlib-compressed), with workflow, branch, commit, cause and failing tests |
 | `http_cache` | raw GitHub responses for fixed URLs (PRs with their diffs, reviews, inline comments, commits, issue events), kept with their ETags |
 | `state` | collection cursors and commit → PR lookups |
