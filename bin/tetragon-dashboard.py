@@ -2241,9 +2241,14 @@ def leaderboard_data():
             led, breaks = cp.score(db)
             ws = cp.windows(db)[-LEADERBOARD_WINDOWS:]
             all_time = cp.standings(db, led)
+            # Newest entries per person, plus every penalty and refund so the
+            # penalty columns can always be traced to their entries.
+            keep = {'break_approver', 'break_author', 'break_merger', 'break_self_fix', 'spam'}
             for r in all_time:
                 r['event_count'] = len(r['events'])
-                r['events'] = r['events'][:LEADERBOARD_EVENTS_ALL_TIME]
+                newest = r['events'][:LEADERBOARD_EVENTS_ALL_TIME]
+                extra = [e for e in r['events'][LEADERBOARD_EVENTS_ALL_TIME:] if e['rule'] in keep]
+                r['events'] = newest + extra
             cur = db.execute("SELECT value FROM state WHERE name='cursor'").fetchone()
             data = {'generated_at': now_utc_iso(), 'collected_at': cur[0] if cur else None,
                     'repo': cp.REPO,

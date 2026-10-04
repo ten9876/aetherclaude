@@ -73,7 +73,7 @@ RULES = {
     'break_approver':      (-60, 'penalties'),
     'break_author':        (-45, 'cpenalties'),  # contributor-side penalties
     'break_merger':        (-30, 'penalties'),
-    'break_self_fix':      (15, 'cpenalties'),
+    'break_self_fix':      (15, 'main'),         # a fix credit, shown with main health
     'spam':                (-3, 'cpenalties'),
 }
 CAP_COMMENT_PER_THREAD_DAY = 1
