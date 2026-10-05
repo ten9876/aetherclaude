@@ -344,12 +344,13 @@ const ACH_FAMILY={
   R:{name:'Range',bg:'#c5b0de',ray:'#e4d8f0',dark:'#684c96'},
   B:{name:'Backer',bg:'#b5d796',ray:'#dcedc9',dark:'#4c7c2c'},
   C:{name:'Code owners',bg:'#9fb4c4',ray:'#d4e0ea',dark:'#2e4a62'},
-  U:{name:'Ultimate',bg:'#1c1630',ray:'#2c2448',dark:'#0d0a18',holo:true},
+  U:{name:'Ultimate',bg:'#1b1f26',ray:'#2a303a',dark:'#101318',holo:true},
 };
 const ACH_FAM={broke_main:'M',smoke_jumper:'M',self_healing:'M',clean_sweep:'M',first_contact:'F',signal_report:'F',qsl_confirmed:'F',
   dxcc:'S',rag_chewer:'S',net_control:'S',elmer:'S',test_pilot:'S',bug_hunter:'S',fast_qsy:'H',grey_line:'H',contest_weekend:'H',
   every_release:'H',was:'R',old_timer:'R',backer:'B',codeowner_t3:'C',codeowner_t2:'C',codeowner_t1:'C',admin_merge:'U'};
-const HOLO=['#ff5f6d','#ffc371','#fff275','#7bf1a8','#5ce1e6','#7b8cff','#d27bff'];
+// Platinum, diamond and gold: brushed silvers, an ice-blue glint, gold rays.
+const HOLO=['#f7f9fb','#c9d1d9','#f2d27a','#e4ebf1','#bfe6ff','#d4a93c','#a3aeb9'];
 const K={ink:'#2a2622',cream:'#f6edd6',gold:'#d8b45a',red:'#d2432f',orange:'#f08a2a',yellow:'#ffd04a',white:'#ffffff',steel:'#7d8b96',wood:'#8a5a32',green:'#4f9a4a',blue:'#3f74b8',skin:'#f2c79a'};
 const pg=(p,c,x='')=>`<polygon points="${p}" fill="${c}" ${x}/>`;
 const ci=(x,y,r,c,x2='')=>`<circle cx="${x}" cy="${y}" r="${r}" fill="${c}" ${x2}/>`;
@@ -370,17 +371,27 @@ const license=(tier,seal,rim)=>`<g transform="rotate(-6 30 30)">${pa('M6,8 h44 v
   `<g transform="rotate(30 14 44)">${ci(10,44,4.4,K.gold,O)}${ci(10,44,1.6,K.cream)}${pa('M14,43 h16 v2.4 h-16 Z',K.gold,O)}${pa('M24,45.4 h2 v3 h-2 Z M28,45.4 h2 v4 h-2 Z',K.gold,O)}</g>`;
 // Foil sunburst for the ultimate card: rays cycling through the rainbow.
 const holoRays=(x=32,y=30,n=28,r=60)=>{let s='';for(let i=0;i<n;i++){const a=i*2*Math.PI/n,b=a+Math.PI/n;
-  s+=pg(`${x},${y} ${(x+r*Math.cos(a)).toFixed(1)},${(y+r*Math.sin(a)).toFixed(1)} ${(x+r*Math.cos(b)).toFixed(1)},${(y+r*Math.sin(b)).toFixed(1)}`,HOLO[i%HOLO.length],'opacity=".42"')}return s};
+  s+=pg(`${x},${y} ${(x+r*Math.cos(a)).toFixed(1)},${(y+r*Math.sin(a)).toFixed(1)} ${(x+r*Math.cos(b)).toFixed(1)},${(y+r*Math.sin(b)).toFixed(1)}`,HOLO[i%HOLO.length],'opacity=".3"')}return s};
 const ART={
   codeowner_t3:()=>license(3,'#d08a4a','#8a4f1e'),
   codeowner_t2:()=>license(2,'#d6dde2','#7d8b96'),
   codeowner_t1:()=>license(1,'#ffd04a','#a8731c')+ln('M54,8 l1.4,-3 l1.4,3 l3,1.4 l-3,1.4 l-1.4,3 l-1.4,-3 l-3,-1.4 Z',K.yellow,.8),
-  admin_merge:()=>`<ellipse cx="32" cy="50" rx="20" ry="4.4" fill="#3a3448" ${O}/>`+pa('M12,44 h40 v6 h-40 Z','#4a4458',O)+`<ellipse cx="32" cy="44" rx="20" ry="4.4" fill="#5a5468" ${O}/>`+
+  admin_merge:()=>{const P='#e6ebf0',P2='#aeb8c2',P3='#7d8894';
+    const gem=(x,y,k)=>pg(`${x-6*k},${y} ${x-3.4*k},${y-3.6*k} ${x+3.4*k},${y-3.6*k} ${x+6*k},${y} ${x},${y+8*k}`,'#dff4ff',O)+
+      pg(`${x-3.4*k},${y-3.6*k} ${x-1.4*k},${y} ${x+1.4*k},${y} ${x+3.4*k},${y-3.6*k}`,'#ffffff')+
+      pg(`${x-6*k},${y} ${x-1.4*k},${y} ${x},${y+8*k}`,'#a8dcf5')+pg(`${x+6*k},${y} ${x+1.4*k},${y} ${x},${y+8*k}`,'#c8ecff')+
+      ln(`M${x-6*k},${y} H${x+6*k}`,K.ink,.5);
+    const spark=(x,y,r)=>pa(`M${x},${y-r} Q${x+r*.18},${y-r*.18} ${x+r},${y} Q${x+r*.18},${y+r*.18} ${x},${y+r} Q${x-r*.18},${y+r*.18} ${x-r},${y} Q${x-r*.18},${y-r*.18} ${x},${y-r} Z`,'#ffffff');
+    return `<ellipse cx="32" cy="50" rx="20" ry="4.4" fill="#2a2f37" ${O}/>`+pa('M12,44 h40 v6 h-40 Z','#3a414b',O)+`<ellipse cx="32" cy="44" rx="20" ry="4.4" fill="#4a525d" ${O}/>`+
+    pa('M12,46 h40 v1.6 h-40 Z',K.gold)+
     pa('M17,43 v-5 a15,5 0 0 1 30,0 v5 a15,5 0 0 1 -30,0 Z','#a8221a',O)+`<ellipse cx="32" cy="38" rx="15" ry="5" fill="${K.red}" ${O}/>`+
+    `<ellipse cx="32" cy="38" rx="13.2" ry="4.1" fill="none" stroke="${K.gold}" stroke-width="1"/>`+
+    ln('M21,36.6 q4,-2.6 10,-2.8',K.white,1,`opacity=".5"`)+
     ci(27,37.4,1.3,K.white)+ci(37,37.4,1.3,K.white)+ci(32,39.6,1.3,K.white)+ln('M27,37.4 V39 Q27,39.6 32,39.6 M37,37.4 Q37,39.6 32,39.6',K.white,.7)+
-    `<g transform="rotate(-38 40 18)">${pa('M30,12 h20 v10 h-20 Z','#8a5a32',O)}${pa('M28,12 h3 v10 h-3 Z M49,12 h3 v10 h-3 Z',K.gold,O)}${pa('M38.6,22 h2.8 v20 h-2.8 Z','#6a4022',O)}</g>`+
-    [[18,26],[46,28],[24,20],[52,36],[12,34]].map(([x,y],i)=>ln(`M${x},${y-3} V${y+3} M${x-3},${y} H${x+3}`,HOLO[i],1.2)).join('')+
-    tx(32,9,7,'#ffffff','ADMIN',`letter-spacing="1" opacity=".9"`),
+    gem(32,46.6,.75)+
+    `<g transform="rotate(-38 40 18)">${pa('M30,12 h20 v10 h-20 Z',P,O)}${pa('M30,15.6 h20 v2.8 h-20 Z',P2)}${pa('M28,12 h3 v10 h-3 Z M49,12 h3 v10 h-3 Z',K.gold,O)}${pa('M38.6,22 h2.8 v20 h-2.8 Z','#3a414b',O)}</g>`+
+    gem(14,22,1)+spark(50,40,3)+spark(24,28,2.4)+spark(54,8,2.8)+spark(10,40,2)+spark(46,26,1.8)+
+    tx(32,9,7,'#f2d27a','ADMIN',`letter-spacing="1" stroke="#6a4a10" stroke-width=".3"`)},
   broke_main:()=>ci(18,14,6,'#8a7a76',`opacity=".7"`)+ci(26,9,7,'#9a8a86',`opacity=".7"`)+ci(44,12,5.5,'#8a7a76',`opacity=".7"`)+
     pa('M30,32 h4 v22 h-4 Z',K.wood,O)+
     pa('M12,17 h40 v15 h-40 Z',K.white,O)+pa('M12,17 h40 v15 h-40 Z',K.red,`opacity=".9"`)+
@@ -466,7 +477,7 @@ const ACH_EGG={broke_main:[31,24,5],smoke_jumper:[44,42,4],self_healing:[52,10,4
   signal_report:[48,32,3.6],qsl_confirmed:[47,19,4.4],dxcc:[58,40,3.2],rag_chewer:[13,34,3.2],net_control:[44,48,3],elmer:[46,15,3],
   fast_qsy:[11,15,5],test_pilot:[36,25.5,3],bug_hunter:[15,33,3],grey_line:[20,30,4],contest_weekend:[49,7,3.2],was:[52,36,3.4],
   old_timer:[32,9,3.2],every_release:[47,33,3.4],backer:[32,17,6],
-  codeowner_t3:[46,38,7],codeowner_t2:[46,38,7],codeowner_t1:[46,38,7],admin_merge:[22,18,6]};
+  codeowner_t3:[46,38,7],codeowner_t2:[46,38,7],codeowner_t1:[46,38,7],admin_merge:[14,23,6]};
 const achEgg=(id,e)=>{const [x,y,r]=ACH_EGG[id]||[32,28,4];
   return `<a href="${esc(e.url)}" target="_blank" class="egg"><title>${esc(e.title)}</title><circle cx="${x}" cy="${y}" r="${r}" fill="#fff" fill-opacity="0"/></a>`};
 // The back of a card: what you see before it flips over.
@@ -485,13 +496,13 @@ function achSvg(id,name,opt={}){
   const f=ACH_FAMILY[ACH_FAM[id]||'S'],t=(name||'').toUpperCase(),fs=Math.min(5.4,52/(t.length*.66));
   const rank=opt.rank!=null?String(opt.rank):'1',stars=opt.stars||1,lines=achWrap(opt.desc);
   return `<svg class="ach${opt.locked?' locked':''}" viewBox="0 0 72 100" role="img" aria-label="${esc(name)}">`+
-    (f.holo?`<rect x=".5" y=".5" width="71" height="99" rx="4" fill="#0d0a18"/>`+HOLO.map((c,i)=>`<rect x="${1+i*.24}" y="${1+i*.24}" width="${70-i*.48}" height="${98-i*.48}" rx="3.6" fill="none" stroke="${c}" stroke-width=".3"/>`).join('')
+    (f.holo?`<rect x=".5" y=".5" width="71" height="99" rx="4" fill="#b9c2cb" stroke="#6f7a86" stroke-width="1"/>`+HOLO.map((c,i)=>`<rect x="${1+i*.24}" y="${1+i*.24}" width="${70-i*.48}" height="${98-i*.48}" rx="3.6" fill="none" stroke="${c}" stroke-width=".3"/>`).join('')+`<rect x="2.3" y="2.3" width="67.4" height="95.4" rx="2.6" fill="none" stroke="#e0b44a" stroke-width=".9"/>`
       :`<rect x=".5" y=".5" width="71" height="99" rx="4" fill="${K.gold}" stroke="#8a6a2a" stroke-width="1"/>`)+
     `<rect x="2.6" y="2.6" width="66.8" height="94.8" rx="2.4" fill="${f.bg}"/>`+
     `<svg x="3.6" y="13.6" width="64.8" height="57" viewBox="0 0 64 56">${f.holo?holoRays():rays(f.ray)}${(ART[id]||(()=>''))()}${opt.egg?achEgg(id,opt.egg):''}</svg>`+
     `<rect x="3.6" y="13.6" width="64.8" height="57" fill="none" stroke="${K.gold}" stroke-width=".6"/>`+
     `<rect x="14" y="3.6" width="54.4" height="8.6" fill="${f.dark}"/>`+
-    `<text x="41.2" y="${8+fs*.36}" text-anchor="middle" font-size="${fs.toFixed(2)}" font-weight="800" letter-spacing=".2" fill="#fff" font-family="'Arial Narrow','Roboto Condensed','Arial',sans-serif">${esc(t)}</text>`+
+    `<text x="41.2" y="${8+fs*.36}" text-anchor="middle" font-size="${fs.toFixed(2)}" font-weight="800" letter-spacing=".2" fill="${f.holo?'#f2d27a':'#fff'}" font-family="'Arial Narrow','Roboto Condensed','Arial',sans-serif">${esc(t)}</text>`+
     `<rect x="3.6" y="3.6" width="9.4" height="8.6" fill="${K.cream}" stroke="${K.ink}" stroke-width=".6"/>`+
     `<text x="8.3" y="${rank.length>2?9.9:10.4}" text-anchor="middle" font-size="${rank.length>3?3.3:rank.length>2?4.4:rank.length>1?5.6:7}" font-weight="800" fill="${K.ink}" font-family="'Arial Black','Arial',sans-serif">${esc(rank)}</text>`+
     `<rect x="5" y="72.4" width="62" height="19" fill="${K.cream}" stroke="${f.dark}" stroke-width=".5"/>`+
