@@ -1852,12 +1852,15 @@ def _main_ci_note_rate(headers):
         pass
 
 def _main_ci_runs(opener, hdrs, wid):
-    """A workflow's runs on main, newest first. GitHub's branch-filtered list
-    can lag by days; the unfiltered list is current but mixes in PR branches.
-    Both are fetched and merged by run id (the fresher copy of each wins)."""
+    """A workflow's runs on main, newest first. GitHub caches each exact list
+    query, and a branch=main list has been seen stuck weeks in the past while
+    the same filter with another parameter was current. Two differently
+    shaped queries (one with a date window that moves daily) are merged by
+    run id, the fresher copy of each run winning."""
     n = MAIN_CI_PERF_RUNS + 5
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%d')
     by_id = {}
-    for q in (f'?branch=main&per_page={n}', f'?per_page={n * 2}'):
+    for q in (f'?branch=main&created=%3E{since}&per_page={n}', f'?branch=main&exclude_pull_requests=true&per_page={n}'):
         for r in _main_ci_get(opener, hdrs, f'actions/workflows/{wid}/runs{q}').get('workflow_runs', []):
             if r.get('head_branch') != 'main':
                 continue
