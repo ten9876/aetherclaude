@@ -137,7 +137,7 @@ td.pts.soft{color:var(--muted);font-weight:500}
 <div class="panel" id="breaks"></div>
 <p class="dim" style="font-size:11px;text-align:center;margin-top:4px">Points depend on the kind of action, never its size. <a href="#" onclick="openRules();return false">How points work</a></p>
 </div>
-<div class="flipback" id="ach-modal" onclick="if(event.target===this||event.target.classList.contains('flipwrap'))achClose()"><div class="flipwrap"><div class="flipper" id="ach-flip"><div class="face back"></div><div class="face front"></div></div><div class="flipcap" id="ach-cap"></div><button class="mx" onclick="achClose()" aria-label="Close">&times;</button></div></div>
+<div class="flipback" id="ach-modal" onclick="if(!event.target.closest('.egg'))achClose()"><div class="flipwrap"><div class="flipper" id="ach-flip"><div class="face back"></div><div class="face front"></div></div><div class="flipcap" id="ach-cap"></div><button class="mx" onclick="achClose()" aria-label="Close">&times;</button></div></div>
 <div class="mback" id="rules-modal" onclick="if(event.target===this)closeRules()"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="rules-title">
 <button class="mx" onclick="closeRules()" aria-label="Close">&times;</button>
 <h2 id="rules-title">How points work</h2>
@@ -497,10 +497,15 @@ function achOpen(login,id){
   document.getElementById('ach-cap').innerHTML=`<b>${esc(a.name)}</b> &middot; ${esc(who)}<br><span class="dim">Earned ${fmtDay(b.at)}`+
     (b.id==='dxcc'?` &middot; ${b.count.toLocaleString()} merged PRs`:b.count>1?` &middot; &times;${b.count}`:'')+(b.areas?` &middot; ${esc(b.areas.join(', '))}`:'')+`</span>`+
     (egg?`<div class="hint">Something in the picture remembers where it was earned.</div>`:'');
-  fl.classList.remove('open');m.classList.add('show');document.body.style.overflow='hidden';
+  clearTimeout(achTimer);fl.classList.remove('open');m.classList.add('show');document.body.style.overflow='hidden';
   void fl.offsetWidth;requestAnimationFrame(()=>requestAnimationFrame(()=>fl.classList.add('open')));
 }
-function achClose(){const m=document.getElementById('ach-modal');if(m.classList.contains('show')){m.classList.remove('show');document.getElementById('ach-flip').classList.remove('open');document.body.style.overflow=''}}
+// Flip the card back over and shrink it, then hide the view.
+let achTimer=null;
+function achClose(){const m=document.getElementById('ach-modal'),fl=document.getElementById('ach-flip');
+  if(!m.classList.contains('show')||!fl.classList.contains('open'))return;
+  fl.classList.remove('open');clearTimeout(achTimer);
+  achTimer=setTimeout(()=>{m.classList.remove('show');document.body.style.overflow=''},800)}
 function renderAchievements(){const el=document.getElementById('rules-ach');if(!el||!D)return;
   const n={};for(const b of Object.values(D.bios||{}))for(const x of (b.badges||[]))n[x.id]=(n[x.id]||0)+1;
   el.innerHTML=(D.achievements||[]).map(a=>`<div class="cat"><span class="card" title="${esc(a.name+': '+a.desc)}">${achSvg(a.id,a.name,{desc:a.desc})}</span><span class="dim">${n[a.id]?'Earned by '+n[a.id]:'Not earned yet'}</span></div>`).join('')}
