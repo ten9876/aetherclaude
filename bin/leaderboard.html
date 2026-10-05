@@ -173,7 +173,7 @@ td.pts.soft{color:var(--muted);font-weight:500}
 <li><span class="badge backer">BACKER</span> supports AetherSDR on Open Collective.</li>
 <li><span class="badge">MAINTAINER</span> scored and shown, but can't win.</li></ul>
 <h3>Achievements</h3>
-<p>Cards earned once and kept for good, shown in each person's bio. The number in the corner is how many times (or, for DXCC, the tier), and the family letter groups them: <b>M</b>ain health, <b>F</b>irsts, <b>S</b>ervice, <b>H</b>abits, <b>R</b>ange and <b>B</b>acker. Yes, breaking main earns one too. Hover a card for when and where it was earned.</p>
+<p>Cards earned once and kept for good, shown in each person's bio. The number in the corner is how many times (or, for DXCC, the tier), and the family letter groups them: <b>M</b>ain health, <b>F</b>irsts, <b>S</b>ervice, <b>H</b>abits, <b>R</b>ange, <b>B</b>acker and <b>C</b>ode owners (the CODEOWNERS tiers, as licence classes), plus one <b>U</b>ltimate card: Admin Merge. Yes, breaking main earns one too. Hover a card for when and where it was earned.</p>
 <div class="cats" id="rules-ach"></div>
 <h3>Contributor of the week</h3>
 <p>A week runs from one AetherSDR release to the next. When a release is published, two people are named for that week: the <b>contributor of the week</b> (most contributor points) and the <b>steward of the week</b> (most steward points). The same person can win both, but only by topping each score on its own. Until the release, the week's leaders are shown as "leading". Contributor ties go to more PR points, then more issue points; steward ties to more review points.</p>
@@ -194,7 +194,7 @@ const CORE_ICON='<span class="core" title="Core dev team" aria-label="Core dev t
 const avatarOf=r=>r.avatar||(r.login.startsWith('oc:')?'https://opencollective.com/static/images/default-guest-logo.svg':`https://github.com/${r.login}.png`);
 const LABEL={discussion_comment:'Discussion comment',issue_comment:'Issue comment',pr_comment:'PR comment',discussion_open:'Started discussion',discussion_answer:'Accepted answer',issue_open:'Opened issue',issue_confirmed:'Issue confirmed',issue_fixed:'Issue fixed',pr_open:'Opened PR',pr_merged:'PR merged',pr_closes_issue:'PR closes issue',pr_tests:'PR adds tests',first_merged_pr:'First merged PR',review_approve:'Approved',review_changes:'Requested changes',review_comment:'Review comments',merge_other:'Merged a PR',main_fixed:'Fixed main',revert_merged:'Revert merged',issue_triaged:'Triaged an issue',issue_closed:'Closed an issue',pr_shepherd:'Shepherded a PR',review_first_fast:'First review within 24h',release_published:'Published a release',break_approver:'Approved a break',backer_contribution:'Open Collective contribution',break_author:'Broke main',break_merger:'Merged a break',break_self_fix:'Fixed own break',spam:'Spam/invalid'};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const refUrl=r=>r.startsWith('oc#')?'https://opencollective.com/aethersdr/transactions':(r=>{const [t,n]=r.split('#');return `https://github.com/${D.repo}/${t==='pr'?'pull':t==='discussion'?'discussions':t==='release'?'releases/tag':t==='oc'?'__oc__':'issues'}/${n}`})(r);
+const refUrl=r=>r.startsWith('file#')?`https://github.com/${D.repo}/blob/main/${r.slice(5)}`:r.startsWith('oc#')?'https://opencollective.com/aethersdr/transactions':(r=>{const [t,n]=r.split('#');return `https://github.com/${D.repo}/${t==='pr'?'pull':t==='discussion'?'discussions':t==='release'?'releases/tag':t==='oc'?'__oc__':'issues'}/${n}`})(r);
 const fmtD=s=>s?new Date(s).toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+new Date(s).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}):'';
 function start(data){
   D=data;
@@ -343,10 +343,13 @@ const ACH_FAMILY={
   H:{name:'Habits',bg:'#a6c2e6',ray:'#d3e2f4',dark:'#3b5a96'},
   R:{name:'Range',bg:'#c5b0de',ray:'#e4d8f0',dark:'#684c96'},
   B:{name:'Backer',bg:'#b5d796',ray:'#dcedc9',dark:'#4c7c2c'},
+  C:{name:'Code owners',bg:'#9fb4c4',ray:'#d4e0ea',dark:'#2e4a62'},
+  U:{name:'Ultimate',bg:'#1c1630',ray:'#2c2448',dark:'#0d0a18',holo:true},
 };
 const ACH_FAM={broke_main:'M',smoke_jumper:'M',self_healing:'M',clean_sweep:'M',first_contact:'F',signal_report:'F',qsl_confirmed:'F',
   dxcc:'S',rag_chewer:'S',net_control:'S',elmer:'S',test_pilot:'S',bug_hunter:'S',fast_qsy:'H',grey_line:'H',contest_weekend:'H',
-  every_release:'H',was:'R',old_timer:'R',backer:'B'};
+  every_release:'H',was:'R',old_timer:'R',backer:'B',codeowner_t3:'C',codeowner_t2:'C',codeowner_t1:'C',admin_merge:'U'};
+const HOLO=['#ff5f6d','#ffc371','#fff275','#7bf1a8','#5ce1e6','#7b8cff','#d27bff'];
 const K={ink:'#2a2622',cream:'#f6edd6',gold:'#d8b45a',red:'#d2432f',orange:'#f08a2a',yellow:'#ffd04a',white:'#ffffff',steel:'#7d8b96',wood:'#8a5a32',green:'#4f9a4a',blue:'#3f74b8',skin:'#f2c79a'};
 const pg=(p,c,x='')=>`<polygon points="${p}" fill="${c}" ${x}/>`;
 const ci=(x,y,r,c,x2='')=>`<circle cx="${x}" cy="${y}" r="${r}" fill="${c}" ${x2}/>`;
@@ -359,7 +362,25 @@ const rays=(c,x=32,y=30,n=18,r=60)=>{let s='';for(let i=0;i<n;i++){const a=i*2*M
 const waves=(x,y,c,rs=[4,7,10],w=1.3)=>rs.map(r=>ln(`M${(x-r*.7).toFixed(1)},${(y-r*.7).toFixed(1)} A${r},${r} 0 0 1 ${(x+r*.7).toFixed(1)},${(y-r*.7).toFixed(1)}`,c,w)).join('');
 const flame=(x,y,s=1)=>pa(`M${x},${y} q${-5*s},${-3*s} ${-1*s},${-10*s} q${1*s},${4*s} ${3*s},${3*s} q${0},${-4*s} ${3*s},${-6*s} q${3*s},${8*s} ${-5*s},${13*s} Z`,K.orange,O)+
   pa(`M${x+.6*s},${y-.6*s} q${-2.4*s},${-2*s} ${0},${-6*s} q${1.4*s},${2.4*s} ${2.4*s},${2*s} q${.6*s},${3*s} ${-2.4*s},${4*s} Z`,K.yellow);
+// A licence certificate for the CODEOWNERS tiers: seal metal by tier.
+const license=(tier,seal,rim)=>`<g transform="rotate(-6 30 30)">${pa('M6,8 h44 v34 h-44 Z',K.cream,O)}${pa('M9,11 h38 v28 h-38 Z','none',`stroke="${K.gold}" stroke-width=".8"`)}`+
+  `${tx(28,18,4.6,'#2e4a62','LICENSE')}${ln('M14,23 h28 M14,27 h24 M14,31 h20',K.ink,.7,`opacity=".5"`)}</g>`+
+  (tier===1?pa('M42,40 l-4,14 l5,-3 l3,5 l2,-15 Z',K.red,O)+pa('M50,40 l4,14 l-5,-3 l-3,5 l-2,-15 Z','#a83226',O):'')+
+  ci(46,38,8,seal,`stroke="${rim}" stroke-width="1.6"`)+ci(46,38,5.6,'none',`stroke="${rim}" stroke-width=".6" stroke-dasharray="1 1"`)+tx(46,40.6,7,K.ink,'T'+tier)+
+  `<g transform="rotate(30 14 44)">${ci(10,44,4.4,K.gold,O)}${ci(10,44,1.6,K.cream)}${pa('M14,43 h16 v2.4 h-16 Z',K.gold,O)}${pa('M24,45.4 h2 v3 h-2 Z M28,45.4 h2 v4 h-2 Z',K.gold,O)}</g>`;
+// Foil sunburst for the ultimate card: rays cycling through the rainbow.
+const holoRays=(x=32,y=30,n=28,r=60)=>{let s='';for(let i=0;i<n;i++){const a=i*2*Math.PI/n,b=a+Math.PI/n;
+  s+=pg(`${x},${y} ${(x+r*Math.cos(a)).toFixed(1)},${(y+r*Math.sin(a)).toFixed(1)} ${(x+r*Math.cos(b)).toFixed(1)},${(y+r*Math.sin(b)).toFixed(1)}`,HOLO[i%HOLO.length],'opacity=".42"')}return s};
 const ART={
+  codeowner_t3:()=>license(3,'#d08a4a','#8a4f1e'),
+  codeowner_t2:()=>license(2,'#d6dde2','#7d8b96'),
+  codeowner_t1:()=>license(1,'#ffd04a','#a8731c')+ln('M54,8 l1.4,-3 l1.4,3 l3,1.4 l-3,1.4 l-1.4,3 l-1.4,-3 l-3,-1.4 Z',K.yellow,.8),
+  admin_merge:()=>`<ellipse cx="32" cy="50" rx="20" ry="4.4" fill="#3a3448" ${O}/>`+pa('M12,44 h40 v6 h-40 Z','#4a4458',O)+`<ellipse cx="32" cy="44" rx="20" ry="4.4" fill="#5a5468" ${O}/>`+
+    pa('M17,43 v-5 a15,5 0 0 1 30,0 v5 a15,5 0 0 1 -30,0 Z','#a8221a',O)+`<ellipse cx="32" cy="38" rx="15" ry="5" fill="${K.red}" ${O}/>`+
+    ci(27,37.4,1.3,K.white)+ci(37,37.4,1.3,K.white)+ci(32,39.6,1.3,K.white)+ln('M27,37.4 V39 Q27,39.6 32,39.6 M37,37.4 Q37,39.6 32,39.6',K.white,.7)+
+    `<g transform="rotate(-38 40 18)">${pa('M30,12 h20 v10 h-20 Z','#8a5a32',O)}${pa('M28,12 h3 v10 h-3 Z M49,12 h3 v10 h-3 Z',K.gold,O)}${pa('M38.6,22 h2.8 v20 h-2.8 Z','#6a4022',O)}</g>`+
+    [[18,26],[46,28],[24,20],[52,36],[12,34]].map(([x,y],i)=>ln(`M${x},${y-3} V${y+3} M${x-3},${y} H${x+3}`,HOLO[i],1.2)).join('')+
+    tx(32,9,7,'#ffffff','ADMIN',`letter-spacing="1" opacity=".9"`),
   broke_main:()=>ci(18,14,6,'#8a7a76',`opacity=".7"`)+ci(26,9,7,'#9a8a86',`opacity=".7"`)+ci(44,12,5.5,'#8a7a76',`opacity=".7"`)+
     pa('M30,32 h4 v22 h-4 Z',K.wood,O)+
     pa('M12,17 h40 v15 h-40 Z',K.white,O)+pa('M12,17 h40 v15 h-40 Z',K.red,`opacity=".9"`)+
@@ -444,7 +465,8 @@ const ART={
 const ACH_EGG={broke_main:[31,24,5],smoke_jumper:[44,42,4],self_healing:[52,10,4],clean_sweep:[48,30,4],first_contact:[36,2.5,3.2],
   signal_report:[48,32,3.6],qsl_confirmed:[47,19,4.4],dxcc:[58,40,3.2],rag_chewer:[13,34,3.2],net_control:[44,48,3],elmer:[46,15,3],
   fast_qsy:[11,15,5],test_pilot:[36,25.5,3],bug_hunter:[15,33,3],grey_line:[20,30,4],contest_weekend:[49,7,3.2],was:[52,36,3.4],
-  old_timer:[32,9,3.2],every_release:[47,33,3.4],backer:[32,17,6]};
+  old_timer:[32,9,3.2],every_release:[47,33,3.4],backer:[32,17,6],
+  codeowner_t3:[46,38,7],codeowner_t2:[46,38,7],codeowner_t1:[46,38,7],admin_merge:[22,18,6]};
 const achEgg=(id,e)=>{const [x,y,r]=ACH_EGG[id]||[32,28,4];
   return `<a href="${esc(e.url)}" target="_blank" class="egg"><title>${esc(e.title)}</title><circle cx="${x}" cy="${y}" r="${r}" fill="#fff" fill-opacity="0"/></a>`};
 // The back of a card: what you see before it flips over.
@@ -463,14 +485,15 @@ function achSvg(id,name,opt={}){
   const f=ACH_FAMILY[ACH_FAM[id]||'S'],t=(name||'').toUpperCase(),fs=Math.min(5.4,52/(t.length*.66));
   const rank=opt.rank!=null?String(opt.rank):'1',stars=opt.stars||1,lines=achWrap(opt.desc);
   return `<svg class="ach${opt.locked?' locked':''}" viewBox="0 0 72 100" role="img" aria-label="${esc(name)}">`+
-    `<rect x=".5" y=".5" width="71" height="99" rx="4" fill="${K.gold}" stroke="#8a6a2a" stroke-width="1"/>`+
+    (f.holo?`<rect x=".5" y=".5" width="71" height="99" rx="4" fill="#0d0a18"/>`+HOLO.map((c,i)=>`<rect x="${1+i*.24}" y="${1+i*.24}" width="${70-i*.48}" height="${98-i*.48}" rx="3.6" fill="none" stroke="${c}" stroke-width=".3"/>`).join('')
+      :`<rect x=".5" y=".5" width="71" height="99" rx="4" fill="${K.gold}" stroke="#8a6a2a" stroke-width="1"/>`)+
     `<rect x="2.6" y="2.6" width="66.8" height="94.8" rx="2.4" fill="${f.bg}"/>`+
-    `<svg x="3.6" y="13.6" width="64.8" height="57" viewBox="0 0 64 56">${rays(f.ray)}${(ART[id]||(()=>''))()}${opt.egg?achEgg(id,opt.egg):''}</svg>`+
+    `<svg x="3.6" y="13.6" width="64.8" height="57" viewBox="0 0 64 56">${f.holo?holoRays():rays(f.ray)}${(ART[id]||(()=>''))()}${opt.egg?achEgg(id,opt.egg):''}</svg>`+
     `<rect x="3.6" y="13.6" width="64.8" height="57" fill="none" stroke="${K.gold}" stroke-width=".6"/>`+
     `<rect x="14" y="3.6" width="54.4" height="8.6" fill="${f.dark}"/>`+
     `<text x="41.2" y="${8+fs*.36}" text-anchor="middle" font-size="${fs.toFixed(2)}" font-weight="800" letter-spacing=".2" fill="#fff" font-family="'Arial Narrow','Roboto Condensed','Arial',sans-serif">${esc(t)}</text>`+
     `<rect x="3.6" y="3.6" width="9.4" height="8.6" fill="${K.cream}" stroke="${K.ink}" stroke-width=".6"/>`+
-    `<text x="8.3" y="${rank.length>2?9.9:10.4}" text-anchor="middle" font-size="${rank.length>2?4.4:rank.length>1?5.6:7}" font-weight="800" fill="${K.ink}" font-family="'Arial Black','Arial',sans-serif">${esc(rank)}</text>`+
+    `<text x="8.3" y="${rank.length>2?9.9:10.4}" text-anchor="middle" font-size="${rank.length>3?3.3:rank.length>2?4.4:rank.length>1?5.6:7}" font-weight="800" fill="${K.ink}" font-family="'Arial Black','Arial',sans-serif">${esc(rank)}</text>`+
     `<rect x="5" y="72.4" width="62" height="19" fill="${K.cream}" stroke="${f.dark}" stroke-width=".5"/>`+
     lines.map((l,i)=>`<text x="36" y="${77.4+i*4.1-(lines.length-1)*0.4}" text-anchor="middle" font-size="3.3" fill="${K.ink}" font-family="Georgia,'Times New Roman',serif">${esc(l)}</text>`).join('')+
     `<rect x="5" y="92.6" width="5.6" height="4.6" fill="${f.dark}"/><text x="7.8" y="96.3" text-anchor="middle" font-size="3.8" font-weight="800" fill="#fff" font-family="Arial,sans-serif">${ACH_FAM[id]||'S'}</text>`+
@@ -479,8 +502,10 @@ function achSvg(id,name,opt={}){
     `</svg>`;
 }
 // Rank box and stars for an earned badge: its tally, tier or streak.
-function achOpt(a,b){const tier=b&&b.id==='dxcc'?ACH_TIERS.indexOf(b.tier)+1:1;
-  return {desc:a.desc,rank:b?(b.tier||b.count||1):1,stars:Math.max(tier,1),locked:!b}}
+const ACH_STARS={codeowner_t3:1,codeowner_t2:2,codeowner_t1:3,admin_merge:3};
+function achOpt(a,b){const co=a.id.startsWith('codeowner_');
+  const stars=b&&a.id==='dxcc'?ACH_TIERS.indexOf(b.tier)+1:(ACH_STARS[a.id]||1);
+  return {desc:a.desc,rank:co?'T'+a.id.slice(-1):b?(b.tier||b.count||1):1,stars:Math.max(stars,1),locked:!b}}
 const ACH_TIERS=[10,50,100,250];
 function achTitle(a,b){return a.name+': '+a.desc+(b?' Earned '+fmtDay(b.at)+(b.ref?' ('+b.ref+')':'')+(b.count>1?' · ×'+b.count:'')+(b.areas?' · '+b.areas.join(', '):''):'')}
 function achShelf(list,login){const cat=D.achievements||[];
@@ -508,7 +533,7 @@ function achClose(){const m=document.getElementById('ach-modal'),fl=document.get
   achTimer=setTimeout(()=>{m.classList.remove('show');document.body.style.overflow=''},800)}
 function renderAchievements(){const el=document.getElementById('rules-ach');if(!el||!D)return;
   const n={};for(const b of Object.values(D.bios||{}))for(const x of (b.badges||[]))n[x.id]=(n[x.id]||0)+1;
-  el.innerHTML=(D.achievements||[]).map(a=>`<div class="cat"><span class="card" title="${esc(a.name+': '+a.desc)}">${achSvg(a.id,a.name,{desc:a.desc})}</span><span class="dim">${n[a.id]?'Earned by '+n[a.id]:'Not earned yet'}</span></div>`).join('')}
+  el.innerHTML=(D.achievements||[]).map(a=>`<div class="cat"><span class="card" title="${esc(a.name+': '+a.desc)}">${achSvg(a.id,a.name,Object.assign(achOpt(a,null),{locked:false}))}</span><span class="dim">${n[a.id]?'Earned by '+n[a.id]:'Not earned yet'}</span></div>`).join('')}
 function fmtDay(s){return s?new Date(s).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):'—'}
 // Contributor bio (all time; the same whichever window is shown).
 // The bio is lifetime: its points come from the all-time standings, whatever tab is open.

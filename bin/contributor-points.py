@@ -21,7 +21,7 @@ Usage:
   contributor-points.py collect --since 2026-09-20T00:00:00Z
   contributor-points.py score --json out.json
 """
-import argparse, gzip, json, os, re, shutil, sqlite3, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, zlib
+import argparse, base64, gzip, json, os, re, shutil, sqlite3, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, zlib
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -241,6 +241,8 @@ CREATE TABLE IF NOT EXISTS profiles(login TEXT PRIMARY KEY, name TEXT, bio TEXT,
   created_at TEXT, fetched_at TEXT, raw TEXT);
 CREATE TABLE IF NOT EXISTS oc_contributions(id TEXT PRIMARY KEY, created_at TEXT, amount_cents INTEGER,
   currency TEXT, from_slug TEXT, from_name TEXT, from_type TEXT, from_image TEXT, refunded INTEGER, raw TEXT);
+CREATE TABLE IF NOT EXISTS codeowners(tier INTEGER, login TEXT, team TEXT, first_seen TEXT, last_seen TEXT,
+  PRIMARY KEY(tier, login));
 CREATE TABLE IF NOT EXISTS http_cache(url TEXT PRIMARY KEY, etag TEXT, body TEXT, link TEXT, fetched_at TEXT);
 """
 # Columns added after the first schema; applied to existing databases.
@@ -261,6 +263,7 @@ MIGRATIONS = [
     'ALTER TABLE review_comments ADD COLUMN line INTEGER',
     'ALTER TABLE items ADD COLUMN webhook_at TEXT',     # PR state last delivered by a webhook
     'ALTER TABLE people ADD COLUMN display_name TEXT',  # for people without a GitHub login (backers)
+    'ALTER TABLE items ADD COLUMN base TEXT',           # the branch a PR targets
 ]
 BODIES_V = 1    # 1 = item, comment, review and discussion bodies stored
 LOGS_V = 1      # 1 = failed-job logs kept back to GitHub's 90-day retention
@@ -441,7 +444,7 @@ def apply_webhook(db, event, payload):
         pr = payload['pull_request']
         note_person(db, pr.get('user'))
         note_person(db, pr.get('merged_by'))
-        extra = {'webhook_at': pr.get('updated_at')}
+        extra = {'webhook_at': pr.get('updated_at'), 'base': (pr.get('base') or {}).get('ref')}
         if event == 'pull_request':
             # The full PR object: its state is current as of this delivery.
             extra.update(merged_at=pr.get('merged_at'), merged_by=(pr.get('merged_by') or {}).get('login'),
@@ -565,6 +568,34 @@ def substantive(body):
 
 
 # ── Collection ───────────────────────────────────────────────────────────
+CODEOWNER_TEAMS = {1: 'maintainers', 2: 'infrastructure', 3: 'reviewers'}   # CODEOWNERS tiers
+
+
+def collect_codeowners(gh, db):
+    """Who is in each CODEOWNERS tier: the org teams when this token can read
+    them, else the rosters the CODEOWNERS file lists ("currently: @a, @b")."""
+    now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    tiers = {}
+    try:
+        for tier, team in CODEOWNER_TEAMS.items():
+            tiers[tier] = [m['login'] for m in gh.pages(f'orgs/{OWNER}/teams/{team}/members?per_page=100')]
+    except urllib.error.HTTPError:
+        tiers = {}
+        try:
+            d, _ = gh.get(f'repos/{REPO}/contents/.github/CODEOWNERS')
+            text = base64.b64decode(d['content']).decode()
+        except (urllib.error.HTTPError, KeyError, ValueError):
+            return
+        comments = ' '.join(l.lstrip('#').strip() for l in text.splitlines() if l.startswith('#'))
+        for tier, team, names in re.findall(r'Tier (\d) \S+ @[\w-]+/([\w-]+) \(currently: ([^)]*)\)', comments):
+            tiers[int(tier)] = re.findall(r'@([\w-]+)', names)
+    for tier, logins in tiers.items():
+        for login in logins:
+            db.execute('INSERT INTO codeowners VALUES(?,?,?,?,?) ON CONFLICT(tier, login) DO UPDATE SET'
+                       ' last_seen=excluded.last_seen', (tier, login, CODEOWNER_TEAMS.get(tier), now, now))
+    db.commit()
+
+
 def collect(gh, db, since):
     q = urllib.parse.quote
     run_start = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -636,10 +667,10 @@ def collect(gh, db, since):
                            '{closingIssuesReferences(first:20){nodes{number}}}}}', {'o': OWNER, 'r': NAME, 'n': n})
             closes = [x['number'] for x in d['repository']['pullRequest']['closingIssuesReferences']['nodes']]
             tests = int(any(f['filename'].startswith('tests/') for f in gh.pages(f'repos/{REPO}/pulls/{n}/files?per_page=100')))
-        db.execute('UPDATE items SET merged_at=?, merged_by=?, head_sha=?, merge_sha=?, closes=?, touches_tests=?'
-                   ' WHERE type="pr" AND number=?',
+        db.execute('UPDATE items SET merged_at=?, merged_by=?, head_sha=?, merge_sha=?, closes=?, touches_tests=?,'
+                   ' base=? WHERE type="pr" AND number=?',
                    (p.get('merged_at'), (p.get('merged_by') or {}).get('login'), p['head']['sha'],
-                    p.get('merge_commit_sha'), json.dumps(closes), tests, n))
+                    p.get('merge_commit_sha'), json.dumps(closes), tests, (p.get('base') or {}).get('ref'), n))
         collect_reviews(gh, db, n)
         db.execute('UPDATE items SET detail_at=? WHERE type="pr" AND number=?', (run_start, n))
         if i % 25 == 24:
@@ -826,6 +857,30 @@ def collect(gh, db, since):
                         db.commit()
                         print(f'    {kept} logs kept ({gh.calls} calls)', file=sys.stderr, flush=True)
     db.commit()
+
+    print(f'  step: pr base branches ({gh.calls} calls)', file=sys.stderr, flush=True)
+    # The branch each merged PR targeted (only merges into main pass branch
+    # protection). Cached PR details first, then a bounded number of fetches.
+    if get_state(db, 'base_v') != '1':
+        for url, body in db.execute("SELECT url, body FROM http_cache WHERE url LIKE '%/pulls/%'").fetchall():
+            m = re.search(r'/pulls/(\d+)$', url)
+            try:
+                d = json.loads(body) if m else None
+            except ValueError:
+                d = None
+            if isinstance(d, dict) and d.get('number') == int(m.group(1)) and d.get('base'):
+                db.execute('UPDATE items SET base=? WHERE type="pr" AND number=? AND base IS NULL',
+                           (d['base']['ref'], d['number']))
+        set_state(db, 'base_v', '1')
+        db.commit()
+    for (n,) in db.execute('SELECT number FROM items WHERE type="pr" AND merged_at IS NOT NULL AND base IS NULL'
+                           ' ORDER BY number DESC LIMIT 200').fetchall():
+        p, _ = gh.get(f'repos/{REPO}/pulls/{n}')
+        db.execute('UPDATE items SET base=? WHERE type="pr" AND number=?', ((p.get('base') or {}).get('ref'), n))
+    db.commit()
+
+    print(f'  step: code owners ({gh.calls} calls)', file=sys.stderr, flush=True)
+    collect_codeowners(gh, db)
 
     print(f'  step: profiles ({gh.calls} calls)', file=sys.stderr, flush=True)
     # Public GitHub profiles (display name, bio) for contributor bios and
@@ -1334,13 +1389,17 @@ ACHIEVEMENTS = (
     ('old_timer', 'Old Timer', 'Contributing for 6 months, active in at least 4 of them.'),
     ('every_release', 'Every Release', 'Active in 5 release weeks in a row.'),
     ('backer', 'Backer', 'Supports AetherSDR on Open Collective.'),
+    ('codeowner_t3', 'Technician Class', 'Tier 3 code owner: reviews AetherSDR source (@aethersdr/reviewers).'),
+    ('codeowner_t2', 'General Class', 'Tier 2 code owner: project infrastructure (@aethersdr/infrastructure).'),
+    ('codeowner_t1', 'Amateur Extra', 'Tier 1 code owner: governance and security (@aethersdr/maintainers).'),
+    ('admin_merge', 'Admin Merge', 'Merged a PR into main past branch protection, with no approval but your own.'),
 )
 DXCC_TIERS = (10, 50, 100, 250)
 # Things a person did at the time recorded (not, say, their PR being merged).
 OWN_ACTIONS = {'discussion_comment', 'issue_comment', 'pr_comment', 'discussion_open', 'discussion_answer',
                'issue_open', 'pr_open', 'review_approve', 'review_changes', 'review_comment', 'merge_other',
                'issue_triaged', 'issue_closed', 'release_published'}
-COUNTED = {'smoke_jumper', 'self_healing', 'backer'}   # tallied, not just earned
+COUNTED = {'smoke_jumper', 'self_healing', 'backer', 'admin_merge'}   # tallied, not just earned
 REVIEW_RULES = {'review_approve', 'review_changes', 'review_comment'}
 BREAK_RULES = {'break_author', 'break_approver', 'break_merger'}
 
@@ -1360,6 +1419,18 @@ def achievements(db, led, now=None):
     areas = lambda labs: {l for l in labs if l.lower() not in NON_AREA_LABELS
                           and not l.lower().startswith(('priority', 'size', 'status'))}
     ws = [w for w in windows(db) if w['tag'] != 'current']
+    # Merges into main that no one but the author approved first: main
+    # requires an approval, so only an admin override gets these through.
+    approved = defaultdict(list)
+    for pr, login, at in db.execute("SELECT pr, login, submitted_at FROM reviews WHERE state='APPROVED'"):
+        if role_of(login) != 'bot':
+            approved[pr].append((login, at))
+    admin = defaultdict(list)
+    for n, author, by_, at in db.execute("SELECT number, author, merged_by, merged_at FROM items WHERE type='pr'"
+                                         " AND merged_at IS NOT NULL AND base='main' ORDER BY merged_at"):
+        if by_ and not any(l != author and a and a <= at for l, a in approved.get(n, ())):
+            admin[by_].append((at, f'pr#{n}'))
+    owners = {(t, l): f for t, l, f in db.execute('SELECT tier, login, first_seen FROM codeowners')}
     by = defaultdict(list)
     for e in led:
         if e[2]:
@@ -1457,6 +1528,11 @@ def achievements(db, led, now=None):
         if 'every_release' in got:
             got['every_release']['count'] = best
         nth({'backer_contribution'}, 1, 'backer')
+        for tier in (3, 2, 1):
+            if (tier, login) in owners:
+                earn(f'codeowner_t{tier}', owners[(tier, login)], 'file#.github/CODEOWNERS', tier=tier)
+        if admin.get(login):
+            earn('admin_merge', admin[login][0][0], admin[login][0][1], count=len(admin[login]))
         if got:
             order = [a[0] for a in ACHIEVEMENTS]
             out[login] = sorted(got.values(), key=lambda b: order.index(b['id']))

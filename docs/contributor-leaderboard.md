@@ -286,7 +286,7 @@ them from the ledger, so the fair-play caps apply; the catalog
 (`ACHIEVEMENTS`) is served as `achievements` in `/api/leaderboard` and each
 bio carries `badges` (`id`, `at`, `ref`, and `count`, `tier` or `areas` where
 they apply). Families: **M**ain health, **F**irsts, **S**ervice, **H**abits,
-**R**ange, **B**acker.
+**R**ange, **B**acker, **C**ode owners, and the **U**ltimate card.
 
 | Card | Earned for |
 |---|---|
@@ -310,8 +310,17 @@ they apply). Families: **M**ain health, **F**irsts, **S**ervice, **H**abits,
 | Old Timer | 6 months since your first contribution, active in 4 months |
 | Every Release | active in 5 release weeks in a row (the count is the longest streak) |
 | Backer | gave on Open Collective (tallied) |
+| Technician Class | Tier 3 code owner (`@aethersdr/reviewers`) |
+| General Class | Tier 2 code owner (`@aethersdr/infrastructure`) |
+| Amateur Extra | Tier 1 code owner (`@aethersdr/maintainers`) |
+| **Admin Merge** (ultimate) | merging a PR into `main` that no one but its author approved first, i.e. past branch protection (tallied) |
 
 The maintainer earns them too; bots don't.
+
+Code-owner tiers come from the org teams when the token can read them, else
+from the rosters `.github/CODEOWNERS` lists ("currently: @…"); `codeowners`
+records when the collector first saw each person in each tier. Admin Merge
+needs each PR's target branch (`items.base`): only merges into `main` count.
 
 Clicking a card in a bio flips it over into a large view; clicking anywhere
 else flips it back. One detail of each
