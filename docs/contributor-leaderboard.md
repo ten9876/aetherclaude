@@ -285,8 +285,10 @@ artwork, inline SVG in `bin/leaderboard.html`) and shown in the bio and in
 them from the ledger, so the fair-play caps apply; the catalog
 (`ACHIEVEMENTS`) is served as `achievements` in `/api/leaderboard` and each
 bio carries `badges` (`id`, `at`, `ref`, and `count`, `tier` or `areas` where
-they apply). Families: **M**ain health, **F**irsts, **S**ervice, **H**abits,
-**R**ange, **B**acker, **C**ode owners, and the **U**ltimate card.
+they apply). Families spell **A.E.T.H.E.R.** (the corner letter):
+**A**uthority (code-owner tiers and the ultimate Admin Merge card),
+**E**ndurance, **T**roubleshooting (main health), **H**elping,
+**E**ngineering and **R**esources (backing).
 
 | Card | Earned for |
 |---|---|

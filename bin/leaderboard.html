@@ -89,6 +89,7 @@ button.card{all:unset;display:block;cursor:pointer;transition:transform .12s}but
 .flipper .ach{filter:drop-shadow(0 10px 24px rgba(0,0,0,.6))}
 .flipcap{text-align:center;font-size:13px;color:var(--ink);line-height:1.5}.flipcap .hint{margin-top:6px;font-size:11px;font-style:italic;color:var(--gold)}
 .egg{cursor:pointer}.egg circle{transition:fill-opacity .25s}.egg:hover circle{fill-opacity:.35}
+.beacon{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--ink-soft)}.beacon span{display:flex;align-items:center;gap:5px}.beacon b{display:inline-block;width:18px;height:18px;line-height:18px;text-align:center;border-radius:3px;color:#fff;font-weight:800}
 .cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:12px;margin:8px 0 4px}.cats .cat{display:flex;flex-direction:column;gap:4px;font-size:11px;text-align:center}
 .dim{color:var(--muted)}
 .rules{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:2px 24px;font-size:12px}
@@ -173,7 +174,7 @@ td.pts.soft{color:var(--muted);font-weight:500}
 <li><span class="badge backer">BACKER</span> supports AetherSDR on Open Collective.</li>
 <li><span class="badge">MAINTAINER</span> scored and shown, but can't win.</li></ul>
 <h3>Achievements</h3>
-<p>Cards earned once and kept for good, shown in each person's bio. The number in the corner is how many times (or, for DXCC, the tier), and the family letter groups them: <b>M</b>ain health, <b>F</b>irsts, <b>S</b>ervice, <b>H</b>abits, <b>R</b>ange, <b>B</b>acker and <b>C</b>ode owners (the CODEOWNERS tiers, as licence classes), plus one <b>U</b>ltimate card: Admin Merge. Yes, breaking main earns one too. Hover a card for when and where it was earned.</p>
+<p>Cards earned once and kept for good, shown in each person's bio. The number in the corner is how many times (or, for DXCC, the tier), and the letter in the corner is the card's family. The six families spell <b>A.E.T.H.E.R.</b>: <b>A</b>uthority (the CODEOWNERS tiers, as licence classes, and the ultimate card, Admin Merge), <b>E</b>ndurance (sticking with it), <b>T</b>roubleshooting (breaking main and putting the fire out), <b>H</b>elping (reviewing, talking and bringing others along), <b>E</b>ngineering (building and shipping) and <b>R</b>esources (supporting the project). Yes, breaking main earns one too. Hover a card for when and where it was earned.</p>
 <div class="cats" id="rules-ach"></div>
 <h3>Contributor of the week</h3>
 <p>A week runs from one AetherSDR release to the next. When a release is published, two people are named for that week: the <b>contributor of the week</b> (most contributor points) and the <b>steward of the week</b> (most steward points). The same person can win both, but only by topping each score on its own. Until the release, the week's leaders are shown as "leading". Contributor ties go to more PR points, then more issue points; steward ties to more review points.</p>
@@ -336,19 +337,25 @@ if(location.hash==='#rules')setTimeout(openRules,0);
 // title banner, a sunburst illustration, the description and rank stars.
 // Each family of badges has its own colour and letter. Illustrations are
 // drawn on a 64x56 canvas in a nested <svg> (which clips; no ids needed).
+// Families spell A.E.T.H.E.R., the way perk cards spell S.P.E.C.I.A.L.
+// Keys are unique; `l` is the letter on the card (there are two Es).
 const ACH_FAMILY={
-  M:{name:'Main health',bg:'#e7a08a',ray:'#f5c9b8',dark:'#a8442a'},
-  F:{name:'Firsts',bg:'#98d1c4',ray:'#cbebe2',dark:'#2c7a6d'},
-  S:{name:'Service',bg:'#eccb82',ray:'#f8e7bd',dark:'#a8731c'},
-  H:{name:'Habits',bg:'#a6c2e6',ray:'#d3e2f4',dark:'#3b5a96'},
-  R:{name:'Range',bg:'#c5b0de',ray:'#e4d8f0',dark:'#684c96'},
-  B:{name:'Backer',bg:'#b5d796',ray:'#dcedc9',dark:'#4c7c2c'},
-  C:{name:'Code owners',bg:'#9fb4c4',ray:'#d4e0ea',dark:'#2e4a62'},
-  U:{name:'Ultimate',bg:'#1b1f26',ray:'#2a303a',dark:'#101318',holo:true},
+  A:{l:'A',name:'Authority',bg:'#9fb4c4',ray:'#d4e0ea',dark:'#2e4a62'},
+  E1:{l:'E',name:'Endurance',bg:'#a6c2e6',ray:'#d3e2f4',dark:'#3b5a96'},
+  T:{l:'T',name:'Troubleshooting',bg:'#e7a08a',ray:'#f5c9b8',dark:'#a8442a'},
+  H:{l:'H',name:'Helping',bg:'#98d1c4',ray:'#cbebe2',dark:'#2c7a6d'},
+  E2:{l:'E',name:'Engineering',bg:'#eccb82',ray:'#f8e7bd',dark:'#a8731c'},
+  R:{l:'R',name:'Resources',bg:'#b5d796',ray:'#dcedc9',dark:'#4c7c2c'},
 };
-const ACH_FAM={broke_main:'M',smoke_jumper:'M',self_healing:'M',clean_sweep:'M',first_contact:'F',signal_report:'F',qsl_confirmed:'F',
-  dxcc:'S',rag_chewer:'S',net_control:'S',elmer:'S',test_pilot:'S',bug_hunter:'S',fast_qsy:'H',grey_line:'H',contest_weekend:'H',
-  every_release:'H',was:'R',old_timer:'R',backer:'B',codeowner_t3:'C',codeowner_t2:'C',codeowner_t1:'C',admin_merge:'U'};
+const ACH_ORDER=['A','E1','T','H','E2','R'];
+const ACH_FAM={codeowner_t3:'A',codeowner_t2:'A',codeowner_t1:'A',admin_merge:'A',
+  old_timer:'E1',every_release:'E1',grey_line:'E1',contest_weekend:'E1',
+  broke_main:'T',smoke_jumper:'T',self_healing:'T',clean_sweep:'T',
+  signal_report:'H',qsl_confirmed:'H',rag_chewer:'H',net_control:'H',elmer:'H',fast_qsy:'H',
+  first_contact:'E2',dxcc:'E2',test_pilot:'E2',bug_hunter:'E2',was:'E2',backer:'R'};
+const ACH_ULTIMATE={admin_merge:{bg:'#1b1f26',ray:'#2a303a',dark:'#101318',holo:true}};
+const achFamily=id=>Object.assign({},ACH_FAMILY[ACH_FAM[id]||'E2'],ACH_ULTIMATE[id]||{});
+const achSort=list=>list.slice().sort((a,b)=>ACH_ORDER.indexOf(ACH_FAM[a.id])-ACH_ORDER.indexOf(ACH_FAM[b.id]));
 // Platinum, diamond and gold: brushed silvers, an ice-blue glint, gold rays.
 const HOLO=['#f7f9fb','#c9d1d9','#f2d27a','#e4ebf1','#bfe6ff','#d4a93c','#a3aeb9'];
 const K={ink:'#2a2622',cream:'#f6edd6',gold:'#d8b45a',red:'#d2432f',orange:'#f08a2a',yellow:'#ffd04a',white:'#ffffff',steel:'#7d8b96',wood:'#8a5a32',green:'#4f9a4a',blue:'#3f74b8',skin:'#f2c79a'};
@@ -481,7 +488,7 @@ const ACH_EGG={broke_main:[31,24,5],smoke_jumper:[44,42,4],self_healing:[52,10,4
 const achEgg=(id,e)=>{const [x,y,r]=ACH_EGG[id]||[32,28,4];
   return `<a href="${esc(e.url)}" target="_blank" class="egg"><title>${esc(e.title)}</title><circle cx="${x}" cy="${y}" r="${r}" fill="#fff" fill-opacity="0"/></a>`};
 // The back of a card: what you see before it flips over.
-function achBack(id){const f=ACH_FAMILY[ACH_FAM[id]||'S'];
+function achBack(id){const f=achFamily(id);
   return `<svg class="ach" viewBox="0 0 72 100"><rect x=".5" y=".5" width="71" height="99" rx="4" fill="${K.gold}" stroke="#8a6a2a"/>`+
     `<rect x="2.6" y="2.6" width="66.8" height="94.8" rx="2.4" fill="${f.dark}"/><svg x="2.6" y="2.6" width="66.8" height="94.8" viewBox="0 0 66.8 94.8">${rays('rgba(255,255,255,.08)',33.4,47.4,24,90)}</svg>`+
     `<rect x="6" y="6" width="60" height="88" rx="2" fill="none" stroke="${K.gold}" stroke-width=".8"/>`+
@@ -493,7 +500,7 @@ function achBack(id){const f=ACH_FAMILY[ACH_FAM[id]||'S'];
 function achWrap(s,w=26){const out=[];let line='';for(const word of (s||'').split(/\s+/)){if((line+' '+word).trim().length>w){out.push(line.trim());line=word}else line+=' '+word}
   if(line.trim())out.push(line.trim());return out.slice(0,4)}
 function achSvg(id,name,opt={}){
-  const f=ACH_FAMILY[ACH_FAM[id]||'S'],t=(name||'').toUpperCase(),fs=Math.min(5.4,52/(t.length*.66));
+  const f=achFamily(id),t=(name||'').toUpperCase(),fs=Math.min(5.4,52/(t.length*.66));
   const rank=opt.rank!=null?String(opt.rank):'1',stars=opt.stars||1,lines=achWrap(opt.desc);
   return `<svg class="ach${opt.locked?' locked':''}" viewBox="0 0 72 100" role="img" aria-label="${esc(name)}">`+
     (f.holo?`<rect x=".5" y=".5" width="71" height="99" rx="4" fill="#b9c2cb" stroke="#6f7a86" stroke-width="1"/>`+HOLO.map((c,i)=>`<rect x="${1+i*.24}" y="${1+i*.24}" width="${70-i*.48}" height="${98-i*.48}" rx="3.6" fill="none" stroke="${c}" stroke-width=".3"/>`).join('')+`<rect x="2.3" y="2.3" width="67.4" height="95.4" rx="2.6" fill="none" stroke="#e0b44a" stroke-width=".9"/>`
@@ -507,7 +514,7 @@ function achSvg(id,name,opt={}){
     `<text x="8.3" y="${rank.length>2?9.9:10.4}" text-anchor="middle" font-size="${rank.length>3?3.3:rank.length>2?4.4:rank.length>1?5.6:7}" font-weight="800" fill="${K.ink}" font-family="'Arial Black','Arial',sans-serif">${esc(rank)}</text>`+
     `<rect x="5" y="72.4" width="62" height="19" fill="${K.cream}" stroke="${f.dark}" stroke-width=".5"/>`+
     lines.map((l,i)=>`<text x="36" y="${77.4+i*4.1-(lines.length-1)*0.4}" text-anchor="middle" font-size="3.3" fill="${K.ink}" font-family="Georgia,'Times New Roman',serif">${esc(l)}</text>`).join('')+
-    `<rect x="5" y="92.6" width="5.6" height="4.6" fill="${f.dark}"/><text x="7.8" y="96.3" text-anchor="middle" font-size="3.8" font-weight="800" fill="#fff" font-family="Arial,sans-serif">${ACH_FAM[id]||'S'}</text>`+
+    `<rect x="5" y="92.6" width="5.6" height="4.6" fill="${f.dark}"/><text x="7.8" y="96.3" text-anchor="middle" font-size="3.8" font-weight="800" fill="#fff" font-family="Arial,sans-serif"><title>${f.l}: ${f.name}</title>${f.l}</text>`+
     `<rect x="${67-stars*5.2-1}" y="92.6" width="${stars*5.2+1}" height="4.6" fill="${K.cream}" stroke="${f.dark}" stroke-width=".4"/>`+
     [...Array(stars)].map((_,i)=>{const x=67-i*5.2-2.6,y=94.9;return pg([...Array(10)].map((_,k)=>{const a=-Math.PI/2+k*Math.PI/5,r=k%2?.85:2;return `${(x+r*Math.cos(a)).toFixed(2)},${(y+r*Math.sin(a)).toFixed(2)}`}).join(' '),f.dark)}).join('')+
     `</svg>`;
@@ -520,7 +527,7 @@ function achOpt(a,b){const co=a.id.startsWith('codeowner_');
 const ACH_TIERS=[10,50,100,250];
 function achTitle(a,b){return a.name+': '+a.desc+(b?' Earned '+fmtDay(b.at)+(b.ref?' ('+b.ref+')':'')+(b.count>1?' · ×'+b.count:'')+(b.areas?' · '+b.areas.join(', '):''):'')}
 function achShelf(list,login){const cat=D.achievements||[];
-  return list.map(b=>{const a=cat.find(x=>x.id===b.id);if(!a)return '';
+  return achSort(list).map(b=>{const a=cat.find(x=>x.id===b.id);if(!a)return '';
     return `<button type="button" class="card" title="${esc(a.name)}" onclick="event.stopPropagation();achOpen('${esc(login)}','${a.id}')">${achSvg(a.id,a.name,achOpt(a,b))}</button>`}).join('')}
 // Click a card: its back appears, then it flips over and grows. One detail
 // of the picture (ACH_EGG) links to the entry that earned it.
@@ -544,7 +551,7 @@ function achClose(){const m=document.getElementById('ach-modal'),fl=document.get
   achTimer=setTimeout(()=>{m.classList.remove('show');document.body.style.overflow=''},800)}
 function renderAchievements(){const el=document.getElementById('rules-ach');if(!el||!D)return;
   const n={};for(const b of Object.values(D.bios||{}))for(const x of (b.badges||[]))n[x.id]=(n[x.id]||0)+1;
-  el.innerHTML=(D.achievements||[]).map(a=>`<div class="cat"><span class="card" title="${esc(a.name+': '+a.desc)}">${achSvg(a.id,a.name,Object.assign(achOpt(a,null),{locked:false}))}</span><span class="dim">${n[a.id]?'Earned by '+n[a.id]:'Not earned yet'}</span></div>`).join('')}
+  el.innerHTML=`<div class="beacon">${ACH_ORDER.map(k=>`<span><b style="background:${ACH_FAMILY[k].dark}">${ACH_FAMILY[k].l}</b>${ACH_FAMILY[k].name}</span>`).join('')}</div>`+achSort(D.achievements||[]).map(a=>`<div class="cat"><span class="card" title="${esc(a.name+': '+a.desc)}">${achSvg(a.id,a.name,Object.assign(achOpt(a,null),{locked:false}))}</span><span class="dim">${n[a.id]?'Earned by '+n[a.id]:'Not earned yet'}</span></div>`).join('')}
 function fmtDay(s){return s?new Date(s).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):'—'}
 // Contributor bio (all time; the same whichever window is shown).
 // The bio is lifetime: its points come from the all-time standings, whatever tab is open.
