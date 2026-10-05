@@ -53,10 +53,13 @@ tr.ev td{background:var(--bg-1);padding:0}
 .evs{display:grid;grid-template-columns:120px 170px 46px minmax(0,1fr);column-gap:12px;row-gap:2px;font-size:11px;text-align:left}
 /* Expanded row: the contributor's bio (all time) beside the activity log
    for the window shown. Stacks on narrow screens. */
-.exp{display:grid;grid-template-columns:minmax(260px,340px) minmax(0,1fr);gap:18px;padding:12px 16px 14px;text-align:left;font-family:var(--sans);white-space:normal}
-@media (max-width:900px){.exp{grid-template-columns:1fr}}
+.exp{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px;padding:12px 16px 14px;text-align:left;font-family:var(--sans);white-space:normal}
+/* The bio card sets the row height; the log's list is taken out of flow, so it adds none, and scrolls. */
+.log{position:relative;min-height:0}
+.log .evs{position:absolute;top:22px;bottom:0;left:0;right:0;overflow-y:auto;align-content:start;grid-auto-rows:max-content;padding-right:6px;scrollbar-width:thin}
+@media (max-width:900px){.exp{grid-template-columns:1fr}.log .evs{position:static;max-height:360px}}
 .ph2{font-size:11px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
-.bio{background:var(--bg-2);border:1px solid var(--line);border-radius:12px;padding:14px 16px;font-size:12px;color:var(--ink-soft);align-self:start}
+.bio{background:var(--bg-2);border:1px solid var(--line);border-radius:12px;padding:14px 16px;font-size:12px;color:var(--ink-soft)}
 .bio .hd{display:flex;gap:12px;align-items:center}
 .bio .hd img{width:56px;height:56px;border-radius:50%;border:1px solid var(--line-hi)}
 .bio .nm{font-size:17px;font-weight:600;color:var(--ink);line-height:1.2}
