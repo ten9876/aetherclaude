@@ -316,6 +316,8 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')closeRules()});
 if(location.hash==='#rules')setTimeout(openRules,0);
 function fmtDay(s){return s?new Date(s).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):'—'}
 // Contributor bio (all time; the same whichever window is shown).
+// The bio is lifetime: its points come from the all-time standings, whatever tab is open.
+function allTimeTotal(r){const a=(D.all_time||[]).find(x=>x.login===r.login)||r;return a.total!=null?a.total:a.points+(a.steward||0)}
 function bioHtml(r){
   const b=(D.bios||{})[r.login];
   if(!b)return '<div class="bio dim">No profile yet.</div>';
@@ -334,7 +336,7 @@ function bioHtml(r){
     (b.first_merged?`<span class="k">First merged PR</span><span><a href="${refUrl('pr#'+b.first_merged.pr)}" target="_blank">#${b.first_merged.pr}</a> &middot; ${fmtDay(b.first_merged.at)}</span>`:'')+
     (b.donated>0?`<span class="k">Donated</span><span>$${b.donated.toLocaleString(undefined,{maximumFractionDigits:2})} on Open Collective</span>`:'')+`</div>`+
     `<div class="stats">${stat(n(c.issues),'Issues')}${stat(n(c.prs),'PRs')}${stat(n(c.merged),'Merged')}${stat(n(c.comments),'Comments')}`+
-    `${stat(n(c.reviews),'Reviews')}${stat(n(c.merges),'Merges')}${stat(n(c.discussions),'Discussions')}${stat(n(r.total||0),'Points')}</div>`+
+    `${stat(n(c.reviews),'Reviews')}${stat(n(c.merges),'Merges')}${stat(n(c.discussions),'Discussions')}${stat(n(allTimeTotal(r)),'Points')}</div>`+
     (awards?`<div class="awards">${awards}</div>`:'')+
     ((b.areas||[]).length?`<div class="chips" title="Most frequent area labels on their issues and PRs">${b.areas.map(a=>`<span class="chip">${esc(a)}</span>`).join('')}</div>`:'')+
     `</div>`;
