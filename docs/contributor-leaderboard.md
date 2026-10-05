@@ -276,3 +276,40 @@ any donation, how often they were contributor, steward or backer of the
 week, and the areas they work in most (their issues' and PRs' area labels).
 The collector keeps public GitHub profiles for this (`profiles`), refreshed
 monthly.
+
+## Achievements
+
+Badges people earn once and keep, drawn as collectible perk cards (original
+artwork, inline SVG in `bin/leaderboard.html`) and shown in the bio and in
+"How points work". `achievements()` in `bin/contributor-points.py` computes
+them from the ledger, so the fair-play caps apply; the catalog
+(`ACHIEVEMENTS`) is served as `achievements` in `/api/leaderboard` and each
+bio carries `badges` (`id`, `at`, `ref`, and `count`, `tier` or `areas` where
+they apply). Families: **M**ain health, **F**irsts, **S**ervice, **H**abits,
+**R**ange, **B**acker.
+
+| Card | Earned for |
+|---|---|
+| I Broke Main | a PR you wrote, approved or merged broke main (tallied) |
+| Smoke Jumper | merging the fix that turned main green after someone else's break (tallied) |
+| Self-Healing | fixing your own break within 24 hours (tallied) |
+| Clean Sweep | 50 merged PRs in a row without breaking main as author |
+| First Contact | first merged PR |
+| Signal Report | first approving review of someone else's PR |
+| QSL Confirmed | a PR of yours closed someone else's issue |
+| DXCC | 10, 50, 100 and 250 merged PRs (tiers) |
+| Rag Chewer | 500 scoring comments |
+| Net Control | 100 PRs merged for others |
+| Elmer | 50 reviews of PRs by people with fewer than 3 merged PRs |
+| Fast QSY | 10 first reviews within 24 hours |
+| Test Pilot | 25 merged PRs that touch tests |
+| Bug Hunter | 10 of your `bug` issues fixed by someone else |
+| Grey Line | activity between 00:00 and 05:00 UTC on 10 days |
+| Contest Weekend | 20 scoring actions in one UTC day |
+| Worked All Sections | merged PRs in 5 areas (the PR's labels and its closed issues') |
+| Old Timer | 6 months since your first contribution, active in 4 months |
+| Every Release | active in 5 release weeks in a row (the count is the longest streak) |
+| Backer | gave on Open Collective (tallied) |
+
+The maintainer earns them too; bots don't.
+

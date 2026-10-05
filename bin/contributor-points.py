@@ -1205,7 +1205,10 @@ _CALLSIGN = re.compile(r'(?<![A-Z0-9])((?:[A-Z]{1,2}|[A-Z][0-9]|[0-9][A-Z])[0-9]
 NON_AREA_LABELS = {'bug', 'enhancement', 'documentation', 'question', 'duplicate', 'invalid', 'wontfix',
                    'good first issue', 'help wanted', 'maintainer-review', 'awaiting-response', 'claude-active',
                    'aetherclaude-eligible', 'full-suite', 'sanitizer', 'asan-ubsan', 'tsan', 'refactor', 'dependencies',
-                   'needs-triage', 'release', 'stale', 'spam', 'new feature', 'feature request', 'rfc', 'discussion', 'wip', 'blocked'}
+                   'needs-triage', 'release', 'stale', 'spam', 'new feature', 'feature request', 'rfc', 'discussion', 'wip', 'blocked',
+                   'awaiting-confirmation', 'insufficient-info', 'no-claude', 'rfc approved', 'hold-until-ready',
+                   'needs-hardware', 'unsupported-radio', 'upstream', 'warning', 'governance', 'github_actions',
+                   'javascript', 'float32-regression'}
 
 
 def find_callsign(*texts):
@@ -1283,6 +1286,7 @@ def bios(db, led, logins=None):
             if cand:
                 top = max(cand, key=lambda c: (c[0], c[1], c[2], [-ord(ch) for ch in c[3].lower()]))
                 awards[top[3]][kind].append(w['tag'])
+    badges = achievements(db, led)
     out = {}
     for login in (want if want is not None else set(first)):
         kind, avatar, display = people.get(login, ('User', '', None))
@@ -1302,7 +1306,159 @@ def bios(db, led, logins=None):
             'donated': round(donated.get(login, 0), 2),
             'awards': {k: {'count': len(v), 'latest': v[-1]} for k, v in awards.get(login, {}).items()},
             'areas': [l for l, _ in sorted(a.items(), key=lambda kv: -kv[1])[:4]],
+            'badges': badges.get(login, []),
         }
+    return out
+
+
+# Achievement badges: earned once, kept for good. Each is computed from the
+# ledger (so the fair-play caps apply) plus item labels and authors.
+ACHIEVEMENTS = (
+    ('broke_main', 'I Broke Main', 'A PR you wrote, approved or merged turned main red. It happens to everyone.'),
+    ('smoke_jumper', 'Smoke Jumper', "Merged the fix that turned main green after someone else's break."),
+    ('self_healing', 'Self-Healing', 'Broke main and fixed it yourself within 24 hours.'),
+    ('clean_sweep', 'Clean Sweep', '50 merged PRs in a row without breaking main.'),
+    ('first_contact', 'First Contact', 'Your first merged PR.'),
+    ('signal_report', 'Signal Report', "Your first approving review of someone else's PR."),
+    ('qsl_confirmed', 'QSL Confirmed', 'A PR of yours closed an issue someone else opened.'),
+    ('dxcc', 'DXCC', 'Merged PRs: 10, 50, 100 and 250.'),
+    ('rag_chewer', 'Rag Chewer', '500 scoring comments.'),
+    ('net_control', 'Net Control', '100 PRs merged for other people.'),
+    ('elmer', 'Elmer', '50 reviews of PRs by newcomers (fewer than 3 merged PRs).'),
+    ('fast_qsy', 'Fast QSY', '10 first reviews within 24 hours of a PR opening.'),
+    ('test_pilot', 'Test Pilot', '25 merged PRs that add or change tests.'),
+    ('bug_hunter', 'Bug Hunter', '10 of your bug reports fixed by someone else.'),
+    ('grey_line', 'Grey Line', 'Active between 00:00 and 05:00 UTC on 10 different days.'),
+    ('contest_weekend', 'Contest Weekend', '20 scoring actions in one UTC day.'),
+    ('was', 'Worked All Sections', 'Merged PRs in 5 different areas of AetherSDR.'),
+    ('old_timer', 'Old Timer', 'Contributing for 6 months, active in at least 4 of them.'),
+    ('every_release', 'Every Release', 'Active in 5 release weeks in a row.'),
+    ('backer', 'Backer', 'Supports AetherSDR on Open Collective.'),
+)
+DXCC_TIERS = (10, 50, 100, 250)
+# Things a person did at the time recorded (not, say, their PR being merged).
+OWN_ACTIONS = {'discussion_comment', 'issue_comment', 'pr_comment', 'discussion_open', 'discussion_answer',
+               'issue_open', 'pr_open', 'review_approve', 'review_changes', 'review_comment', 'merge_other',
+               'issue_triaged', 'issue_closed', 'release_published'}
+COUNTED = {'smoke_jumper', 'self_healing', 'backer'}   # tallied, not just earned
+REVIEW_RULES = {'review_approve', 'review_changes', 'review_comment'}
+BREAK_RULES = {'break_author', 'break_approver', 'break_merger'}
+
+
+def achievements(db, led, now=None):
+    """login -> [{id, at, ref?, count?, tier?}] for every badge earned."""
+    now = now or datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    items = {(t, n): (a, json.loads(l or '[]'), m, json.loads(c or '[]')) for t, n, a, l, m, c in
+             db.execute('SELECT type, number, author, labels, merged_at, closes FROM items')}
+    merged_at = defaultdict(list)   # author -> merge times, for "newcomer"
+    for (t, n), (a, _, m, _c) in items.items():
+        if t == 'pr' and m:
+            merged_at[a].append(m)
+    for v in merged_at.values():
+        v.sort()
+    num = lambda ref: int(ref.split('#')[1]) if ref and '#' in ref else None
+    areas = lambda labs: {l for l in labs if l.lower() not in NON_AREA_LABELS
+                          and not l.lower().startswith(('priority', 'size', 'status'))}
+    ws = [w for w in windows(db) if w['tag'] != 'current']
+    by = defaultdict(list)
+    for e in led:
+        if e[2]:
+            by[e[0]].append(e)
+    out = {}
+    for login, evs in by.items():
+        evs.sort(key=lambda e: e[2])
+        got = {}
+
+        def earn(bid, at, ref=None, **kw):
+            if bid not in got:
+                got[bid] = dict({'id': bid, 'at': at}, **({'ref': ref} if ref else {}), **kw)
+
+        def nth(rules, n, bid, pred=lambda e: True):
+            hits = [e for e in evs if e[1] in rules and pred(e)]
+            if len(hits) >= n:
+                earn(bid, hits[n - 1][2], hits[n - 1][3], **({'count': len(hits)} if bid in COUNTED else {}))
+
+        breaks = {}
+        for e in evs:
+            if e[1] in BREAK_RULES:
+                breaks.setdefault(e[3], e)
+        if breaks:
+            first = min(breaks.values(), key=lambda e: e[2])
+            earn('broke_main', first[2], first[3], count=len(breaks))
+        nth({'main_fixed'}, 1, 'smoke_jumper')
+        nth({'break_self_fix'}, 1, 'self_healing')
+        run = 0
+        for e in evs:
+            run = 0 if e[1] == 'break_author' else run + (e[1] == 'pr_merged')
+            if run == 50:
+                earn('clean_sweep', e[2], e[3])
+        nth({'pr_merged'}, 1, 'first_contact')
+        nth({'review_approve'}, 1, 'signal_report')
+        nth({'pr_closes_issue'}, 1, 'qsl_confirmed',
+            lambda e: any((items.get(('issue', int(c))) or (login,))[0] != login
+                          for c in re.findall(r'#(\d+)', e[4] or '')))
+        merges = [e for e in evs if e[1] == 'pr_merged']
+        tiers = [t for t in DXCC_TIERS if len(merges) >= t]
+        if tiers:
+            got['dxcc'] = {'id': 'dxcc', 'at': merges[tiers[-1] - 1][2], 'tier': tiers[-1], 'count': len(merges)}
+        nth({'discussion_comment', 'issue_comment', 'pr_comment'}, 500, 'rag_chewer')
+        nth({'merge_other'}, 100, 'net_control')
+
+        def newcomer(e):
+            author = (items.get(('pr', num(e[3]))) or (None,))[0]
+            return (author and author != login and role_of(author) != 'bot'
+                    and sum(1 for m in merged_at.get(author, ()) if m < e[2]) < 3)
+        nth(REVIEW_RULES, 50, 'elmer', newcomer)
+        nth({'review_first_fast'}, 10, 'fast_qsy')
+        nth({'pr_tests'}, 25, 'test_pilot')
+        nth({'issue_fixed'}, 10, 'bug_hunter',
+            lambda e: 'bug' in {l.lower() for l in (items.get(('issue', num(e[3]))) or (0, []))[1]})
+        own = [e for e in evs if e[1] in OWN_ACTIONS]
+        grey = []
+        for e in own:
+            if '00' <= e[2][11:13] < '05' and e[2][:10] not in grey:
+                grey.append(e[2][:10])
+                if len(grey) == 10:
+                    earn('grey_line', e[2], e[3])
+        per_day = defaultdict(list)
+        for e in own:
+            per_day[e[2][:10]].append(e)
+            if len(per_day[e[2][:10]]) == 20:
+                earn('contest_weekend', e[2], e[3])
+        seen = set()
+        for e in merges:
+            pr = items.get(('pr', num(e[3]))) or (0, [], 0, [])
+            seen |= areas(pr[1])
+            for c in pr[3]:   # and the areas of the issues it closed
+                seen |= areas((items.get(('issue', c)) or (0, []))[1])
+            if len(seen) >= 5:
+                earn('was', e[2], e[3], areas=sorted(seen))
+                break
+        act = [e for e in evs if e[1] in OWN_ACTIONS or e[1] == 'pr_merged']
+        if act:
+            start = datetime.fromisoformat(act[0][2].replace('Z', '+00:00'))
+            months, fourth = set(), None
+            for e in act:
+                months.add(e[2][:7])
+                if len(months) == 4:
+                    fourth = e[2]
+                    break
+            six = (start + timedelta(days=182)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            if fourth and six <= now:
+                earn('old_timer', max(six, fourth))
+        streak = best = 0
+        for w in ws:
+            active = any((not w['start'] or e[2] >= w['start']) and e[2] < w['end'] for e in own)
+            streak = streak + 1 if active else 0
+            best = max(best, streak)
+            if streak == 5:
+                earn('every_release', w['end'], None, release=w['tag'])
+        if 'every_release' in got:
+            got['every_release']['count'] = best
+        nth({'backer_contribution'}, 1, 'backer')
+        if got:
+            order = [a[0] for a in ACHIEVEMENTS]
+            out[login] = sorted(got.values(), key=lambda b: order.index(b['id']))
     return out
 
 

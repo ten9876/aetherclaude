@@ -76,6 +76,10 @@ tr.ev td{background:var(--bg-1);padding:0}
 .bio .chips{margin-top:8px;display:flex;flex-wrap:wrap;gap:5px}
 .bio .chip{font-size:10px;border:1px solid var(--line-hi);border-radius:20px;padding:1px 8px;color:var(--ink-soft)}
 .evs span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.shelf{display:grid;grid-template-columns:repeat(auto-fill,minmax(62px,1fr));gap:6px}
+.shelf .card,.cats .card{display:block;transition:transform .12s}.shelf .card:hover{transform:translateY(-2px) scale(1.04)}
+.ach{display:block;width:100%;height:auto;filter:drop-shadow(0 2px 3px rgba(0,0,0,.45))}.ach.locked{filter:grayscale(1);opacity:.35}
+.cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:12px;margin:8px 0 4px}.cats .cat{display:flex;flex-direction:column;gap:4px;font-size:11px;text-align:center}
 .dim{color:var(--muted)}
 .rules{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:2px 24px;font-size:12px}
 .rules div{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:3px 0}
@@ -157,6 +161,9 @@ td.pts.soft{color:var(--muted);font-weight:500}
 <li><span id="badge-core"></span> <b>Core dev team.</b></li>
 <li><span class="badge backer">BACKER</span> supports AetherSDR on Open Collective.</li>
 <li><span class="badge">MAINTAINER</span> scored and shown, but can't win.</li></ul>
+<h3>Achievements</h3>
+<p>Cards earned once and kept for good, shown in each person's bio. The number in the corner is how many times (or, for DXCC, the tier), and the family letter groups them: <b>M</b>ain health, <b>F</b>irsts, <b>S</b>ervice, <b>H</b>abits, <b>R</b>ange and <b>B</b>acker. Yes, breaking main earns one too. Hover a card for when and where it was earned.</p>
+<div class="cats" id="rules-ach"></div>
 <h3>Contributor of the week</h3>
 <p>A week runs from one AetherSDR release to the next. When a release is published, two people are named for that week: the <b>contributor of the week</b> (most contributor points) and the <b>steward of the week</b> (most steward points). The same person can win both, but only by topping each score on its own. Until the release, the week's leaders are shown as "leading". Contributor ties go to more PR points, then more issue points; steward ties to more review points.</p>
 </div></div>
@@ -310,10 +317,151 @@ function badgeIcons(){
   if(f&&!f.innerHTML)f.innerHTML=FIRST_ICON.replace('__T__','First-time contributor');
   if(c&&!c.innerHTML)c.innerHTML=CORE_ICON;
 }
-function openRules(){badgeIcons();renderRules();document.getElementById('rules-modal').classList.add('show');document.body.style.overflow='hidden'}
+function openRules(){badgeIcons();renderRules();renderAchievements();document.getElementById('rules-modal').classList.add('show');document.body.style.overflow='hidden'}
 function closeRules(){document.getElementById('rules-modal').classList.remove('show');document.body.style.overflow=''}
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeRules()});
 if(location.hash==='#rules')setTimeout(openRules,0);
+// Achievement badges, drawn as collectible perk cards: gold frame, rank box,
+// title banner, a sunburst illustration, the description and rank stars.
+// Each family of badges has its own colour and letter. Illustrations are
+// drawn on a 64x56 canvas in a nested <svg> (which clips; no ids needed).
+const ACH_FAMILY={
+  M:{name:'Main health',bg:'#e7a08a',ray:'#f5c9b8',dark:'#a8442a'},
+  F:{name:'Firsts',bg:'#98d1c4',ray:'#cbebe2',dark:'#2c7a6d'},
+  S:{name:'Service',bg:'#eccb82',ray:'#f8e7bd',dark:'#a8731c'},
+  H:{name:'Habits',bg:'#a6c2e6',ray:'#d3e2f4',dark:'#3b5a96'},
+  R:{name:'Range',bg:'#c5b0de',ray:'#e4d8f0',dark:'#684c96'},
+  B:{name:'Backer',bg:'#b5d796',ray:'#dcedc9',dark:'#4c7c2c'},
+};
+const ACH_FAM={broke_main:'M',smoke_jumper:'M',self_healing:'M',clean_sweep:'M',first_contact:'F',signal_report:'F',qsl_confirmed:'F',
+  dxcc:'S',rag_chewer:'S',net_control:'S',elmer:'S',test_pilot:'S',bug_hunter:'S',fast_qsy:'H',grey_line:'H',contest_weekend:'H',
+  every_release:'H',was:'R',old_timer:'R',backer:'B'};
+const K={ink:'#2a2622',cream:'#f6edd6',gold:'#d8b45a',red:'#d2432f',orange:'#f08a2a',yellow:'#ffd04a',white:'#ffffff',steel:'#7d8b96',wood:'#8a5a32',green:'#4f9a4a',blue:'#3f74b8',skin:'#f2c79a'};
+const pg=(p,c,x='')=>`<polygon points="${p}" fill="${c}" ${x}/>`;
+const ci=(x,y,r,c,x2='')=>`<circle cx="${x}" cy="${y}" r="${r}" fill="${c}" ${x2}/>`;
+const pa=(d,c,x='')=>`<path d="${d}" fill="${c}" ${x}/>`;
+const ln=(d,c,w,x='')=>`<path d="${d}" fill="none" stroke="${c}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" ${x}/>`;
+const tx=(x,y,s,c,t,x2='')=>`<text x="${x}" y="${y}" text-anchor="middle" font-size="${s}" font-weight="800" fill="${c}" font-family="'Arial Black','Arial',sans-serif" ${x2}>${t}</text>`;
+const O=`stroke="${K.ink}" stroke-width="1.1" stroke-linejoin="round"`;   // cartoon outline
+const rays=(c,x=32,y=30,n=18,r=60)=>{let s='';for(let i=0;i<n;i++){const a=i*2*Math.PI/n,b=a+Math.PI/n;
+  s+=pg(`${x},${y} ${(x+r*Math.cos(a)).toFixed(1)},${(y+r*Math.sin(a)).toFixed(1)} ${(x+r*Math.cos(b)).toFixed(1)},${(y+r*Math.sin(b)).toFixed(1)}`,c)}return s};
+const waves=(x,y,c,rs=[4,7,10],w=1.3)=>rs.map(r=>ln(`M${(x-r*.7).toFixed(1)},${(y-r*.7).toFixed(1)} A${r},${r} 0 0 1 ${(x+r*.7).toFixed(1)},${(y-r*.7).toFixed(1)}`,c,w)).join('');
+const flame=(x,y,s=1)=>pa(`M${x},${y} q${-5*s},${-3*s} ${-1*s},${-10*s} q${1*s},${4*s} ${3*s},${3*s} q${0},${-4*s} ${3*s},${-6*s} q${3*s},${8*s} ${-5*s},${13*s} Z`,K.orange,O)+
+  pa(`M${x+.6*s},${y-.6*s} q${-2.4*s},${-2*s} ${0},${-6*s} q${1.4*s},${2.4*s} ${2.4*s},${2*s} q${.6*s},${3*s} ${-2.4*s},${4*s} Z`,K.yellow);
+const ART={
+  broke_main:()=>ci(18,14,6,'#8a7a76',`opacity=".7"`)+ci(26,9,7,'#9a8a86',`opacity=".7"`)+ci(44,12,5.5,'#8a7a76',`opacity=".7"`)+
+    pa('M30,32 h4 v22 h-4 Z',K.wood,O)+
+    pa('M12,17 h40 v15 h-40 Z',K.white,O)+pa('M12,17 h40 v15 h-40 Z',K.red,`opacity=".9"`)+
+    tx(32,28.6,9,K.white,'MAIN')+ln('M31,15 l-3,6 l5,3 l-4,4 l3,5',K.ink,1.5)+ln('M31,15 l-3,6 l5,3 l-4,4 l3,5',K.yellow,.6)+
+    flame(20,54,1.1)+flame(42,54,.9)+flame(31,55,.7),
+  smoke_jumper:()=>pa('M14,18 Q32,-4 50,18 Z',K.white,O)+pa('M23,18 Q32,-1 41,18 Z',K.red,O)+
+    ln('M14,18 L30,34 M50,18 L34,34 M23,18 L31,34 M41,18 L33,34',K.ink,.6)+
+    ci(32,33,3,K.skin,O)+pa('M28.5,31.6 a3.6,3 0 0 1 7,0 Z',K.yellow,O)+pa('M28,36 h8 v9 h-8 Z',K.orange,O)+
+    ln('M28,45 l-2,6 M36,45 l2,6',K.ink,1.8)+ln('M36,38 l6,4',K.ink,1.6)+pa('M41,40 h6 v4 h-6 Z',K.red,O)+ln('M47,42 q4,2 6,7','#cfe6f2',1.6)+
+    flame(52,55,.8)+flame(12,55,.9),
+  self_healing:()=>pa('M32,52 C10,38 8,20 20,16 C26,14 30,18 32,22 C34,18 38,14 44,16 C56,20 54,38 32,52 Z',K.red,O)+
+    ln('M22,26 l-4,-2',K.white,1.5,`opacity=".7"`)+
+    `<g transform="rotate(-35 32 32)">${pa('M18,28 h28 v8 h-28 Z',K.cream,O)}${pa('M28,28 h8 v8 h-8 Z','#e8d6b0',O)}${ci(30.5,30.5,.6,K.ink)+ci(33.5,30.5,.6,K.ink)+ci(30.5,33.5,.6,K.ink)+ci(33.5,33.5,.6,K.ink)}</g>`+
+    ln('M50,10 l2,-4 l2,4 l4,2 l-4,2 l-2,4 l-2,-4 l-4,-2 Z',K.white,.8)+ln('M10,10 l1.4,-3 l1.4,3 l3,1.4 l-3,1.4 l-1.4,3 l-1.4,-3 l-3,-1.4 Z',K.white,.8),
+  clean_sweep:()=>ln('M44,6 L26,40',K.wood,3.4)+ln('M44,6 L26,40',K.ink,.5,`opacity=".4"`)+
+    pa('M20,38 l12,6 l-6,12 q-8,-1 -14,-7 Z',K.yellow,O)+ln('M18,44 l-4,6 M22,46 l-4,7 M26,48 l-2,6',K.ink,.7)+
+    pa('M23,36 l10,5 l-1.6,3 l-10,-5 Z',K.red,O)+
+    [[48,30,1],[54,42,.8],[40,48,.7],[12,22,.8]].map(([x,y,s])=>ln(`M${x},${y-4*s} V${y+4*s} M${x-4*s},${y} H${x+4*s}`,K.white,1.4)).join(''),
+  first_contact:()=>pa('M24,16 h16 v36 h-16 Z',K.steel,O)+pa('M26,20 h12 v8 h-12 Z','#bfe6b0',O)+tx(32,26.6,4.6,K.ink,'CQ')+
+    [32,38,44].map(y=>ci(29,y,1.4,K.ink)+ci(35,y,1.4,K.ink)).join('')+ln('M36,16 V2',K.ink,1.6)+ci(36,2,1.4,K.red)+
+    waves(36,6,K.white,[5,9,13],1.4)+pa('M40,22 h3 v12 h-3 Z','#4a5560',O),
+  signal_report:()=>pa('M8,42 A24,24 0 0 1 56,42 Z',K.cream,O)+
+    [...Array(9)].map((_,i)=>{const a=Math.PI+(i+.5)*Math.PI/9,x1=32+20*Math.cos(a),y1=42+20*Math.sin(a),x2=32+17*Math.cos(a),y2=42+17*Math.sin(a);
+      return ln(`M${x1.toFixed(1)},${y1.toFixed(1)} L${x2.toFixed(1)},${y2.toFixed(1)}`,i>6?K.red:K.ink,1)}).join('')+
+    tx(15,36,4,K.ink,'1')+tx(32,28,4,K.ink,'5')+tx(48,34,4.4,K.red,'9')+ln('M32,42 L47,27',K.red,1.8)+ci(32,42,2.4,K.ink)+
+    pa('M6,42 h52 v8 h-52 Z','#5a4a40',O)+tx(32,48.6,5.4,K.yellow,'59+'),
+  qsl_confirmed:()=>`<g transform="rotate(-8 32 30)">${pa('M8,14 h48 v30 h-48 Z',K.cream,O)}${pa('M44,17 h9 v10 h-9 Z',K.red,O)}${ci(48.5,22,2.6,'none',`stroke="${K.cream}" stroke-width=".8"`)}`+
+    `${tx(24,26,8,K.blue,'QSL')}${ln('M12,32 h26 M12,36 h22 M12,40 h18',K.ink,.7,`opacity=".55"`)}</g>`+
+    ci(46,44,9,K.green,O)+ln('M41,44 l4,4 l7,-8',K.white,2.4),
+  dxcc:()=>ci(32,30,20,K.blue,O)+pa('M20,18 q6,-4 10,2 q-2,6 -8,6 q-4,4 -6,-2 Z',K.green,O)+pa('M36,30 q8,-6 12,2 q0,10 -6,12 q-6,-4 -6,-14 Z',K.green,O)+
+    pa('M24,38 q4,2 4,8 q-4,0 -6,-4 Z',K.green,O)+`<ellipse cx="32" cy="30" rx="8" ry="20" fill="none" stroke="${K.white}" stroke-width=".6" opacity=".6"/>`+
+    ln('M12,30 H52 M15,20 H49 M15,40 H49',K.white,.6,`opacity=".6"`)+ln('M6,44 Q32,-12 58,40',K.yellow,1.4,`stroke-dasharray="2 2"`)+ci(6,44,2,K.red,O)+ci(58,40,2,K.red,O),
+  rag_chewer:()=>pa('M6,8 h30 a4,4 0 0 1 4,4 v12 a4,4 0 0 1 -4,4 h-18 l-6,6 v-6 h-6 a4,4 0 0 1 -4,-4 v-12 a4,4 0 0 1 4,-4 Z',K.white,O)+
+    ln('M10,15 h22 M10,20 h16',K.ink,1.2,`opacity=".6"`)+
+    pa('M26,24 h30 a4,4 0 0 1 4,4 v10 a4,4 0 0 1 -4,4 h-4 v6 l-6,-6 h-20 a4,4 0 0 1 -4,-4 v-10 a4,4 0 0 1 4,-4 Z',K.yellow,O)+
+    ln('M30,31 h22 M30,36 h14',K.ink,1.2,`opacity=".6"`)+pa('M8,40 h12 v12 h-12 Z',K.cream,O)+ln('M20,43 q5,0 5,4 q0,4 -5,4',K.ink,1.1)+ln('M11,37 q1,-2 0,-4 M15,37 q1,-2 0,-4','#ffffff',1),
+  net_control:()=>pa('M18,50 h28 l-3,-6 h-22 Z','#4a5560',O)+ln('M32,44 V36',K.ink,2.2)+
+    pa('M24,12 a8,8 0 0 1 16,0 v14 a8,8 0 0 1 -16,0 Z',K.steel,O)+ln('M25,12 h14 M25,16 h14 M25,20 h14 M25,24 h14',K.ink,.7,`opacity=".6"`)+
+    ln('M20,26 a12,12 0 0 0 24,0',K.ink,1.6)+waves(14,24,K.white,[4,7],1.3).replace(/A/g,'A')+waves(50,24,K.white,[4,7],1.3)+
+    ci(44,48,1.4,K.red),
+  elmer:()=>pa('M18,22 q14,-16 28,0 q4,18 -14,30 q-18,-12 -14,-30 Z','#9a6a3a',O)+pa('M24,30 q8,-6 16,0 q0,12 -8,16 q-8,-4 -8,-16 Z','#e8cfa0')+
+    ci(25,22,6,K.white,O)+ci(39,22,6,K.white,O)+ci(25,22,2.8,K.ink)+ci(39,22,2.8,K.ink)+ci(26,21,.9,K.white)+ci(40,21,.9,K.white)+
+    pg('30,26 34,26 32,30',K.orange,O)+pa('M16,10 l6,6 l-8,-2 Z','#9a6a3a',O)+pa('M48,10 l-6,6 l8,-2 Z','#9a6a3a',O)+
+    pa('M20,12 h24 v3 h-24 Z',K.ink)+pg('32,6 48,11 32,15 16,11',K.ink)+ln('M46,11 v7',K.yellow,.8)+
+    ln('M10,54 V44',K.green,1.6)+pa('M10,46 q-6,-2 -6,-6 q5,0 6,6 Z',K.green,O)+pa('M10,44 q5,-3 6,-8 q-5,1 -6,8 Z',K.green,O)+ln('M14,54 h44',K.wood,2),
+  fast_qsy:()=>ci(30,32,18,'#3a3f46',O)+ci(30,32,13,K.steel,O)+[...Array(12)].map((_,i)=>{const a=i*Math.PI/6;return ln(`M${(30+15.5*Math.cos(a)).toFixed(1)},${(32+15.5*Math.sin(a)).toFixed(1)} L${(30+17.5*Math.cos(a)).toFixed(1)},${(32+17.5*Math.sin(a)).toFixed(1)}`,K.white,.8)}).join('')+
+    ci(36,25,2.6,'#3a3f46')+ln('M52,16 a24,24 0 0 1 2,26',K.white,1.6)+ln('M56,12 a30,30 0 0 1 3,34',K.white,1.2,`opacity=".7"`)+
+    pg('10,4 4,18 10,18 6,30 18,12 11,12 15,4',K.yellow,O),
+  test_pilot:()=>ln('M58,22 Q61,20 64,21',K.white,1.6,`stroke-dasharray="3 2"`)+
+    pa('M20,30 q18,-6 34,0 q2,2 0,4 q-16,5 -34,0 Z',K.red,O)+pa('M50,28 l6,-10 h3 l-3,12 Z',K.red,O)+
+    pa('M28,22 h16 v3 h-16 Z',K.yellow,O)+pa('M28,37 h16 v3 h-16 Z',K.yellow,O)+ln('M31,25 v12 M41,25 v12',K.ink,.9)+
+    pa('M33,27 q3,-5 7,0 Z','#bfe6f2',O)+ci(36,25.5,2,K.skin,O)+pa('M34,24.6 h4 v-1.4 h-4 Z','#5a4a40')+
+    ci(20,32,2.6,'#5a4a40',O)+ln('M20,26 v12',K.steel,1.4)+ln('M30,44 l-2,6 M42,44 l2,6',K.ink,1)+ci(28,51,2,K.ink)+ci(44,51,2,K.ink),
+  bug_hunter:()=>`<ellipse cx="24" cy="36" rx="9" ry="7" fill="${K.green}" ${O}/>`+ci(16,34,3.6,K.green,O)+ln('M16,36 V40',K.ink,.8)+
+    ln('M20,42 l-3,5 M24,43 v6 M28,42 l3,5 M20,30 l-3,-4 M28,30 l3,-4 M14,32 l-4,-4 M14,32 l-5,0',K.ink,1)+ci(15,33,.8,K.white)+
+    ln('M24,29 V43',K.ink,.8)+ci(21,34,1.2,K.ink)+ci(27,38,1.2,K.ink)+
+    ci(38,24,13,'#cfe9f2',`opacity=".5"`)+ci(38,24,13,'none',`stroke="${K.ink}" stroke-width="3.4"`)+ci(38,24,13,'none',`stroke="${K.gold}" stroke-width="1.6"`)+
+    ln('M47,33 L58,48',K.ink,5)+ln('M47,33 L58,48',K.wood,3)+ln('M33,16 q2,-3 6,-2',K.white,1.4),
+  grey_line:()=>ci(32,30,20,K.yellow,O)+pa('M32,10 A20,20 0 0 0 32,50 Q22,30 32,10 Z','#2c3a66')+
+    ci(22,22,1,K.cream)+ci(18,32,.8,K.cream)+ci(25,40,.8,K.cream)+pa('M17,26 a5,5 0 1 0 6,6 a4,4 0 1 1 -6,-6 Z',K.cream)+
+    ci(40,26,5,'#fff3b0',O)+[...Array(8)].map((_,i)=>{const a=i*Math.PI/4;return ln(`M${(40+7*Math.cos(a)).toFixed(1)},${(26+7*Math.sin(a)).toFixed(1)} L${(40+9.5*Math.cos(a)).toFixed(1)},${(26+9.5*Math.sin(a)).toFixed(1)}`,K.orange,1.2)}).join('')+
+    ln('M32,10 Q22,30 32,50',K.ink,1.1)+ci(32,30,20,'none',O),
+  contest_weekend:()=>ln('M46,52 V6',K.ink,1.6)+ln('M46,8 Q30,14 8,30 M46,8 Q54,14 60,22',K.ink,.7)+pg('46,5 53,7 46,9',K.red,O)+
+    pg('6,52 22,26 38,52',K.orange,O)+pg('22,26 22,52 28,52',K.red,`opacity=".55"`)+pa('M18,52 l4,-10 l4,10 Z',K.ink)+
+    pa('M4,52 h56 v3 h-56 Z',K.green)+ci(52,40,7,K.white,O)+ln('M52,36 v4 l3,2',K.ink,1)+tx(52,51,3.4,K.ink,'24H'),
+  was:()=>pa('M6,12 l16,-4 l20,4 l16,-4 v36 l-16,4 l-20,-4 l-16,4 Z',K.cream,O)+ln('M22,8 v36 M42,12 v36',K.ink,.7,`opacity=".5"`)+
+    pa('M6,12 l16,-4 v36 l-16,4 Z','#e4d4ac')+pa('M42,12 l16,-4 v36 l-16,4 Z','#e4d4ac')+
+    ln('M10,30 q8,-10 14,0 t16,-6 t14,10',K.blue,1,`stroke-dasharray="2 1.6"`)+
+    [[12,22,K.red],[24,34,K.orange],[33,18,K.green],[44,28,K.blue],[52,40,'#8a4ab0']].map(([x,y,c])=>pa(`M${x},${y} q-4,-5 0,-8 q4,3 0,8 Z`,c,O)+ci(x,y-5.4,1.1,K.white)).join(''),
+  old_timer:()=>ln('M32,6 q-8,-4 -10,4',K.gold,1.6)+ci(32,9,2.6,K.gold,O)+ci(32,32,20,K.gold,O)+ci(32,32,16.5,K.cream,O)+
+    [...Array(12)].map((_,i)=>{const a=i*Math.PI/6;return ln(`M${(32+13.5*Math.cos(a)).toFixed(1)},${(32+13.5*Math.sin(a)).toFixed(1)} L${(32+15.5*Math.cos(a)).toFixed(1)},${(32+15.5*Math.sin(a)).toFixed(1)}`,K.ink,i%3?.7:1.4)}).join('')+
+    ln('M32,32 L32,21 M32,32 L40,36',K.ink,1.6)+ci(32,32,1.4,K.red)+ln('M22,46 q10,4 20,0',K.white,1,`opacity=".5"`),
+  every_release:()=>pa('M10,12 h44 v40 h-44 Z',K.white,O)+pa('M10,12 h44 v9 h-44 Z',K.red,O)+ln('M20,8 v8 M44,8 v8',K.ink,2)+
+    [...Array(15)].map((_,i)=>{const x=15+(i%5)*8,y=26+Math.floor(i/5)*8;return i>=5&&i<10?ln(`M${x-2.4},${y+1.6} l2,2.4 l3.6,-5`,K.green,1.6):ci(x+.6,y+.6,1.1,'#c8c0b0')}).join('')+
+    tx(32,19.6,5.6,K.white,'RELEASE'),
+  backer:()=>`<ellipse cx="32" cy="50" rx="18" ry="4" fill="#a8731c" ${O}/>`+pa('M14,44 h36 v6 h-36 Z',K.gold,O)+`<ellipse cx="32" cy="44" rx="18" ry="4" fill="${K.yellow}" ${O}/>`+
+    pa('M16,36 h32 v6 h-32 Z',K.gold,O)+`<ellipse cx="32" cy="36" rx="16" ry="4" fill="${K.yellow}" ${O}/>`+tx(32,38,5,'#a8731c','$')+
+    pa('M32,28 C20,20 20,8 27,7 C30,7 32,10 32,12 C32,10 34,7 37,7 C44,8 44,20 32,28 Z',K.red,O)+ln('M27,12 l-1.6,-1',K.white,1.2),
+};
+// Card text: wrap a description into at most four short lines.
+function achWrap(s,w=26){const out=[];let line='';for(const word of (s||'').split(/\s+/)){if((line+' '+word).trim().length>w){out.push(line.trim());line=word}else line+=' '+word}
+  if(line.trim())out.push(line.trim());return out.slice(0,4)}
+function achSvg(id,name,opt={}){
+  const f=ACH_FAMILY[ACH_FAM[id]||'S'],t=(name||'').toUpperCase(),fs=Math.min(5.4,52/(t.length*.66));
+  const rank=opt.rank!=null?String(opt.rank):'1',stars=opt.stars||1,lines=achWrap(opt.desc);
+  return `<svg class="ach${opt.locked?' locked':''}" viewBox="0 0 72 100" role="img" aria-label="${esc(name)}">`+
+    `<rect x=".5" y=".5" width="71" height="99" rx="4" fill="${K.gold}" stroke="#8a6a2a" stroke-width="1"/>`+
+    `<rect x="2.6" y="2.6" width="66.8" height="94.8" rx="2.4" fill="${f.bg}"/>`+
+    `<svg x="3.6" y="13.6" width="64.8" height="57" viewBox="0 0 64 56">${rays(f.ray)}${(ART[id]||(()=>''))()}</svg>`+
+    `<rect x="3.6" y="13.6" width="64.8" height="57" fill="none" stroke="${K.gold}" stroke-width=".6"/>`+
+    `<rect x="14" y="3.6" width="54.4" height="8.6" fill="${f.dark}"/>`+
+    `<text x="41.2" y="${8+fs*.36}" text-anchor="middle" font-size="${fs.toFixed(2)}" font-weight="800" letter-spacing=".2" fill="#fff" font-family="'Arial Narrow','Roboto Condensed','Arial',sans-serif">${esc(t)}</text>`+
+    `<rect x="3.6" y="3.6" width="9.4" height="8.6" fill="${K.cream}" stroke="${K.ink}" stroke-width=".6"/>`+
+    `<text x="8.3" y="${rank.length>2?9.9:10.4}" text-anchor="middle" font-size="${rank.length>2?4.4:rank.length>1?5.6:7}" font-weight="800" fill="${K.ink}" font-family="'Arial Black','Arial',sans-serif">${esc(rank)}</text>`+
+    `<rect x="5" y="72.4" width="62" height="19" fill="${K.cream}" stroke="${f.dark}" stroke-width=".5"/>`+
+    lines.map((l,i)=>`<text x="36" y="${77.4+i*4.1-(lines.length-1)*0.4}" text-anchor="middle" font-size="3.3" fill="${K.ink}" font-family="Georgia,'Times New Roman',serif">${esc(l)}</text>`).join('')+
+    `<rect x="5" y="92.6" width="5.6" height="4.6" fill="${f.dark}"/><text x="7.8" y="96.3" text-anchor="middle" font-size="3.8" font-weight="800" fill="#fff" font-family="Arial,sans-serif">${ACH_FAM[id]||'S'}</text>`+
+    `<rect x="${67-stars*5.2-1}" y="92.6" width="${stars*5.2+1}" height="4.6" fill="${K.cream}" stroke="${f.dark}" stroke-width=".4"/>`+
+    [...Array(stars)].map((_,i)=>{const x=67-i*5.2-2.6,y=94.9;return pg([...Array(10)].map((_,k)=>{const a=-Math.PI/2+k*Math.PI/5,r=k%2?.85:2;return `${(x+r*Math.cos(a)).toFixed(2)},${(y+r*Math.sin(a)).toFixed(2)}`}).join(' '),f.dark)}).join('')+
+    `</svg>`;
+}
+// Rank box and stars for an earned badge: its tally, tier or streak.
+function achOpt(a,b){const tier=b&&b.id==='dxcc'?ACH_TIERS.indexOf(b.tier)+1:1;
+  return {desc:a.desc,rank:b?(b.tier||b.count||1):1,stars:Math.max(tier,1),locked:!b}}
+const ACH_TIERS=[10,50,100,250];
+function achTitle(a,b){return a.name+': '+a.desc+(b?' Earned '+fmtDay(b.at)+(b.ref?' ('+b.ref+')':'')+(b.count>1?' · ×'+b.count:'')+(b.areas?' · '+b.areas.join(', '):''):'')}
+function achShelf(list){const cat=D.achievements||[];
+  return list.map(b=>{const a=cat.find(x=>x.id===b.id);if(!a)return '';
+    const card=achSvg(a.id,a.name,achOpt(a,b));
+    return b.ref?`<a class="card" href="${refUrl(b.ref)}" target="_blank" title="${esc(achTitle(a,b))}">${card}</a>`:`<span class="card" title="${esc(achTitle(a,b))}">${card}</span>`}).join('')}
+function renderAchievements(){const el=document.getElementById('rules-ach');if(!el||!D)return;
+  const n={};for(const b of Object.values(D.bios||{}))for(const x of (b.badges||[]))n[x.id]=(n[x.id]||0)+1;
+  el.innerHTML=(D.achievements||[]).map(a=>`<div class="cat"><span class="card" title="${esc(a.name+': '+a.desc)}">${achSvg(a.id,a.name,{desc:a.desc})}</span><span class="dim">${n[a.id]?'Earned by '+n[a.id]:'Not earned yet'}</span></div>`).join('')}
 function fmtDay(s){return s?new Date(s).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):'—'}
 // Contributor bio (all time; the same whichever window is shown).
 // The bio is lifetime: its points come from the all-time standings, whatever tab is open.
@@ -338,6 +486,7 @@ function bioHtml(r){
     `<div class="stats">${stat(n(c.issues),'Issues')}${stat(n(c.prs),'PRs')}${stat(n(c.merged),'Merged')}${stat(n(c.comments),'Comments')}`+
     `${stat(n(c.reviews),'Reviews')}${stat(n(c.merges),'Merges')}${stat(n(c.discussions),'Discussions')}${stat(n(allTimeTotal(r)),'Points')}</div>`+
     (awards?`<div class="awards">${awards}</div>`:'')+
+    ((b.badges||[]).length?`<div class="ph2" style="margin-top:12px">Achievements &middot; ${b.badges.length} of ${(D.achievements||[]).length}</div><div class="shelf">${achShelf(b.badges)}</div>`:'')+
     ((b.areas||[]).length?`<div class="chips" title="Most frequent area labels on their issues and PRs">${b.areas.map(a=>`<span class="chip">${esc(a)}</span>`).join('')}</div>`:'')+
     `</div>`;
 }
