@@ -1851,6 +1851,22 @@ def _main_ci_note_rate(headers):
     except (TypeError, ValueError):
         pass
 
+def _main_ci_runs(opener, hdrs, wid):
+    """A workflow's runs on main, newest first. GitHub's branch-filtered list
+    can lag by days; the unfiltered list is current but mixes in PR branches.
+    Both are fetched and merged by run id (the fresher copy of each wins)."""
+    n = MAIN_CI_PERF_RUNS + 5
+    by_id = {}
+    for q in (f'?branch=main&per_page={n}', f'?per_page={n * 2}'):
+        for r in _main_ci_get(opener, hdrs, f'actions/workflows/{wid}/runs{q}').get('workflow_runs', []):
+            if r.get('head_branch') != 'main':
+                continue
+            old = by_id.get(r['id'])
+            if not old or (r.get('updated_at') or '') >= (old.get('updated_at') or ''):
+                by_id[r['id']] = r
+    return sorted(by_id.values(), key=lambda r: r.get('created_at') or '', reverse=True)[:n]
+
+
 def _main_ci_get(opener, hdrs, path):
     import urllib.request
     url = path if path.startswith('https://') else f'https://api.github.com/repos/{MAIN_CI_REPO}/{path}'
@@ -2059,8 +2075,7 @@ def fetch_main_ci(opener, hdrs, publish=None, prev=None):
             wid = _main_ci_wf_ids.get(path) if path.startswith('dynamic/') else path
             if wid is None:
                 raise ValueError(f'workflow id unresolved for {path}')
-            runs = _main_ci_get(opener, hdrs,
-                                f'actions/workflows/{wid}/runs?branch=main&per_page={MAIN_CI_PERF_RUNS + 5}').get('workflow_runs', [])
+            runs = _main_ci_runs(opener, hdrs, wid)
             # A cancelled/skipped run is not a verdict on main; prefer the
             # newest run that actually concluded success or failure.
             latest = runs[0] if runs else None
