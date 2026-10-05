@@ -2264,8 +2264,9 @@ def _leaderboard_page():
 # and must have synced recently. Drift raises a dashboard alert.
 MIRROR_URL = 'https://contributors.aethersdr.com'
 MIRROR_CHECK_SECS = 300
-MIRROR_MAX_LAG = 1800          # seconds a mirror may trail before it's drift
-MIRROR_SYNC_GRACE = 1200       # a hash this recent may still be syncing
+MIRROR_MAX_LAG = 1800          # how long a superseded hash is remembered (x2)
+MIRROR_PUSH_GAP = 600          # at most one sync request per 10 min (KV write quota)
+MIRROR_SYNC_GRACE = 1800       # a hash this recent may still be syncing (push gap + cron)
 MIRROR_REALERT_SECS = 6 * 3600
 
 def _mirror_request(path, method='GET', headers=None):
@@ -2280,7 +2281,7 @@ def mirror_watch():
     token = os.environ.get('CONTRIBUTORS_SYNC_TOKEN', '')
     seen = {}                      # content_hash -> first time seen here
     page_seen = {}                 # page_sha256 -> first time seen here
-    pushed, last_check, alerted = None, 0.0, {'reason': None, 'at': 0.0}
+    pushed, last_push, last_check, alerted = None, 0.0, 0.0, {'reason': None, 'at': 0.0}
     while True:
         try:
             d = leaderboard_data()
@@ -2290,9 +2291,12 @@ def mirror_watch():
             for book in (seen, page_seen):
                 for k in [k for k, t in book.items() if now - t > 2 * MIRROR_MAX_LAG and k not in (h, ph)]:
                     book.pop(k, None)
-            # Push: ask the mirror to sync when the standings or the page changed.
-            if token and (h, ph) != pushed:
+            # Push: ask the mirror to sync when the standings or the page
+            # changed, at most once per MIRROR_PUSH_GAP; a change made inside
+            # the gap goes out when it ends.
+            if token and (h, ph) != pushed and now - last_push >= MIRROR_PUSH_GAP:
                 try:
+                    last_push = now
                     _mirror_request('/sync', 'POST', {'X-Sync-Token': token})
                     pushed = (h, ph)
                 except Exception as _e:
@@ -2304,12 +2308,14 @@ def mirror_watch():
                 try:
                     _, body = _mirror_request('/healthz')
                     m = json.loads(body)
-                    age = m.get('age_seconds')
                     mh, mph = m.get('content_hash'), m.get('page_sha256')
-                    if age is None or age > MIRROR_MAX_LAG:
-                        reason = f"last synced {round((age or 0) / 60)} min ago" if age is not None else 'has never synced'
-                        if m.get('last_error'):
-                            reason += f" ({m['last_error'][:80]})"
+                    # The mirror writes only when its copy changes, so how
+                    # long ago it last synced says nothing on a quiet day;
+                    # drift is a hash that hasn't caught up, or an error.
+                    if not m.get('synced_at'):
+                        reason = 'has never synced'
+                    elif not m.get('healthy', True) and m.get('last_error'):
+                        reason = f"sync failing ({m['last_error'][:80]})"
                     # A mismatch is drift only once the source's current
                     # version has had time to reach the mirror.
                     elif mph != ph and now - page_seen.get(ph, now) > MIRROR_SYNC_GRACE:

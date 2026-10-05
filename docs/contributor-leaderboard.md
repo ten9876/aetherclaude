@@ -250,12 +250,14 @@ up when this host is unreachable. To keep the two from drifting:
 - The standings carry a content hash and the hash of the page they render
   with; the mirror's `/healthz` reports the hashes it copied, when it synced
   and why, warnings, and the commit it was deployed from.
-- The dashboard asks the mirror to sync (`POST /sync`, shared token) as soon
-  as its standings change; the mirror's 15-minute cron is the fallback.
+- The dashboard asks the mirror to sync (`POST /sync`, shared token) when
+  its standings change, at most every 10 minutes; the mirror's 15-minute cron
+  is the fallback. The mirror writes to KV only what changed (its write quota
+  is 1,000 a day), so `synced_at` is when its copy last changed.
 - Every 5 minutes the dashboard compares the mirror's `/healthz` with its own
-  hashes. A mirror more than 30 minutes behind, serving a different page or
-  different standings once a sync has had 20 minutes to land, reporting a
-  warning, or unreachable raises a dashboard alert.
+  hashes. A mirror that has never synced, whose syncs are failing, serving a
+  different page or different standings once a sync has had 30 minutes to
+  land, reporting a warning, or unreachable raises a dashboard alert.
 - The Worker is deployed only from CI, which stamps the version with the
   commit and checks the mirror reports it.
 
