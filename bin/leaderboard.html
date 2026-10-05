@@ -79,6 +79,16 @@ tr.ev td{background:var(--bg-1);padding:0}
 .shelf{display:grid;grid-template-columns:repeat(auto-fill,minmax(62px,1fr));gap:6px}
 .shelf .card,.cats .card{display:block;transition:transform .12s}.shelf .card:hover{transform:translateY(-2px) scale(1.04)}
 .ach{display:block;width:100%;height:auto;filter:drop-shadow(0 2px 3px rgba(0,0,0,.45))}.ach.locked{filter:grayscale(1);opacity:.35}
+button.card{all:unset;display:block;cursor:pointer;transition:transform .12s}button.card:hover{transform:translateY(-2px) scale(1.04)}button.card:focus-visible{outline:2px solid var(--accent)}
+.flipback{position:fixed;inset:0;background:rgba(3,8,16,.8);display:none;align-items:center;justify-content:center;z-index:70;perspective:1600px}.flipback.show{display:flex}
+.flipwrap{position:relative;display:flex;flex-direction:column;align-items:center;gap:14px;padding:16px}
+.flipwrap .mx{position:absolute;top:4px;right:-30px;background:none;border:0;color:var(--muted);font-size:26px;cursor:pointer;line-height:1}
+.flipper{width:min(380px,82vw,calc((100vh - 150px)*.72));aspect-ratio:72/100;position:relative;transform-style:preserve-3d;transform:rotateY(0) scale(.25);transition:transform .8s cubic-bezier(.2,.75,.25,1)}
+.flipper.open{transform:rotateY(180deg) scale(1)}
+.flipper .face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden}.flipper .front{transform:rotateY(180deg)}
+.flipper .ach{filter:drop-shadow(0 10px 24px rgba(0,0,0,.6))}
+.flipcap{text-align:center;font-size:13px;color:var(--ink);line-height:1.5}.flipcap .hint{margin-top:6px;font-size:11px;font-style:italic;color:var(--gold)}
+.egg{cursor:pointer}.egg circle{transition:fill-opacity .25s}.egg:hover circle{fill-opacity:.35}
 .cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:12px;margin:8px 0 4px}.cats .cat{display:flex;flex-direction:column;gap:4px;font-size:11px;text-align:center}
 .dim{color:var(--muted)}
 .rules{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:2px 24px;font-size:12px}
@@ -127,6 +137,7 @@ td.pts.soft{color:var(--muted);font-weight:500}
 <div class="panel" id="breaks"></div>
 <p class="dim" style="font-size:11px;text-align:center;margin-top:4px">Points depend on the kind of action, never its size. <a href="#" onclick="openRules();return false">How points work</a></p>
 </div>
+<div class="flipback" id="ach-modal" onclick="if(event.target===this||event.target.classList.contains('flipwrap'))achClose()"><div class="flipwrap"><div class="flipper" id="ach-flip"><div class="face back"></div><div class="face front"></div></div><div class="flipcap" id="ach-cap"></div><button class="mx" onclick="achClose()" aria-label="Close">&times;</button></div></div>
 <div class="mback" id="rules-modal" onclick="if(event.target===this)closeRules()"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="rules-title">
 <button class="mx" onclick="closeRules()" aria-label="Close">&times;</button>
 <h2 id="rules-title">How points work</h2>
@@ -319,7 +330,7 @@ function badgeIcons(){
 }
 function openRules(){badgeIcons();renderRules();renderAchievements();document.getElementById('rules-modal').classList.add('show');document.body.style.overflow='hidden'}
 function closeRules(){document.getElementById('rules-modal').classList.remove('show');document.body.style.overflow=''}
-document.addEventListener('keydown',e=>{if(e.key==='Escape')closeRules()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){achClose();closeRules()}});
 if(location.hash==='#rules')setTimeout(openRules,0);
 // Achievement badges, drawn as collectible perk cards: gold frame, rank box,
 // title banner, a sunburst illustration, the description and rank stars.
@@ -428,6 +439,23 @@ const ART={
     pa('M16,36 h32 v6 h-32 Z',K.gold,O)+`<ellipse cx="32" cy="36" rx="16" ry="4" fill="${K.yellow}" ${O}/>`+tx(32,38,5,'#a8731c','$')+
     pa('M32,28 C20,20 20,8 27,7 C30,7 32,10 32,12 C32,10 34,7 37,7 C44,8 44,20 32,28 Z',K.red,O)+ln('M27,12 l-1.6,-1',K.white,1.2),
 };
+// The easter egg: one detail of each illustration (on the 64x56 canvas)
+// that, on the enlarged card, links to the entry that earned the badge.
+const ACH_EGG={broke_main:[31,24,5],smoke_jumper:[44,42,4],self_healing:[52,10,4],clean_sweep:[48,30,4],first_contact:[36,2.5,3.2],
+  signal_report:[48,32,3.6],qsl_confirmed:[47,19,4.4],dxcc:[58,40,3.2],rag_chewer:[13,34,3.2],net_control:[44,48,3],elmer:[46,15,3],
+  fast_qsy:[11,15,5],test_pilot:[36,25.5,3],bug_hunter:[15,33,3],grey_line:[20,30,4],contest_weekend:[49,7,3.2],was:[52,36,3.4],
+  old_timer:[32,9,3.2],every_release:[47,33,3.4],backer:[32,17,6]};
+const achEgg=(id,e)=>{const [x,y,r]=ACH_EGG[id]||[32,28,4];
+  return `<a href="${esc(e.url)}" target="_blank" class="egg"><title>${esc(e.title)}</title><circle cx="${x}" cy="${y}" r="${r}" fill="#fff" fill-opacity="0"/></a>`};
+// The back of a card: what you see before it flips over.
+function achBack(id){const f=ACH_FAMILY[ACH_FAM[id]||'S'];
+  return `<svg class="ach" viewBox="0 0 72 100"><rect x=".5" y=".5" width="71" height="99" rx="4" fill="${K.gold}" stroke="#8a6a2a"/>`+
+    `<rect x="2.6" y="2.6" width="66.8" height="94.8" rx="2.4" fill="${f.dark}"/><svg x="2.6" y="2.6" width="66.8" height="94.8" viewBox="0 0 66.8 94.8">${rays('rgba(255,255,255,.08)',33.4,47.4,24,90)}</svg>`+
+    `<rect x="6" y="6" width="60" height="88" rx="2" fill="none" stroke="${K.gold}" stroke-width=".8"/>`+
+    ci(36,46,17,K.cream,`stroke="${K.gold}" stroke-width="2"`)+`<g transform="translate(4,18)">${ln('M32,38 L32,18 M28,38 L32,18 L36,38 M29.5,31 h5 M30.8,25 h2.4',K.ink,1.2)}${ci(32,17,1.3,K.red)}${waves(32,17,f.dark,[4,7],1.3)}</g>`+
+    `<text x="36" y="76" text-anchor="middle" font-size="7" font-weight="800" letter-spacing=".6" fill="${K.cream}" font-family="'Arial Black',Arial,sans-serif">AETHERSDR</text>`+
+    `<text x="36" y="83" text-anchor="middle" font-size="4.2" letter-spacing="1.6" fill="${K.gold}" font-family="Arial,sans-serif">LOGBOOK</text>`+
+    `<text x="36" y="20" text-anchor="middle" font-size="4" letter-spacing="1.4" fill="${K.gold}" font-family="Arial,sans-serif">ACHIEVEMENT</text></svg>`}
 // Card text: wrap a description into at most four short lines.
 function achWrap(s,w=26){const out=[];let line='';for(const word of (s||'').split(/\s+/)){if((line+' '+word).trim().length>w){out.push(line.trim());line=word}else line+=' '+word}
   if(line.trim())out.push(line.trim());return out.slice(0,4)}
@@ -437,7 +465,7 @@ function achSvg(id,name,opt={}){
   return `<svg class="ach${opt.locked?' locked':''}" viewBox="0 0 72 100" role="img" aria-label="${esc(name)}">`+
     `<rect x=".5" y=".5" width="71" height="99" rx="4" fill="${K.gold}" stroke="#8a6a2a" stroke-width="1"/>`+
     `<rect x="2.6" y="2.6" width="66.8" height="94.8" rx="2.4" fill="${f.bg}"/>`+
-    `<svg x="3.6" y="13.6" width="64.8" height="57" viewBox="0 0 64 56">${rays(f.ray)}${(ART[id]||(()=>''))()}</svg>`+
+    `<svg x="3.6" y="13.6" width="64.8" height="57" viewBox="0 0 64 56">${rays(f.ray)}${(ART[id]||(()=>''))()}${opt.egg?achEgg(id,opt.egg):''}</svg>`+
     `<rect x="3.6" y="13.6" width="64.8" height="57" fill="none" stroke="${K.gold}" stroke-width=".6"/>`+
     `<rect x="14" y="3.6" width="54.4" height="8.6" fill="${f.dark}"/>`+
     `<text x="41.2" y="${8+fs*.36}" text-anchor="middle" font-size="${fs.toFixed(2)}" font-weight="800" letter-spacing=".2" fill="#fff" font-family="'Arial Narrow','Roboto Condensed','Arial',sans-serif">${esc(t)}</text>`+
@@ -455,10 +483,24 @@ function achOpt(a,b){const tier=b&&b.id==='dxcc'?ACH_TIERS.indexOf(b.tier)+1:1;
   return {desc:a.desc,rank:b?(b.tier||b.count||1):1,stars:Math.max(tier,1),locked:!b}}
 const ACH_TIERS=[10,50,100,250];
 function achTitle(a,b){return a.name+': '+a.desc+(b?' Earned '+fmtDay(b.at)+(b.ref?' ('+b.ref+')':'')+(b.count>1?' · ×'+b.count:'')+(b.areas?' · '+b.areas.join(', '):''):'')}
-function achShelf(list){const cat=D.achievements||[];
+function achShelf(list,login){const cat=D.achievements||[];
   return list.map(b=>{const a=cat.find(x=>x.id===b.id);if(!a)return '';
-    const card=achSvg(a.id,a.name,achOpt(a,b));
-    return b.ref?`<a class="card" href="${refUrl(b.ref)}" target="_blank" title="${esc(achTitle(a,b))}">${card}</a>`:`<span class="card" title="${esc(achTitle(a,b))}">${card}</span>`}).join('')}
+    return `<button type="button" class="card" title="${esc(a.name)}" onclick="event.stopPropagation();achOpen('${esc(login)}','${a.id}')">${achSvg(a.id,a.name,achOpt(a,b))}</button>`}).join('')}
+// Click a card: its back appears, then it flips over and grows. One detail
+// of the picture (ACH_EGG) links to the entry that earned it.
+function achOpen(login,id){
+  const b=(((D.bios||{})[login]||{}).badges||[]).find(x=>x.id===id),a=(D.achievements||[]).find(x=>x.id===id);if(!a||!b)return;
+  const who=((D.bios||{})[login]||{}).name||login,m=document.getElementById('ach-modal'),fl=document.getElementById('ach-flip');
+  const egg=b.ref?{url:refUrl(b.ref),title:'You found it! '+b.ref.replace('#',' #')+' earned '+who+' this card.'}:null;
+  fl.querySelector('.back').innerHTML=achBack(id);
+  fl.querySelector('.front').innerHTML=achSvg(a.id,a.name,Object.assign(achOpt(a,b),{egg}));
+  document.getElementById('ach-cap').innerHTML=`<b>${esc(a.name)}</b> &middot; ${esc(who)}<br><span class="dim">Earned ${fmtDay(b.at)}`+
+    (b.id==='dxcc'?` &middot; ${b.count.toLocaleString()} merged PRs`:b.count>1?` &middot; &times;${b.count}`:'')+(b.areas?` &middot; ${esc(b.areas.join(', '))}`:'')+`</span>`+
+    (egg?`<div class="hint">Something in the picture remembers where it was earned.</div>`:'');
+  fl.classList.remove('open');m.classList.add('show');document.body.style.overflow='hidden';
+  void fl.offsetWidth;requestAnimationFrame(()=>requestAnimationFrame(()=>fl.classList.add('open')));
+}
+function achClose(){const m=document.getElementById('ach-modal');if(m.classList.contains('show')){m.classList.remove('show');document.getElementById('ach-flip').classList.remove('open');document.body.style.overflow=''}}
 function renderAchievements(){const el=document.getElementById('rules-ach');if(!el||!D)return;
   const n={};for(const b of Object.values(D.bios||{}))for(const x of (b.badges||[]))n[x.id]=(n[x.id]||0)+1;
   el.innerHTML=(D.achievements||[]).map(a=>`<div class="cat"><span class="card" title="${esc(a.name+': '+a.desc)}">${achSvg(a.id,a.name,{desc:a.desc})}</span><span class="dim">${n[a.id]?'Earned by '+n[a.id]:'Not earned yet'}</span></div>`).join('')}
@@ -486,7 +528,7 @@ function bioHtml(r){
     `<div class="stats">${stat(n(c.issues),'Issues')}${stat(n(c.prs),'PRs')}${stat(n(c.merged),'Merged')}${stat(n(c.comments),'Comments')}`+
     `${stat(n(c.reviews),'Reviews')}${stat(n(c.merges),'Merges')}${stat(n(c.discussions),'Discussions')}${stat(n(allTimeTotal(r)),'Points')}</div>`+
     (awards?`<div class="awards">${awards}</div>`:'')+
-    ((b.badges||[]).length?`<div class="ph2" style="margin-top:12px">Achievements &middot; ${b.badges.length} of ${(D.achievements||[]).length}</div><div class="shelf">${achShelf(b.badges)}</div>`:'')+
+    ((b.badges||[]).length?`<div class="ph2" style="margin-top:12px">Achievements &middot; ${b.badges.length} of ${(D.achievements||[]).length}</div><div class="shelf">${achShelf(b.badges,r.login)}</div>`:'')+
     ((b.areas||[]).length?`<div class="chips" title="Most frequent area labels on their issues and PRs">${b.areas.map(a=>`<span class="chip">${esc(a)}</span>`).join('')}</div>`:'')+
     `</div>`;
 }

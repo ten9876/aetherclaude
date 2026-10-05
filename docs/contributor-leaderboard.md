@@ -313,3 +313,7 @@ they apply). Families: **M**ain health, **F**irsts, **S**ervice, **H**abits,
 
 The maintainer earns them too; bots don't.
 
+Clicking a card in a bio flips it over into a large view. One detail of each
+illustration (`ACH_EGG`) is a hidden link to the entry that earned it: the PR,
+issue, review, release or donation.
+

@@ -1400,7 +1400,8 @@ def achievements(db, led, now=None):
         merges = [e for e in evs if e[1] == 'pr_merged']
         tiers = [t for t in DXCC_TIERS if len(merges) >= t]
         if tiers:
-            got['dxcc'] = {'id': 'dxcc', 'at': merges[tiers[-1] - 1][2], 'tier': tiers[-1], 'count': len(merges)}
+            got['dxcc'] = {'id': 'dxcc', 'at': merges[tiers[-1] - 1][2], 'ref': merges[tiers[-1] - 1][3],
+                          'tier': tiers[-1], 'count': len(merges)}
         nth({'discussion_comment', 'issue_comment', 'pr_comment'}, 500, 'rag_chewer')
         nth({'merge_other'}, 100, 'net_control')
 
@@ -1445,14 +1446,14 @@ def achievements(db, led, now=None):
                     break
             six = (start + timedelta(days=182)).strftime('%Y-%m-%dT%H:%M:%SZ')
             if fourth and six <= now:
-                earn('old_timer', max(six, fourth))
+                earn('old_timer', max(six, fourth), act[0][3])   # links to where they started
         streak = best = 0
         for w in ws:
             active = any((not w['start'] or e[2] >= w['start']) and e[2] < w['end'] for e in own)
             streak = streak + 1 if active else 0
             best = max(best, streak)
             if streak == 5:
-                earn('every_release', w['end'], None, release=w['tag'])
+                earn('every_release', w['end'], f"release#{w['tag']}", release=w['tag'])
         if 'every_release' in got:
             got['every_release']['count'] = best
         nth({'backer_contribution'}, 1, 'backer')
