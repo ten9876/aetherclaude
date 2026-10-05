@@ -1851,23 +1851,30 @@ def _main_ci_note_rate(headers):
     except (TypeError, ValueError):
         pass
 
+_main_ci_seen = {}   # workflow id -> {run id: run}, every main run seen recently
+
+
 def _main_ci_runs(opener, hdrs, wid):
-    """A workflow's runs on main, newest first. GitHub caches each exact list
-    query, and a branch=main list has been seen stuck weeks in the past while
-    the same filter with another parameter was current. Two differently
-    shaped queries (one with a date window that moves daily) are merged by
-    run id, the fresher copy of each run winning."""
+    """A workflow's runs on main, newest first. GitHub's run lists can answer
+    from a stale snapshot (a branch=main list has come back weeks old, and
+    flips between stale and current from one request to the next). Each poll
+    asks two differently shaped queries and merges them into the runs seen
+    on earlier polls, by run id, the copy updated most recently winning, so
+    one stale answer can't hide runs or revert a finished one."""
     n = MAIN_CI_PERF_RUNS + 5
     since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%d')
-    by_id = {}
+    seen = _main_ci_seen.setdefault(wid, {})
     for q in (f'?branch=main&created=%3E{since}&per_page={n}', f'?branch=main&exclude_pull_requests=true&per_page={n}'):
         for r in _main_ci_get(opener, hdrs, f'actions/workflows/{wid}/runs{q}').get('workflow_runs', []):
             if r.get('head_branch') != 'main':
                 continue
-            old = by_id.get(r['id'])
+            old = seen.get(r['id'])
             if not old or (r.get('updated_at') or '') >= (old.get('updated_at') or ''):
-                by_id[r['id']] = r
-    return sorted(by_id.values(), key=lambda r: r.get('created_at') or '', reverse=True)[:n]
+                seen[r['id']] = r
+    runs = sorted(seen.values(), key=lambda r: r.get('created_at') or '', reverse=True)
+    for r in runs[n * 2:]:
+        seen.pop(r['id'], None)   # bounded: twice the window shown
+    return runs[:n]
 
 
 def _main_ci_get(opener, hdrs, path):
