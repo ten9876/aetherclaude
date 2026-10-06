@@ -279,6 +279,10 @@ week, and the areas they work in most (their issues' and PRs' area labels).
 The collector keeps public GitHub profiles for this (`profiles`), refreshed
 monthly.
 
+Tabs can be linked: `#all-time`, `#this-week` or a release tag
+(`#v26.10.1`) opens that tab, and clicking a tab updates the address so it
+can be shared. `#rules` opens How points work.
+
 ## Achievements
 
 Badges people earn once and keep, drawn as collectible perk cards (original

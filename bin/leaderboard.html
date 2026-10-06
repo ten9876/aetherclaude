@@ -264,6 +264,9 @@ function start(data){
   // Open on the release that just closed for its first 48 hours, so the
   // page isn't a near-empty new week right after a release; otherwise on
   // this week. A tab the viewer picked always wins.
+  // A link can name a tab: #all-time, #this-week or a release tag (#v26.10.1).
+  const linked=hashView();
+  if(linked&&!picked){cur=linked;picked=true}
   if(!picked||!views.some(v=>v.key===cur)){
     const cw=D.windows.find(w=>w.tag==='current'),last=D.windows.filter(w=>w.tag!=='current').slice(-1)[0];
     const fresh=cw&&cw.start&&last&&(Date.now()-new Date(cw.start).getTime())<48*3600*1000;
@@ -272,10 +275,20 @@ function start(data){
   renderRules();
   render();
 }
+function hashView(){
+  const h=decodeURIComponent(location.hash.slice(1));
+  const key=h==='all-time'?'all':h==='this-week'?'current':h;
+  return views.some(v=>v.key===key)?key:null;
+}
+// Keep the address naming the open tab, so it can be shared.
+function linkView(){
+  const h=cur==='all'?'all-time':cur==='current'?'this-week':cur;
+  try{history.replaceState(null,'','#'+encodeURIComponent(h))}catch(e){}
+}
 function num(v){return v>0?`<span>${v}</span>`:v<0?`<span class="neg">${v}</span>`:'<span class="zero">·</span>'}
 function render(){
   const v=views.find(x=>x.key===cur),w=v.w,st=w.standings;
-  document.getElementById('tabs').innerHTML=views.map(x=>`<span class="tab${x.key===cur?' on':''}" onclick="cur='${x.key}';picked=true;render()">${esc(x.name)}</span>`).join('');
+  document.getElementById('tabs').innerHTML=views.map(x=>`<span class="tab${x.key===cur?' on':''}" onclick="cur='${x.key}';picked=true;linkView();render()">${esc(x.name)}</span>`).join('');
   const span=w.start||w.end?`${w.start?fmtD(w.start):'start'} &rarr; ${w.end?fmtD(w.end):'now'}`:'all collected history';
   document.getElementById('sub').innerHTML=`${esc(D.repo)} &middot; ${span} &middot; GitHub data as of ${fmtD(D.collected_at||D.generated_at)}`;
   const top=st.find(r=>r.eligible);
