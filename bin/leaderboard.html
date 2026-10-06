@@ -147,6 +147,13 @@ a:hover{color:var(--aqua)}
 .tab{border-radius:100px;padding:6px 14px;background:rgba(58,167,255,.05);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease,background .18s ease}
 .tab:hover{transform:translateY(-1px);border-color:var(--cyan);background:rgba(93,227,255,.08);color:var(--ink)}
 .tab.on{background:var(--grad);border-color:transparent;color:#041019;font-weight:600;box-shadow:0 10px 26px -12px rgba(70,190,240,.7)}
+.phl{display:flex;align-items:center;flex-wrap:wrap;gap:10px}
+.search{font:12px var(--sans);height:24px;width:190px;padding:0 10px 0 28px;color:var(--ink);border:1px solid var(--line-hi);border-radius:100px;outline:none;
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Ccircle cx='6' cy='6' r='4.25' fill='none' stroke='%238598b4' stroke-width='1.5'/%3E%3Cpath d='M9.2 9.2 12.5 12.5' stroke='%238598b4' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") 10px 50%/13px no-repeat,rgba(58,167,255,.05);
+  text-transform:none;letter-spacing:0;font-weight:400;transition:border-color .15s,box-shadow .15s}
+.search::placeholder{color:var(--muted)}
+.search:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(93,227,255,.15)}
+.search::-webkit-search-cancel-button{filter:invert(.6)}
 .seg{border-radius:100px}.seg span{transition:background .15s}.seg span.on{background:var(--grad);color:#041019;font-weight:600}
 /* Panels: a soft sheen over the base, a bloom along the top edge. */
 .panel{border-color:var(--line);background:
@@ -193,7 +200,7 @@ tr.ev td{background:rgba(6,11,19,.55)}
 <div class="sub" id="sub">Loading standings&hellip;</div>
 <div class="tabs" id="tabs"></div>
 <div id="hero"></div>
-<div class="panel"><div class="ph"><span id="tbl-title">Standings</span><span class="dim" style="text-transform:none;letter-spacing:0;font-weight:400">Click a row for the point-by-point breakdown</span></div>
+<div class="panel"><div class="ph"><span class="phl"><span id="tbl-title">Standings</span><input id="q" class="search" type="search" placeholder="Search names" autocomplete="off" spellcheck="false" aria-label="Filter the standings by name, login or callsign" oninput="query=this.value;render()" onkeydown="if(event.key==='Escape'){this.value='';query='';render()}"></span><span class="dim" style="text-transform:none;letter-spacing:0;font-weight:400">Click a row for the point-by-point breakdown</span></div>
 <table><thead><tr class="grp"><th colspan="3"></th><th colspan="4">Score</th><th colspan="6" class="gc">Contributor points</th><th colspan="4" class="gs">Steward points</th></tr>
 <tr><th>#</th><th class="ic" title="Shield: core dev team · 1st: did something for the first time that week"></th><th>Contributor</th><th title="Contributor plus steward points">Total</th><th title="Contributor points: ranks the contributor of the week">Contributor</th><th title="Steward points: ranks the steward of the week">Steward</th><th title="Backer points: 10 per $1 given on Open Collective; ranks the backer of the week">Backer</th><th class="gc">Comments</th><th>Discussions</th><th>Issues</th><th>PRs</th><th title="Fixing main, reverts, and the refund for fixing your own break within 24h">Main health</th><th title="Breaking main as the author, and issues or PRs labelled spam">Penalties</th><th class="gs">Reviews</th><th>Merges</th><th>Stewardship</th><th title="Approver and merger breaking-main penalties">Penalties</th></tr></thead><tbody id="tb"></tbody></table></div>
 <div class="panel" id="breaks"></div>
@@ -241,7 +248,7 @@ tr.ev td{background:rgba(6,11,19,.55)}
 <p>A week runs from one AetherSDR release to the next. When a release is published, two people are named for that week: the <b>contributor of the week</b> (most contributor points) and the <b>steward of the week</b> (most steward points). The same person can win both, but only by topping each score on its own. Until the release, the week's leaders are shown as "leading". Contributor ties go to more PR points, then more issue points; steward ties to more review points.</p>
 </div></div>
 <script>
-let D=null,views=[],cur=null,picked=false;
+let D=null,views=[],cur=null,picked=false,query='';
 const CATS=['comments','discussions','issues','prs','main','cpenalties','reviews','merges','stewardship','penalties'];
 const C_CATS=['comments','discussions','issues','prs','main','cpenalties'],S_CATS=['reviews','merges','stewardship'];
 let rankBy='total';
@@ -313,7 +320,13 @@ function render(){
   const leadLogin=rankBy==='steward'?(stew&&stew.login):rankBy==='backer'?(back&&back.login):rankBy==='total'?(rows.find(r=>r.eligible)||{}).login:(top&&top.login);
   let h='';
   const backers=new Set((D.all_time||[]).filter(x=>x.backer>0).map(x=>x.login));
-  rows.forEach((r,i)=>{
+  // Live name filter: login, display name, bio name or callsign. Rows keep
+  // their real rank.
+  const q=query.trim().toLowerCase();
+  const matches=r=>{const b=(D.bios||{})[r.login]||{};
+    return [r.login,r.name,b.name,b.callsign].some(x=>x&&String(x).toLowerCase().includes(q))};
+  const shown=q?rows.filter(matches):rows;
+  shown.forEach((r,i)=>{
     const lead=r.login===leadLogin,rk=rankBy==='steward'?r.steward_rank:rankBy==='backer'?r.backer_rank:rankBy==='total'?totRank[r.login]:r.rank;
     h+=`<tr class="row${lead?' lead':''}" onclick="tog(${i})"><td class="rank">${r.eligible&&rk?(lead?'<span class="gold">1</span>':rk):'&mdash;'}</td>`+
       // Icon badges share one column, flowing from its left edge (core
@@ -328,7 +341,8 @@ function render(){
       (r.event_count>r.events.length?`<span class="dim" style="grid-column:1/-1">Newest entries of ${r.event_count}, plus every penalty and refund</span>`:'')+r.events.map(e=>`<span class="dim">${fmtD(e.at)}</span><span>${esc(LABEL[e.rule]||e.rule)}</span><span style="text-align:right" class="${e.points<0?'neg':''}">${e.points>0?'+':''}${e.points}</span>`+
         `<span><a href="${refUrl(e.ref)}" target="_blank">${esc(e.ref.replace('discussion','disc'))}</a> <span class="dim">${esc(e.note||'')}</span></span>`).join('')+`</div></div></div></td></tr>`;
   });
-  document.getElementById('tb').innerHTML=h||'<tr><td colspan="17" class="dim" style="text-align:left">No activity in this window yet.</td></tr>';
+  document.getElementById('tb').innerHTML=h||(q?`<tr><td colspan="17" class="dim" style="text-align:left">No one matches “${esc(query.trim())}” in ${esc(v.name)}.</td></tr>`
+    :'<tr><td colspan="17" class="dim" style="text-align:left">No activity in this window yet.</td></tr>');
   const brks=(D.breaks||[]).filter(b=>(!w.start||b.at>=w.start)&&(!w.end||b.at<w.end)&&b.pr).slice().reverse();
   document.getElementById('breaks').innerHTML=`<div class="ph"><span>Main breaks in this window</span><span class="dim" style="text-transform:none;letter-spacing:0;font-weight:400">${brks.length} counted</span></div>`+
     (brks.length?brks.map(b=>`<div class="brk"><span class="dim">${fmtD(b.at)}</span><a href="${refUrl('pr#'+b.pr)}" target="_blank">#${b.pr}</a><span title="${esc((b.new||[]).join(', '))}">${esc(b.workflow.replace('.yml',''))} ${b.first===false?'new failure while red':'red'} at <a href="${esc(b.url)}" target="_blank">${esc(b.sha.slice(0,7))}</a> <span class="dim">${esc((b.new||[]).slice(0,3).join(', ')||b.cause)}${(b.new||[]).length>3?` +${b.new.length-3} more`:''}</span></span><span class="dim">${b.fixed_at?'green again '+fmtD(b.fixed_at):'still red'}</span></div>`).join(''):'<p class="dim">None. Main stayed green.</p>');

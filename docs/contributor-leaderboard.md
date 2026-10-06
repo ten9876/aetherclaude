@@ -279,6 +279,10 @@ week, and the areas they work in most (their issues' and PRs' area labels).
 The collector keeps public GitHub profiles for this (`profiles`), refreshed
 monthly.
 
+The search box beside the ranking picker filters the standings as you type,
+matching login, display name or callsign (case-insensitive); rows keep their
+real rank, the filter stays across tabs and pickers, and Escape clears it.
+
 Tabs can be linked: `#all-time`, `#this-week` or a release tag
 (`#v26.10.1`) opens that tab, and clicking a tab updates the address so it
 can be shared. `#rules` opens How points work.
