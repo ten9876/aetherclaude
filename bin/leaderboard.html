@@ -126,6 +126,50 @@ td.pts.soft{color:var(--muted);font-weight:500}
 .seg span.on{background:var(--accent);color:#fff}
 .brk{display:grid;grid-template-columns:90px 70px minmax(0,1fr) 140px;column-gap:12px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px}
 .brk span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* ── aethersdr.com look: ambient blooms, a fading grid, panel sheen and glow.
+   Mirrors styles.css in aethersdr/aetherweb (body::before/::after, .card,
+   .built-wrap, .btn-primary); colours are that site's tokens. ── */
+:root{--cyan:#5de3ff;--cyan-deep:#3aa7ff;--teal:#7bf2dc;--aqua:#8ef7e6;
+  --grad:linear-gradient(100deg,#3aa7ff 0%,#5de3ff 42%,#8ef7e6 100%);
+  --shadow:0 24px 60px -20px rgba(0,0,0,.75);--shadow-glow:0 0 0 1px var(--line-hi),0 30px 80px -30px rgba(45,160,220,.35)}
+body{background:var(--bg);line-height:1.5;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;overflow-x:hidden}
+body::before{content:"";position:fixed;inset:0;z-index:-2;pointer-events:none;background:
+  radial-gradient(1100px 620px at 72% -8%,rgba(58,167,255,.16),transparent 60%),
+  radial-gradient(900px 560px at 12% 4%,rgba(123,242,220,.10),transparent 55%),
+  linear-gradient(180deg,#060b13 0%,#05090f 100%)}
+body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background-image:linear-gradient(rgba(120,170,210,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(120,170,210,.035) 1px,transparent 1px);
+  background-size:64px 64px;-webkit-mask-image:radial-gradient(1200px 800px at 50% -5%,#000 0%,transparent 75%);mask-image:radial-gradient(1200px 800px at 50% -5%,#000 0%,transparent 75%)}
+h1{font-size:24px;font-weight:700;letter-spacing:-.02em;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+a:hover{color:var(--aqua)}
+/* Release tabs: pills, the selected one like the site's primary button. */
+.tab{border-radius:100px;padding:6px 14px;background:rgba(58,167,255,.05);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease,background .18s ease}
+.tab:hover{transform:translateY(-1px);border-color:var(--cyan);background:rgba(93,227,255,.08);color:var(--ink)}
+.tab.on{background:var(--grad);border-color:transparent;color:#041019;font-weight:600;box-shadow:0 10px 26px -12px rgba(70,190,240,.7)}
+.seg{border-radius:100px}.seg span{transition:background .15s}.seg span.on{background:var(--grad);color:#041019;font-weight:600}
+/* Panels: a soft sheen over the base, a bloom along the top edge. */
+.panel{border-color:var(--line);background:
+  radial-gradient(800px 260px at 85% 0%,rgba(58,167,255,.08),transparent 60%),
+  linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.005)),var(--bg-1);box-shadow:var(--shadow)}
+/* Award cards lift and glow like the site's cards; gold bloom behind the winner. */
+.hero{position:relative;overflow:hidden;background:
+  radial-gradient(420px 180px at 12% 0%,rgba(224,184,74,.13),transparent 65%),
+  linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.005)),var(--bg-1);
+  transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}
+.hero:hover{transform:translateY(-3px);border-color:var(--line-hi);box-shadow:0 22px 50px -28px rgba(50,160,220,.5)}
+.hero img{box-shadow:0 0 0 3px rgba(224,184,74,.12),0 0 22px rgba(224,184,74,.35)}
+tr.row td{transition:background .15s}
+tr.row:hover td{background:rgba(93,227,255,.045)}
+tr.lead td{background:rgba(224,184,74,.075)}tr.lead td:first-child{box-shadow:inset 3px 0 0 var(--gold)}
+tr.ev td{background:rgba(6,11,19,.55)}
+.bio{background:radial-gradient(500px 200px at 0% 0%,rgba(123,242,220,.08),transparent 60%),linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.005)),var(--bg-2);border-color:var(--line-hi)}
+.bio .hd img{box-shadow:0 0 0 3px rgba(93,227,255,.10),0 0 20px rgba(93,227,255,.25)}
+.bio .stat{background:linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.005)),var(--bg-1)}
+.modal{background:radial-gradient(600px 240px at 50% 0%,rgba(123,242,220,.10),transparent 65%),var(--bg-1);box-shadow:var(--shadow-glow)}
+.modal h2{font-weight:700;letter-spacing:-.01em;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;display:inline-block}
+.mback,.flipback{-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+@media (prefers-reduced-motion:reduce){.tab,.hero,tr.row td{transition:none}.tab:hover,.hero:hover{transform:none}}
 </style></head><body><div class="wrap">
 <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap">
 <h1>The AetherSDR Contributor Logbook</h1><span style="font-size:12px;display:flex;gap:16px"><a href="#" onclick="openRules();return false">How points work</a><a href="/">&larr; Dashboard</a></span></div>
