@@ -169,7 +169,18 @@ tr.ev td{background:rgba(6,11,19,.55)}
 .modal{background:radial-gradient(600px 240px at 50% 0%,rgba(123,242,220,.10),transparent 65%),var(--bg-1);box-shadow:var(--shadow-glow)}
 .modal h2{font-weight:700;letter-spacing:-.01em;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;display:inline-block}
 .mback,.flipback{-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
-@media (prefers-reduced-motion:reduce){.tab,.hero,tr.row td{transition:none}.tab:hover,.hero:hover{transform:none}}
+/* A spark of light tracing each award card's border: a conic gradient
+   rotated by an animated angle, masked down to a 1.5px ring. */
+@property --spark{syntax:'<angle>';initial-value:0deg;inherits:false}
+@keyframes spark{to{--spark:360deg}}
+.hero::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1.5px;pointer-events:none;
+  background:conic-gradient(from var(--spark),transparent 0deg 250deg,rgba(224,184,74,.25) 290deg,#ffd970 335deg,#fff6d8 350deg,transparent 360deg);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;
+  mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);
+  filter:drop-shadow(0 0 4px rgba(255,217,112,.75));animation:spark 7s linear infinite}
+.hero:nth-child(2)::before{animation-delay:-2.33s}.hero:nth-child(3)::before{animation-delay:-4.66s}
+@media (prefers-reduced-motion:reduce){.tab,.hero,tr.row td{transition:none}.tab:hover,.hero:hover{transform:none}
+  .hero::before{animation:none;--spark:300deg}}
 </style></head><body><div class="wrap">
 <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap">
 <h1>The AetherSDR Contributor Logbook</h1><span style="font-size:12px;display:flex;gap:16px"><a href="#" onclick="openRules();return false">How points work</a><a href="/">&larr; Dashboard</a></span></div>
