@@ -251,7 +251,9 @@ tr.ev td{background:rgba(6,11,19,.55)}
 let D=null,views=[],cur=null,picked=false,query='';
 const CATS=['comments','discussions','issues','prs','main','cpenalties','reviews','merges','stewardship','penalties'];
 const C_CATS=['comments','discussions','issues','prs','main','cpenalties'],S_CATS=['reviews','merges','stewardship'];
-let rankBy='total';
+// A link can also name the ranking after the tab: #all-time/backer.
+const RANKS=['total','contributor','steward','backer'];
+let rankBy=(()=>{const r=decodeURIComponent(location.hash.slice(1)).split('/')[1];return RANKS.includes(r)?r:'total'})();
 // Did something for the first time ever in the week shown (first issue,
 // comment, PR, merge, review, donation…); the tooltip names which.
 const firstIcon=r=>(r.firsts||[]).length?FIRST_ICON.replace('__T__',esc('Firsts this week: '+r.firsts.join(', ')+'. Welcome!')):'';
@@ -271,7 +273,8 @@ function start(data){
   // Open on the release that just closed for its first 48 hours, so the
   // page isn't a near-empty new week right after a release; otherwise on
   // this week. A tab the viewer picked always wins.
-  // A link can name a tab: #all-time, #this-week or a release tag (#v26.10.1).
+  // A link can name a tab: #all-time, #this-week or a release tag (#v26.10.1),
+  // optionally followed by a ranking: #all-time/backer.
   const linked=hashView();
   if(linked&&!picked){cur=linked;picked=true}
   if(!picked||!views.some(v=>v.key===cur)){
@@ -283,14 +286,14 @@ function start(data){
   render();
 }
 function hashView(){
-  const h=decodeURIComponent(location.hash.slice(1));
+  const h=decodeURIComponent(location.hash.slice(1)).split('/')[0];
   const key=h==='all-time'?'all':h==='this-week'?'current':h;
   return views.some(v=>v.key===key)?key:null;
 }
-// Keep the address naming the open tab, so it can be shared.
+// Keep the address naming the open tab and ranking, so it can be shared.
 function linkView(){
   const h=cur==='all'?'all-time':cur==='current'?'this-week':cur;
-  try{history.replaceState(null,'','#'+encodeURIComponent(h))}catch(e){}
+  try{history.replaceState(null,'','#'+encodeURIComponent(h)+(rankBy==='total'?'':'/'+rankBy))}catch(e){}
 }
 function num(v){return v>0?`<span>${v}</span>`:v<0?`<span class="neg">${v}</span>`:'<span class="zero">·</span>'}
 function render(){
@@ -310,7 +313,7 @@ function render(){
       ''):'')+
     (back?card(back,isCur?'Leading backer this week':all?'All-time backer':`Backer of the week &middot; ${esc(w.tag)}`,back.backer,'points',
       `$${(back.backer/10).toLocaleString(undefined,{maximumFractionDigits:2})} given on Open Collective`):'')+'</div>';
-  document.getElementById('tbl-title').innerHTML=`Standings &middot; ${esc(v.name)} <span class="seg"><span class="${rankBy==='total'?'on':''}" onclick="rankBy='total';render()">Total</span><span class="${rankBy==='contributor'?'on':''}" onclick="rankBy='contributor';render()">Contributor</span><span class="${rankBy==='steward'?'on':''}" onclick="rankBy='steward';render()">Steward</span><span class="${rankBy==='backer'?'on':''}" onclick="rankBy='backer';render()">Backer</span></span>`;
+  document.getElementById('tbl-title').innerHTML=`Standings &middot; ${esc(v.name)} <span class="seg"><span class="${rankBy==='total'?'on':''}" onclick="rankBy='total';linkView();render()">Total</span><span class="${rankBy==='contributor'?'on':''}" onclick="rankBy='contributor';linkView();render()">Contributor</span><span class="${rankBy==='steward'?'on':''}" onclick="rankBy='steward';linkView();render()">Steward</span><span class="${rankBy==='backer'?'on':''}" onclick="rankBy='backer';linkView();render()">Backer</span></span>`;
   const tot=r=>r.total!=null?r.total:r.points+(r.steward||0);
   const rows=rankBy==='steward'?st.slice().sort((a,b)=>(b.steward-a.steward)||a.login.localeCompare(b.login))
     :rankBy==='backer'?st.slice().sort((a,b)=>((b.backer||0)-(a.backer||0))||a.login.localeCompare(b.login))

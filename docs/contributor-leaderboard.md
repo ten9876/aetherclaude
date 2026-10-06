@@ -285,7 +285,9 @@ real rank, the filter stays across tabs and pickers, and Escape clears it.
 
 Tabs can be linked: `#all-time`, `#this-week` or a release tag
 (`#v26.10.1`) opens that tab, and clicking a tab updates the address so it
-can be shared. `#rules` opens How points work.
+can be shared. A ranking can follow the tab — `#all-time/backer`,
+`#this-week/steward` — and picking a ranking updates the address too.
+`#rules` opens How points work.
 
 ## Achievements
 
