@@ -4837,6 +4837,56 @@ body.view-ops #view-exec{display:none}
 .x-rows a:hover{color:var(--accent-bright)}
 #x-tt{position:fixed;display:none;background:var(--bg-2);border:1px solid var(--line-hi);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--ink-soft);pointer-events:none;z-index:500;white-space:nowrap}
 #x-alerts.empty{display:none}
+
+/* ── aethersdr.com look: ambient blooms, a fading grid, panel sheen and glow.
+   Mirrors styles.css in aethersdr/aetherweb (body::before/::after, the
+   sticky nav, .card, .btn-primary), as the contributor logbook does. ── */
+:root{--aqua:#8ef7e6;--shadow:0 24px 60px -20px rgba(0,0,0,.75);--shadow-glow:0 0 0 1px var(--line-hi),0 30px 80px -30px rgba(45,160,220,.35);
+  --sheen:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.005))}
+body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+body::before{content:"";position:fixed;inset:0;z-index:-2;pointer-events:none;background:
+  radial-gradient(1100px 620px at 72% -8%,rgba(58,167,255,.16),transparent 60%),
+  radial-gradient(900px 560px at 12% 4%,rgba(123,242,220,.10),transparent 55%),
+  linear-gradient(180deg,#060b13 0%,#05090f 100%)}
+body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background-image:linear-gradient(rgba(120,170,210,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(120,170,210,.035) 1px,transparent 1px);
+  background-size:64px 64px;-webkit-mask-image:radial-gradient(1200px 800px at 50% -5%,#000 0%,transparent 75%);mask-image:radial-gradient(1200px 800px at 50% -5%,#000 0%,transparent 75%)}
+/* Header: the site's translucent, blurred bar; the title in the brand gradient. */
+.header{background:rgba(6,11,19,.6);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);position:relative;z-index:10}
+.header h1{font-weight:700;letter-spacing:-.01em;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;display:inline-block}
+/* Toggles and filters: pills; the active one like the site's primary button. */
+.vtoggle,.hmenu summary{border-radius:100px}
+.vtoggle button{transition:background .15s}
+.vtoggle button.active,.fbtn.active{background:var(--grad);color:#041019;font-weight:600;border-color:transparent;box-shadow:0 8px 22px -12px rgba(70,190,240,.7)}
+.fbtn{border-radius:100px;transition:border-color .15s,background .15s}
+.fbtn:hover{background:rgba(93,227,255,.08)}
+/* Surfaces: a soft sheen over the base and a bloom along the top edge. */
+.x-panel,.panel{background:radial-gradient(800px 260px at 85% 0%,rgba(58,167,255,.07),transparent 60%),var(--sheen),var(--bg-1);box-shadow:var(--shadow)}
+.phdr{background:linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.01)),var(--bg-2)}
+.x-hero{position:relative;overflow:hidden;background:
+  radial-gradient(520px 240px at 10% 0%,rgba(123,242,220,.12),transparent 65%),
+  radial-gradient(700px 300px at 90% 0%,rgba(58,167,255,.10),transparent 60%),var(--sheen),var(--bg-1);
+  border-color:var(--line-hi);box-shadow:var(--shadow-glow)}
+/* Tiles lift and glow like the site's cards. */
+.x-tile,.ring{background:var(--sheen),var(--bg-1);transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}
+.x-tile:hover{transform:translateY(-3px);border-color:var(--line-hi);box-shadow:0 22px 50px -28px rgba(50,160,220,.5)}
+.x-ctl{background:var(--sheen),var(--bg-2);transition:border-color .15s,background .15s,box-shadow .15s}
+.x-ctl:hover{box-shadow:0 14px 34px -22px rgba(50,160,220,.55)}
+.ev:hover,.clickable:hover{background:rgba(93,227,255,.045)}
+/* Modals: a glow behind, the page blurred underneath. */
+.modal{background:radial-gradient(600px 240px at 50% 0%,rgba(123,242,220,.10),transparent 65%),var(--bg-1);box-shadow:var(--shadow-glow)}
+.modal h2{font-weight:700;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;display:inline-block}
+.modal-overlay{background:rgba(2,6,12,.72);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+.hmenu-list{background:var(--sheen),var(--bg-2);box-shadow:var(--shadow)}
+/* The defense-posture hero carries the logbook's spark, in the brand cyan. */
+@property --spark{syntax:'<angle>';initial-value:0deg;inherits:false}
+@keyframes spark{to{--spark:360deg}}
+.x-hero::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1.5px;pointer-events:none;
+  background:conic-gradient(from var(--spark),transparent 0deg 250deg,rgba(93,227,255,.25) 290deg,#5de3ff 335deg,#e6fdff 350deg,transparent 360deg);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;
+  mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);
+  filter:drop-shadow(0 0 4px rgba(93,227,255,.75));animation:spark 9s linear infinite}
+@media (prefers-reduced-motion:reduce){.x-tile,.ring{transition:none}.x-tile:hover{transform:none}.x-hero::before{animation:none;--spark:300deg}}
 </style></head><body>
 
 <div class="header">
