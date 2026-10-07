@@ -1558,7 +1558,7 @@ MAIN_CI_POLL_SECS = 90
 # (key, label, workflow file or path, cadence note shown under the row)
 MAIN_CI_WORKFLOWS = [
     ('ci', 'CI', 'ci.yml', 'every push'),
-    ('full-suite', 'Full Suite', 'full-suite.yml', 'every push · full ctest'),
+    ('full-suite', 'FULL TEST SUITE', 'full-suite.yml', 'every push · full ctest'),
     ('codeql', 'CodeQL', 'codeql.yml', 'pushes touching src/ · tools/'),
     ('code-quality', 'CodeQL · Code Quality', 'dynamic/github-code-quality/codeql', 'every push'),
     ('canary', 'System Libraries Canary', 'system-libs-canary.yml', 'pushes touching src/ · tests/ + daily'),
@@ -4945,7 +4945,7 @@ body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
 <div class="x-kpis" id="x-mci">
   <!-- Placeholders until the first /api/events payload carries main_ci. -->
   <div class="x-tile x-mci-ph"><div class="lbl">CI</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
-  <div class="x-tile x-mci-ph"><div class="lbl">Full Suite</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
+  <div class="x-tile x-mci-ph"><div class="lbl">FULL TEST SUITE</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
   <div class="x-tile x-mci-ph"><div class="lbl">CodeQL</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
   <div class="x-tile x-mci-ph"><div class="lbl">CodeQL &middot; Code Quality</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
   <div class="x-tile x-mci-ph"><div class="lbl">System Libraries Canary</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
