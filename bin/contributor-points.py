@@ -618,7 +618,7 @@ def collect(gh, db, since):
     text_since = since if int(get_state(db, 'bodies_v', '0')) >= BODIES_V else REPO_START
     if text_since != since:
         print(f'  copied {fill_from_cache(db)} bodies from cached responses', file=sys.stderr, flush=True)
-    # Releases: the weekly windows run between non-prerelease tags.
+    # Releases: the weekly windows run between non-prerelease v-tags.
     for r in gh.pages(f'repos/{REPO}/releases?per_page=100'):
         db.execute('INSERT OR REPLACE INTO releases(tag,published_at,prerelease,author) VALUES(?,?,?,?)',
                    (r['tag_name'], r.get('published_at'), int(bool(r.get('prerelease'))),
@@ -1133,6 +1133,8 @@ def score(db):
     # Releases.
     for tag, at, author in db.execute('SELECT tag, published_at, author FROM releases WHERE prerelease=0'
                                       ' AND author IS NOT NULL'):
+        if not is_release(tag):
+            continue
         add(author, 'release_published', at, f'release#{tag}')
 
     # Comments, with caps applied in time order.
@@ -1241,13 +1243,23 @@ def _secs(a, b):
         return float('inf')
 
 
+# An AetherSDR release is a v-tag (v26.10.1). Other releases in the repo,
+# such as a component's own (flex-tailnet-shim-v0.4.0), neither open a week
+# nor score release_published.
+RELEASE_TAG = re.compile(r'v[0-9]')
+
+
+def is_release(tag):
+    return bool(tag and RELEASE_TAG.match(tag))
+
+
 def board_of(rule):
     return 'steward' if rule in STEWARD_RULES else 'backer' if rule in BACKER_RULES else 'contributor'
 
 
 def windows(db):
     rel = [(t, p) for t, p, pre in db.execute('SELECT tag, published_at, prerelease FROM releases ORDER BY published_at')
-           if not pre and p]
+           if not pre and p and is_release(t)]
     out = [{'tag': t, 'start': rel[i - 1][1] if i else None, 'end': p} for i, (t, p) in enumerate(rel)]
     out.append({'tag': 'current', 'start': rel[-1][1] if rel else None, 'end': None})
     return out

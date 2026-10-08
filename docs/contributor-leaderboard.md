@@ -175,8 +175,9 @@ The rules popup on the page builds this example from the live point values.
 
 ## Weekly windows
 
-A week runs from one non-prerelease AetherSDR release to the next, so the
-winners are known when the release is published. The current week is shown as
+A week runs from one non-prerelease AetherSDR release (a `v` tag, such as
+`v26.10.1`) to the next, so the winners are known when the release is
+published. The current week is shown as
 "leading" until the next release lands. Contributor ties break on more PR points, then more issue points; steward
 ties on more review points.
 
