@@ -1371,6 +1371,9 @@ list_pr_files for the remainder before commenting on anything below this point]"
         elif [ "${cg_errs:-0}" -eq 0 ]; then
             record_action "$pr_number" "codeguard_pr" "clean" "success" "no findings"
         fi
+        if [ "${cg_errs:-0}" -gt 0 ]; then
+            codeguard_block=$(printf '%s%s- CodeGuard could not scan %s file(s): %s' "$codeguard_block" "${codeguard_block:+$'\n'}" "$cg_errs" "$cg_err_msg")
+        fi
     fi
 
     # render_skill_full prepends `/goal <condition>` from the skill
