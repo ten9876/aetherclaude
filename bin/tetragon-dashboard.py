@@ -1492,9 +1492,12 @@ def compute_posture():
         st('r5', 'yellow', 'tool deny list not loaded')
 
     threats = rs.get('r6_mcp_threats', 0)
+    dc = rs.get('dc_gateway') or {}
     skill_bad = 'threat' in str(rs.get('r6_skill_status', '')).lower() or \
                 'unsafe' in str(rs.get('r6_skill_status', '')).lower()
-    if threats > 0 or skill_bad:
+    if dc.get('status') == 'down':
+        st('r6', 'red', f"DefenseClaw gateway down: {dc.get('reason')}")
+    elif threats > 0 or skill_bad:
         st('r6', 'red', f'{threats} MCP threat(s)' if threats else 'skill scanner findings')
     elif w['guard_blocks_24h'] > 0 or rs.get('r6_findings_24h', 0) > 0:
         st('r6', 'yellow', f"{w['guard_blocks_24h']} guard block(s) 24h, "
@@ -2339,6 +2342,84 @@ def mirror_watch():
         except Exception as _e:
             _log_exc('mirror_watch', _e, every=600)
         time.sleep(60)
+
+# ── DefenseClaw gateway watch ───────────────────────────────────────────
+# The gateway runs under launchd (KeepAlive). Every minute this reads its
+# /health and launchd's respawn counter: the gateway must answer, its core
+# subsystems must be running, retention must be healthy, and launchd must
+# not be respawning it. A condition that lasts DC_GATEWAY_GRACE raises a
+# critical alert and turns the scanners control red in the posture score.
+DC_GATEWAY_HEALTH = 'http://127.0.0.1:18970/health'
+DC_GATEWAY_JOB = 'system/com.aetherclaude.dc-gateway'
+DC_GATEWAY_CHECK_SECS = 60
+DC_GATEWAY_GRACE = 120          # seconds a condition must last before it counts
+DC_GATEWAY_RESPAWNS = 3         # launchd runs per check that mean a crash loop
+DC_GATEWAY_SUBSYSTEMS = ('api', 'guardrail', 'telemetry', 'watcher')
+DC_GATEWAY_REALERT_SECS = 6 * 3600
+
+def _dc_gateway_launchd():
+    """launchd's view of the gateway job: {'loaded', 'runs', 'state', 'last_exit'}."""
+    r = subprocess.run(['/bin/launchctl', 'print', DC_GATEWAY_JOB], capture_output=True,
+                       text=True, timeout=10)
+    out = r.stdout
+    info = {'loaded': r.returncode == 0}
+    for key, name in (('runs', 'runs'), ('state', 'state'), ('last_exit', 'last exit code')):
+        m = re.search(r'^\t' + re.escape(name) + r' = (.+)$', out, re.M)
+        if m:
+            info[key] = m.group(1).strip()
+    return info
+
+def _dc_gateway_problem(prev_runs):
+    """(reason or None, launchd info) for one check."""
+    info = {}
+    try:
+        info = _dc_gateway_launchd()
+    except Exception as _e:
+        _log_exc('dc_gateway_launchd', _e, every=600)
+    if info and not info.get('loaded'):
+        return 'launchd job is not loaded', info
+    runs = int(info['runs']) if str(info.get('runs', '')).isdigit() else None
+    if runs is not None and prev_runs is not None and runs - prev_runs >= DC_GATEWAY_RESPAWNS:
+        return (f'launchd respawned it {runs - prev_runs} times in a minute '
+                f'(last exit {info.get("last_exit", "?")})'), info
+    try:
+        opener = _urlreq.build_opener(_urlreq.ProxyHandler({}))
+        with opener.open(DC_GATEWAY_HEALTH, timeout=5) as r:
+            h = json.loads(r.read().decode('utf-8', 'replace'))
+    except Exception as _e:
+        return f'/health unreachable ({str(_e)[:60]})', info
+    bad = [f"{k}={(h.get(k) or {}).get('state', 'missing')}" for k in DC_GATEWAY_SUBSYSTEMS
+           if (h.get(k) or {}).get('state') != 'running']
+    if bad:
+        return 'subsystem(s) not running: ' + ', '.join(bad), info
+    retention = ((h.get('telemetry') or {}).get('details') or {}).get('retention_state')
+    if retention and retention != 'healthy':
+        return f'retention {retention}', info
+    return None, info
+
+def dc_gateway_watch():
+    prev_runs, bad_since, alerted = None, None, {'reason': None, 'at': 0.0}
+    while True:
+        try:
+            reason, info = _dc_gateway_problem(prev_runs)
+            if str(info.get('runs', '')).isdigit():
+                prev_runs = int(info['runs'])
+            now = time.time()
+            bad_since = (bad_since or now) if reason else None
+            down = bool(reason) and now - bad_since >= DC_GATEWAY_GRACE
+            ring_stats['dc_gateway'] = {'status': 'down' if down else 'ok', 'reason': reason if down else None,
+                                        'checked_at': now_utc_iso(), 'launchd_runs': info.get('runs'),
+                                        'last_exit': info.get('last_exit')}
+            if down and (reason.split(' (')[0] != (alerted['reason'] or '').split(' (')[0]
+                         or now - alerted['at'] > DC_GATEWAY_REALERT_SECS):
+                stats['alerts'].append({'time': now_utc_iso(), 'severity': 'critical',
+                                        'msg': f'DEFENSECLAW GATEWAY: {reason} — guardrail hooks fail open while it is down'})
+                alerted = {'reason': reason, 'at': now}
+            elif not reason:
+                alerted = {'reason': None, 'at': 0.0}
+        except Exception as _e:
+            _log_exc('dc_gateway_watch', _e, every=600)
+        time.sleep(DC_GATEWAY_CHECK_SECS)
 
 def _store_webhook(delivery, event, body):
     """Store a verified webhook in the contributor database and apply it.
@@ -12397,6 +12478,7 @@ def main():
     threading.Thread(target=scan_rings,daemon=True).start()
     threading.Thread(target=main_ci_poller,daemon=True).start()
     threading.Thread(target=mirror_watch,daemon=True).start()
+    threading.Thread(target=dc_gateway_watch,daemon=True).start()
     threading.Thread(target=_operating_notes_loop,daemon=True).start()
     threading.Thread(target=db_batch_writer,daemon=True).start()
     threading.Thread(target=db_pruner,daemon=True).start()
