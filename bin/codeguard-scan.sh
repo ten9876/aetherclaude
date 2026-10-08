@@ -4,7 +4,10 @@
 # Scans the files changed vs `main` in <scan_root> with CodeGuard, records the
 # findings to the events DB (tagged by SOURCE/REF) + codeguard-latest.json (for
 # the dashboard), and prints the aggregated findings as JSON to stdout:
-#     {"findings":[ {id,severity,title,description,location,remediation,file}, ... ]}
+#     {"findings":[ {id,severity,title,description,location,remediation,file}, ... ],
+#      "errors":[ {file,error}, ... ]}
+# A file the scanner could not scan (non-zero exit, or output that is not a
+# findings object) is listed under "errors", never counted as clean.
 #
 # ADVISORY: always exits 0 — the caller decides whether to block. Both the
 # Validation Gate (validate-diff.sh, SOURCE=agent) and PR review
@@ -27,17 +30,19 @@ LATEST_JSON="/Users/aetherclaude/logs/codeguard-latest.json"
 # 0.8.5 it requires the v8 config there and refuses an empty isolated HOME.
 CODEGUARD="/Users/aetherclaude/.local/bin/defenseclaw-gateway"
 
-emit_empty() { echo '{"findings":[]}'; exit 0; }
+emit_empty() { echo '{"findings":[],"errors":[]}'; exit 0; }
 
-[ -x "$CODEGUARD" ] || emit_empty
+[ -x "$CODEGUARD" ] || { jq -cn --arg e "scanner not installed: $CODEGUARD" '{findings:[], errors:[{file:"", error:$e}]}'; exit 0; }
 [ -d "$SCAN_ROOT" ] || emit_empty
 
 CHANGED=$(git -C "$SCAN_ROOT" diff --name-only main 2>/dev/null || true)
 [ -n "$CHANGED" ] || emit_empty
 
 ACC=$(mktemp -t codeguard-acc.XXXXXX)
+ERRS=$(mktemp -t codeguard-errs.XXXXXX)
+CG_ERR=$(mktemp -t codeguard-stderr.XXXXXX)
 echo '[]' > "$ACC"
-trap 'rm -f "$ACC"' EXIT
+trap 'rm -f "$ACC" "$ERRS" "$CG_ERR"' EXIT
 
 for file in $CHANGED; do
     [ -f "$SCAN_ROOT/$file" ] || continue
@@ -46,7 +51,13 @@ for file in $CHANGED; do
         *) continue ;;
     esac
 
-    RES=$("$CODEGUARD" scan code "$SCAN_ROOT/$file" --json 2>/dev/null || echo '{"findings":[]}')
+    RES=$("$CODEGUARD" scan code "$SCAN_ROOT/$file" --json 2>"$CG_ERR")
+    rc=$?
+    if [ "$rc" -ne 0 ] || ! printf '%s' "$RES" | jq -e 'type == "object" and has("findings")' >/dev/null 2>&1; then
+        msg=$( { head -c 300 "$CG_ERR"; printf '%s' "$RES" | head -c 300; } | tr '\n' ' ')
+        jq -cn --arg f "$file" --arg e "exit ${rc}: ${msg}" '{file:$f, error:$e}' >> "$ERRS"
+        continue
+    fi
 
     # Record findings (tagged) + accumulate them for the caller.
     echo "$RES" | SCAN_ROOT="$SCAN_ROOT" SCAN_FILE="$file" CG_SOURCE="$SOURCE" CG_REF="$REF" \
@@ -152,13 +163,18 @@ except Exception:
 done
 
 # Emit the aggregated findings for the caller (block decision / comment / feed).
-ACC="$ACC" python3 -c '
+ACC="$ACC" ERRS="$ERRS" python3 -c '
 import json, os
 try:
     with open(os.environ["ACC"]) as fh:
         acc = json.load(fh)
 except Exception:
     acc = []
-print(json.dumps({"findings": acc}))
-' 2>/dev/null || echo '{"findings":[]}'
+try:
+    with open(os.environ["ERRS"]) as fh:
+        errors = [json.loads(l) for l in fh if l.strip()]
+except Exception:
+    errors = [{"file": "", "error": "could not read scanner errors"}]
+print(json.dumps({"findings": acc, "errors": errors}))
+' 2>/dev/null || echo '{"findings":[],"errors":[{"file":"","error":"could not aggregate scanner output"}]}'
 exit 0

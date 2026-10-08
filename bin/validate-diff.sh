@@ -198,7 +198,12 @@ fi
 CODEGUARD_SCAN="${CODEGUARD_SCAN_BIN:-/Users/aetherclaude/bin/codeguard-scan.sh}"
 if [ -x "$CODEGUARD_SCAN" ]; then
     log "Running CodeGuard static analysis..."
-    CG_RESULT=$("$CODEGUARD_SCAN" "$WORKSPACE" agent "${AETHER_ISSUE:-}" 2>/dev/null || echo '{"findings":[]}')
+    CG_RESULT=$("$CODEGUARD_SCAN" "$WORKSPACE" agent "${AETHER_ISSUE:-}" 2>/dev/null || echo '{"findings":[],"errors":[{"file":"","error":"codeguard-scan.sh failed"}]}')
+
+    CG_ERRS=$(echo "$CG_RESULT" | jq '(.errors // []) | length' 2>/dev/null || echo 1)
+    if [ "${CG_ERRS:-0}" -gt 0 ]; then
+        log "WARNING: CodeGuard could not scan $CG_ERRS file(s): $(echo "$CG_RESULT" | jq -r '(.errors // [])[0].error // "unreadable scanner output"' 2>/dev/null | head -c 200)"
+    fi
 
     HIGH_COUNT=$(echo "$CG_RESULT" | jq '[.findings[] | select(.severity == "HIGH" or .severity == "CRITICAL")] | length' 2>/dev/null || echo 0)
     MEDIUM_COUNT=$(echo "$CG_RESULT" | jq '[.findings[] | select(.severity == "MEDIUM")] | length' 2>/dev/null || echo 0)

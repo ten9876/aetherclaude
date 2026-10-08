@@ -1354,13 +1354,21 @@ list_pr_files for the remainder before commenting on anything below this point]"
     local codeguard_block="" cg_count=0
     if [ "$have_pr_worktree" = 1 ] && [ -x /Users/aetherclaude/bin/codeguard-scan.sh ]; then
         local codeguard_json
-        codeguard_json=$(/Users/aetherclaude/bin/codeguard-scan.sh "$pr_worktree" pr "$pr_number" 2>/dev/null || echo '{"findings":[]}')
+        codeguard_json=$(/Users/aetherclaude/bin/codeguard-scan.sh "$pr_worktree" pr "$pr_number" 2>/dev/null || echo '{"findings":[],"errors":[{"file":"","error":"codeguard-scan.sh failed"}]}')
         cg_count=$(printf '%s' "$codeguard_json" | jq '.findings | length' 2>/dev/null || echo 0)
+        # A scan only counts as clean when every file was actually scanned.
+        local cg_errs cg_err_msg
+        cg_errs=$(printf '%s' "$codeguard_json" | jq '(.errors // []) | length' 2>/dev/null || echo 1)
+        if [ "${cg_errs:-0}" -gt 0 ]; then
+            cg_err_msg=$(printf '%s' "$codeguard_json" | jq -r '(.errors // [])[0].error // "unreadable scanner output"' 2>/dev/null | head -c 200)
+            record_action "$pr_number" "codeguard_pr" "error" "failure" "${cg_errs} file(s) not scanned: ${cg_err_msg}"
+            log "CODEGUARD: PR #${pr_number} — scanner failed on ${cg_errs} file(s): ${cg_err_msg}"
+        fi
         if [ "${cg_count:-0}" -gt 0 ]; then
             codeguard_block=$(printf '%s' "$codeguard_json" | jq -r '.findings[] | "- [\(.severity)] \(.id) — \(.title) in `\(.file)` \(.location // "")"' 2>/dev/null | head -40)
             record_action "$pr_number" "codeguard_pr" "scanned" "success" "${cg_count} finding(s)"
             log "CODEGUARD: PR #${pr_number} — ${cg_count} finding(s)"
-        else
+        elif [ "${cg_errs:-0}" -eq 0 ]; then
             record_action "$pr_number" "codeguard_pr" "clean" "success" "no findings"
         fi
     fi
