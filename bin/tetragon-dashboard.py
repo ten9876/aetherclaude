@@ -8607,6 +8607,77 @@ header a.back:hover{color:#5de3ff;border-color:#5de3ff}
 .new-trace-banner button:hover{background:#1a3a60;border-color:#88ccff}
 .new-trace-banner .dismiss{background:transparent;border-color:transparent;color:#506070}
 .new-trace-banner .dismiss:hover{background:transparent;color:#aabac8;border-color:transparent}
+
+/* ── aethersdr.com look, as on the main dashboard: its tokens, ambient
+   blooms, a fading grid, a translucent header, pill buttons and panel
+   sheen. Event colors keep their legend meanings. ── */
+:root{
+  --bg:#060b13; --bg-1:#0a121e; --bg-2:#0e1a2a; --bg-3:#12233a;
+  --ink:#eaf2fb; --ink-soft:#c4d4e8; --muted:#8598b4; --muted-dim:#5f708a;
+  --line:rgba(120,165,210,.12); --line-hi:rgba(120,190,230,.28);
+  --accent:#3aa7ff; --accent-bright:#5de3ff;
+  --grad:linear-gradient(100deg,#3aa7ff 0%,#5de3ff 42%,#8ef7e6 100%);
+  --sheen:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.005));
+  --shadow:0 24px 60px -20px rgba(0,0,0,.75);
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,'Helvetica Neue',Arial,sans-serif;
+  --mono:'SF Mono','JetBrains Mono','Fira Code',ui-monospace,Menlo,Consolas,monospace;
+}
+body{background:var(--bg);color:var(--ink-soft);font-family:var(--mono);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+body::before{content:"";position:fixed;inset:0;z-index:-2;pointer-events:none;background:
+  radial-gradient(1100px 620px at 72% -8%,rgba(58,167,255,.16),transparent 60%),
+  radial-gradient(900px 560px at 12% 4%,rgba(123,242,220,.10),transparent 55%),
+  linear-gradient(180deg,#060b13 0%,#05090f 100%)}
+body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background-image:linear-gradient(rgba(120,170,210,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(120,170,210,.035) 1px,transparent 1px);
+  background-size:64px 64px;-webkit-mask-image:radial-gradient(1200px 800px at 50% -5%,#000 0%,transparent 75%);mask-image:radial-gradient(1200px 800px at 50% -5%,#000 0%,transparent 75%)}
+header{background:rgba(6,11,19,.6);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border-bottom-color:var(--line);position:relative;z-index:10}
+header h1{font-family:var(--sans);font-weight:700;letter-spacing:-.01em;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+header .picker>span{color:var(--muted-dim)!important}
+header select,header input{background:var(--sheen),var(--bg-2);color:var(--ink-soft);border-color:var(--line-hi);border-radius:100px;padding:5px 12px}
+header select:focus,header input:focus{outline:none;border-color:var(--accent-bright)}
+header a.back{color:var(--muted);border-color:var(--line-hi);border-radius:100px;transition:border-color .15s,color .15s}
+header a.back:hover{color:var(--accent-bright);border-color:var(--accent-bright)}
+.legend{background:transparent;border-bottom-color:var(--line);color:var(--muted)}
+.meta{background:var(--sheen),rgba(10,18,30,.7);border-bottom-color:var(--line);color:var(--muted)}
+.meta .label{color:var(--muted-dim)}
+.meta .val{color:var(--ink-soft)}
+.player{background:var(--sheen),rgba(10,18,30,.7);border-bottom-color:var(--line)}
+.player button,.live-bar button{background:var(--sheen),var(--bg-2);color:var(--ink-soft);border-color:var(--line-hi);border-radius:100px;transition:border-color .15s,color .15s,background .15s}
+.player button:hover,.live-bar button:hover{border-color:var(--accent-bright);color:var(--accent-bright)}
+.player button.active{background:var(--grad);color:#041019;font-weight:600;border-color:transparent;box-shadow:0 8px 22px -12px rgba(70,190,240,.7)}
+.player button:disabled{opacity:.45;cursor:default}
+.player .speed-label,.player .progress .ts-label{color:var(--muted-dim)}
+.player .progress{background:var(--bg-3)}
+.player .progress .bar{background:var(--grad)}
+#swim{background:transparent}
+.lane-bg{fill:rgba(14,26,42,.72)}
+.lane-bg.alt{fill:rgba(10,18,30,.72)}
+.lane-label{fill:var(--muted)}
+.lane-label.num,.time-tick{fill:var(--muted-dim)}
+.lane-divider{stroke:var(--line)}
+.time-axis{stroke:var(--line-hi)}
+#bottom-pane{background:var(--line);border-top-color:var(--line);gap:1px}
+#log-stream,#detail{background:radial-gradient(800px 260px at 85% 0%,rgba(58,167,255,.07),transparent 60%),var(--sheen),var(--bg-1);box-shadow:var(--shadow)}
+#log-stream h3,#detail h3{font-family:var(--sans);font-weight:600;color:var(--accent-bright);background:var(--bg-1);border-bottom-color:var(--line)}
+#detail .k{color:var(--muted-dim)}
+#detail .v{color:var(--ink-soft)}
+#detail .stage-pill{background:rgba(93,227,255,.12);color:var(--accent-bright);border:1px solid var(--line-hi)}
+#log-stream .lrow{border-radius:6px}
+#log-stream .lrow .lt{color:var(--muted-dim)}
+#log-stream .lrow .larg{color:var(--muted)}
+.live-nudge,.new-trace-banner{border-radius:100px;box-shadow:var(--shadow)}
+/* Legend swatches are HTML spans, so they take background, not fill. */
+.legend .swatch.color-WEBHOOK{background:#aa88ff}
+.legend .swatch.color-SKILL{background:#00ff88}
+.legend .swatch.color-SCAN{background:#5de3ff}
+.legend .swatch.color-DEFENSE{background:#6688ff}
+.legend .swatch.color-MCP{background:#ffaa00}
+.legend .swatch.color-EXEC{background:#607080}
+.legend .swatch.color-TOOL{background:#ff6688}
+.legend .swatch.color-PROMPT{background:#ff88dd}
+.legend .swatch.color-RESPONSE{background:#88ddff}
+.legend .swatch.color-GUARD{background:#ffdd44}
+.legend .swatch.color-OTHER{background:#404060}
 </style></head><body>
 <header>
   <h1>Agent Walk</h1>
