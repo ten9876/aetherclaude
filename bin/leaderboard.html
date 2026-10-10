@@ -131,15 +131,18 @@ td.pts.soft{color:var(--muted);font-weight:500}
 .tally .split b{color:var(--ink-soft);font-weight:600;font-variant-numeric:tabular-nums}
 .tally .delta{font-size:12px;margin-top:6px;color:var(--muted)}
 .tally .delta .up{color:var(--good)}.tally .delta .down{color:var(--crit)}
-.tally .bars{display:flex;align-items:flex-end;gap:6px;height:112px;min-width:0}
-.tally .bar{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;cursor:pointer;gap:4px}
+.tally .bars{display:flex;align-items:flex-end;gap:6px;height:112px;min-width:0;position:relative}
+/* Faint lines every 1,000 points, on the bars' baseline and scale (tally()). */
+.tally .grid{position:absolute;inset:0;pointer-events:none}
+.tally .grid i{position:absolute;left:0;right:0;border-top:1px solid rgba(120,165,210,.09)}
+.tally .bar{position:relative;z-index:1;flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;cursor:pointer;gap:4px}
 .tally .bar .v{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
-.tally .bar .col{width:100%;max-width:44px;border-radius:6px 6px 2px 2px;background:rgba(93,227,255,.22);border:1px solid var(--line-hi);transition:background .15s}
+.tally .bar .col{box-sizing:border-box;width:100%;max-width:44px;border-radius:6px 6px 2px 2px;background:rgba(93,227,255,.22);border:1px solid var(--line-hi);transition:background .15s}
 .tally .bar.cur .col{border-style:dashed;background:rgba(93,227,255,.10)}
 .tally .bar.on .col{background:var(--grad);border-color:transparent;box-shadow:0 8px 22px -12px rgba(70,190,240,.7)}
 .tally .bar.on .v{color:var(--ink)}
 .tally .bar:hover .col{background:rgba(93,227,255,.4)}
-.tally .bar .l{font-size:10px;color:var(--muted-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.tally .bar .l{height:14px;line-height:14px;font-size:10px;color:var(--muted-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .tally .bar .ls{display:none}
 @media (max-width:700px){.tally{grid-template-columns:1fr}.tally .bar .v,.tally .bar .lf{display:none}.tally .bar .ls{display:inline}}
 .seg{display:inline-flex;margin-left:12px;border:1px solid var(--line-hi);border-radius:7px;overflow:hidden;text-transform:none;letter-spacing:0;font-weight:500;vertical-align:middle}
@@ -327,13 +330,19 @@ function tally(v){
   // Bars run newest first: this week on the left, then each release back in time.
   const row=rel.slice().reverse();
   const tots=row.map(x=>logged(x.w.standings).total),max=Math.max(1,...tots);
+  // Bars are up to BAR_H px tall and stand BASE px above the chart's bottom
+  // (a 14px label plus the 4px gap), so a line at k*1000 points sits at the
+  // height a bar of that total would reach.
+  const BAR_H=78,BASE=18;
+  let grid='';
+  for(let k=1000;k<=max;k+=1000)grid+=`<i style="bottom:${BASE+Math.round(k/max*BAR_H)}px"></i>`;
   const bars=row.map((x,j)=>`<div class="bar${x.key===v.key?' on':''}${x.w.tag==='current'?' cur':''}" title="${esc(x.name)}: ${n(tots[j])} points" `+
     `onclick="cur='${x.key}';picked=true;linkView();render()"><span class="v">${n(tots[j])}</span>`+
-    `<span class="col" style="height:${Math.max(3,Math.round(tots[j]/max*78))}px"></span><span class="l"><span class="lf">${esc(x.w.tag==='current'?'now':x.name)}</span><span class="ls">${esc(x.w.tag==='current'?'now':x.name.replace(/^v\d+\./,''))}</span></span></div>`).join('');
+    `<span class="col" style="height:${Math.max(3,Math.round(tots[j]/max*BAR_H))}px"></span><span class="l"><span class="lf">${esc(x.w.tag==='current'?'now':x.name)}</span><span class="ls">${esc(x.w.tag==='current'?'now':x.name.replace(/^v\d+\./,''))}</span></span></div>`).join('');
   document.getElementById('tally').innerHTML=`<div><div class="k">${label}</div><div class="big">${n(t.total)}<small>points</small></div>`+
     `<div class="split"><span><b>${n(t.contributor)}</b> contributor</span><span><b>${n(t.steward)}</b> steward</span><span><b>${n(t.backer)}</b> backer</span><span><b>${n(t.people)}</b> people</span></div>${delta}`+
     `<span class="tab alltime${v.w.all?' on':''}" onclick="cur='all';picked=true;linkView();render()">All time</span></div>`+
-    `<div class="bars" aria-label="Points logged per release">${bars}</div>`;
+    `<div class="bars" aria-label="Points logged per release"><div class="grid" aria-hidden="true">${grid}</div>${bars}</div>`;
 }
 function hashView(){
   const h=decodeURIComponent(location.hash.slice(1)).split('/')[0];
