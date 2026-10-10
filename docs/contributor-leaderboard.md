@@ -264,8 +264,8 @@ up when this host is unreachable. To keep the two from drifting:
 
 ## Page
 
-`/leaderboard` on the dashboard: tabs for this week, the last releases and all
-time; the leader (or the week's winner) at the top; a row per person with
+`/leaderboard` on the dashboard: views for this week, the last releases and
+all time, picked from the Points logged panel; the leader (or the week's winner) at the top; a row per person with
 points by category, the maintainer in score order but unranked, with a
 **MAINTAINER** badge (its tooltip says the maintainer can't win); each row expands into the point-by-point ledger; the main
 breaks in the window; and the rules.
@@ -281,18 +281,19 @@ The collector keeps public GitHub profiles for this (`profiles`), refreshed
 monthly.
 
 Below the award cards, **Points logged** counts every point earned in the
-open tab — by everyone in the standings, the maintainer and backers
-included — split into contributor, steward and backer points, with the
-change from the release before. A bar per release (this week dashed, as it's
-still open) tracks the totals over time; clicking a bar opens that release.
+open view — by everyone in the standings, the maintainer and backers
+included — split into contributor, steward and backer points; a release also
+shows the change from the release before. A bar per release, newest first
+(this week dashed, as it's still open), tracks the totals over time; clicking
+a bar opens that release, and the **All time** button opens all time.
 
 The search box beside the ranking picker filters the standings as you type,
 matching login, display name or callsign (case-insensitive); rows keep their
-real rank, the filter stays across tabs and pickers, and Escape clears it.
+real rank, the filter stays across views and pickers, and Escape clears it.
 
-Tabs can be linked: `#all-time`, `#this-week` or a release tag
-(`#v26.10.1`) opens that tab, and clicking a tab updates the address so it
-can be shared. A ranking can follow the tab — `#all-time/backer`,
+Views can be linked: `#all-time`, `#this-week` or a release tag
+(`#v26.10.1`) opens that view, and picking one updates the address so it
+can be shared. A ranking can follow the view — `#all-time/backer`,
 `#this-week/steward` — and picking a ranking updates the address too.
 `#rules` opens How points work.
 
