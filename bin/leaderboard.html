@@ -325,8 +325,10 @@ function tally(v){
       :`<div class="delta"><span class="${d>=0?'up':'down'}">${d>=0?'+':'&minus;'}${n(Math.abs(d))}</span> vs ${esc(prev.name)}</div>`;
   }
   const label=v.w.all?'Points logged &middot; all time':v.w.tag==='current'?'Points logged this week so far':`Points logged &middot; ${esc(v.name)}`;
-  const tots=rel.map(x=>logged(x.w.standings).total),max=Math.max(1,...tots);
-  const bars=rel.map((x,j)=>`<div class="bar${x.key===v.key?' on':''}${x.w.tag==='current'?' cur':''}" title="${esc(x.name)}: ${n(tots[j])} points" `+
+  // Bars run newest first: this week on the left, then each release back in time.
+  const row=rel.slice().reverse();
+  const tots=row.map(x=>logged(x.w.standings).total),max=Math.max(1,...tots);
+  const bars=row.map((x,j)=>`<div class="bar${x.key===v.key?' on':''}${x.w.tag==='current'?' cur':''}" title="${esc(x.name)}: ${n(tots[j])} points" `+
     `onclick="cur='${x.key}';picked=true;linkView();render()"><span class="v">${n(tots[j])}</span>`+
     `<span class="col" style="height:${Math.max(3,Math.round(tots[j]/max*78))}px"></span><span class="l"><span class="lf">${esc(x.w.tag==='current'?'now':x.name)}</span><span class="ls">${esc(x.w.tag==='current'?'now':x.name.replace(/^v\d+\./,''))}</span></span></div>`).join('');
   document.getElementById('tally').innerHTML=`<div><div class="k">${label}</div><div class="big">${n(t.total)}<small>points</small></div>`+
