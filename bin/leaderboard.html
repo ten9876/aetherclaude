@@ -131,8 +131,10 @@ td.pts.soft{color:var(--muted);font-weight:500}
 .tally .split b{color:var(--ink-soft);font-weight:600;font-variant-numeric:tabular-nums}
 .tally .delta{font-size:12px;margin-top:6px;color:var(--muted)}
 .tally .delta .up{color:var(--good)}.tally .delta .down{color:var(--crit)}
-.tally .bars{display:flex;align-items:flex-end;gap:6px;height:112px;min-width:0;position:relative}
-/* Faint lines every 1,000 points, on the bars' baseline and scale (tally()). */
+.tally .bars{display:flex;align-items:flex-end;gap:6px;height:170px;min-width:0;position:relative;align-self:start}
+/* Faint lines every 1,000 points up to 12,000, on the bars' baseline and
+   scale (tally()); the chart starts at the panel's padding edge (1px border +
+   14px), so the 12,000 line sits 18px below the panel's top. */
 .tally .grid{position:absolute;inset:0;pointer-events:none}
 .tally .grid i{position:absolute;left:0;right:0;border-top:1px solid rgba(120,165,210,.09)}
 .tally .bar{position:relative;z-index:1;flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;cursor:pointer;gap:4px}
@@ -329,11 +331,14 @@ function tally(v){
   const label=v.w.all?'Points logged &middot; all time':v.w.tag==='current'?'Points logged this week so far':`Points logged &middot; ${esc(v.name)}`;
   // Bars run newest first: this week on the left, then each release back in time.
   const row=rel.slice().reverse();
-  const tots=row.map(x=>logged(x.w.standings).total),max=Math.max(1,...tots);
-  // Bars are up to BAR_H px tall and stand BASE px above the chart's bottom
-  // (a 14px label plus the 4px gap), so a line at k*1000 points sits at the
-  // height a bar of that total would reach.
-  const BAR_H=78,BASE=18;
+  const tots=row.map(x=>logged(x.w.standings).total);
+  // A fixed scale: 0 to 12,000 points (or the next thousand above a bigger
+  // release). Bars stand BASE px above the chart's bottom (a 14px label plus
+  // the 4px gap) and reach BAR_H px at the top of the scale, whose line sits
+  // 3px below the top of the 170px chart. A line at k points sits at the
+  // height a bar of that total reaches.
+  const CHART_H=170,BASE=18,BAR_H=CHART_H-BASE-4;
+  const max=Math.max(12000,Math.ceil(Math.max(...tots)/1000)*1000);
   let grid='';
   for(let k=1000;k<=max;k+=1000)grid+=`<i style="bottom:${BASE+Math.round(k/max*BAR_H)}px"></i>`;
   const bars=row.map((x,j)=>`<div class="bar${x.key===v.key?' on':''}${x.w.tag==='current'?' cur':''}" title="${esc(x.name)}: ${n(tots[j])} points" `+
