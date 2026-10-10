@@ -280,6 +280,12 @@ week, and the areas they work in most (their issues' and PRs' area labels).
 The collector keeps public GitHub profiles for this (`profiles`), refreshed
 monthly.
 
+Below the award cards, **Points logged** counts every point earned in the
+open tab — by everyone in the standings, the maintainer and backers
+included — split into contributor, steward and backer points, with the
+change from the release before. A bar per release (this week dashed, as it's
+still open) tracks the totals over time; clicking a bar opens that release.
+
 The search box beside the ranking picker filters the standings as you type,
 matching login, display name or callsign (case-insensitive); rows keep their
 real rank, the filter stays across tabs and pickers, and Escape clears it.

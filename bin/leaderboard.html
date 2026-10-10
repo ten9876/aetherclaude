@@ -121,6 +121,26 @@ th.gc,td.gc,th.gs,td.gs{border-left:1px solid var(--line-hi)}
 td.pts.soft{color:var(--muted);font-weight:500}
 .heroes{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px;margin-bottom:14px}
 .heroes .hero{margin-bottom:0}
+/* Points logged per release: the open tab's total, and one bar per release. */
+.tally{display:grid;grid-template-columns:minmax(220px,auto) minmax(0,1fr);gap:22px;align-items:end;overflow:visible}
+.tally .k{font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--muted);font-weight:600}
+.tally .big{font-size:40px;line-height:1.1;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums;margin:4px 0 2px}
+.tally .big small{font-size:14px;font-weight:400;color:var(--muted);margin-left:6px}
+.tally .split{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted)}
+.tally .split b{color:var(--ink-soft);font-weight:600;font-variant-numeric:tabular-nums}
+.tally .delta{font-size:12px;margin-top:6px;color:var(--muted)}
+.tally .delta .up{color:var(--good)}.tally .delta .down{color:var(--crit)}
+.tally .bars{display:flex;align-items:flex-end;gap:6px;height:112px;min-width:0}
+.tally .bar{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;cursor:pointer;gap:4px}
+.tally .bar .v{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.tally .bar .col{width:100%;max-width:44px;border-radius:6px 6px 2px 2px;background:rgba(93,227,255,.22);border:1px solid var(--line-hi);transition:background .15s}
+.tally .bar.cur .col{border-style:dashed;background:rgba(93,227,255,.10)}
+.tally .bar.on .col{background:var(--grad);border-color:transparent;box-shadow:0 8px 22px -12px rgba(70,190,240,.7)}
+.tally .bar.on .v{color:var(--ink)}
+.tally .bar:hover .col{background:rgba(93,227,255,.4)}
+.tally .bar .l{font-size:10px;color:var(--muted-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.tally .bar .ls{display:none}
+@media (max-width:700px){.tally{grid-template-columns:1fr}.tally .bar .v,.tally .bar .lf{display:none}.tally .bar .ls{display:inline}}
 .seg{display:inline-flex;margin-left:12px;border:1px solid var(--line-hi);border-radius:7px;overflow:hidden;text-transform:none;letter-spacing:0;font-weight:500;vertical-align:middle}
 .seg span{padding:2px 10px;cursor:pointer;color:var(--muted)}
 .seg span.on{background:var(--accent);color:#fff}
@@ -200,6 +220,7 @@ tr.ev td{background:rgba(6,11,19,.55)}
 <div class="sub" id="sub">Loading standings&hellip;</div>
 <div class="tabs" id="tabs"></div>
 <div id="hero"></div>
+<div id="tally" class="panel tally"></div>
 <div class="panel"><div class="ph"><span class="phl"><span id="tbl-title">Standings</span><input id="q" class="search" type="search" placeholder="Search names" autocomplete="off" spellcheck="false" aria-label="Filter the standings by name, login or callsign" oninput="query=this.value;render()" onkeydown="if(event.key==='Escape'){this.value='';query='';render()}"></span><span class="dim" style="text-transform:none;letter-spacing:0;font-weight:400">Click a row for the point-by-point breakdown</span></div>
 <table><thead><tr class="grp"><th colspan="3"></th><th colspan="4">Score</th><th colspan="6" class="gc">Contributor points</th><th colspan="4" class="gs">Steward points</th></tr>
 <tr><th>#</th><th class="ic" title="Shield: core dev team · 1st: did something for the first time that week"></th><th>Contributor</th><th title="Contributor plus steward points">Total</th><th title="Contributor points: ranks the contributor of the week">Contributor</th><th title="Steward points: ranks the steward of the week">Steward</th><th title="Backer points: 10 per $1 given on Open Collective; ranks the backer of the week">Backer</th><th class="gc">Comments</th><th>Discussions</th><th>Issues</th><th>PRs</th><th title="Fixing main, reverts, and the refund for fixing your own break within 24h">Main health</th><th title="Breaking main as the author, and issues or PRs labelled spam">Penalties</th><th class="gs">Reviews</th><th>Merges</th><th>Stewardship</th><th title="Approver and merger breaking-main penalties">Penalties</th></tr></thead><tbody id="tb"></tbody></table></div>
@@ -285,6 +306,33 @@ function start(data){
   renderRules();
   render();
 }
+// Points logged in a window: everyone's total, whether or not they rank.
+function logged(st){
+  const t={total:0,contributor:0,steward:0,backer:0,people:st.length};
+  for(const r of st){t.total+=r.total;t.contributor+=r.points;t.steward+=r.steward||0;t.backer+=r.backer||0}
+  return t;
+}
+function tally(v){
+  const n=x=>x.toLocaleString();
+  const t=logged(v.w.standings);
+  // Releases oldest to newest, then this week; All time has no bar.
+  const rel=views.filter(x=>!x.w.all).slice().reverse();
+  const i=rel.findIndex(x=>x.key===v.key),prev=i>0?rel[i-1]:null;
+  let delta='';
+  if(prev){
+    const d=t.total-logged(prev.w.standings).total;
+    delta=v.w.tag==='current'?`<div class="delta">${n(logged(prev.w.standings).total)} in ${esc(prev.name)}</div>`
+      :`<div class="delta"><span class="${d>=0?'up':'down'}">${d>=0?'+':'&minus;'}${n(Math.abs(d))}</span> vs ${esc(prev.name)}</div>`;
+  }
+  const label=v.w.all?'Points logged &middot; all time':v.w.tag==='current'?'Points logged this week so far':`Points logged &middot; ${esc(v.name)}`;
+  const tots=rel.map(x=>logged(x.w.standings).total),max=Math.max(1,...tots);
+  const bars=rel.map((x,j)=>`<div class="bar${x.key===v.key?' on':''}${x.w.tag==='current'?' cur':''}" title="${esc(x.name)}: ${n(tots[j])} points" `+
+    `onclick="cur='${x.key}';picked=true;linkView();render()"><span class="v">${n(tots[j])}</span>`+
+    `<span class="col" style="height:${Math.max(3,Math.round(tots[j]/max*78))}px"></span><span class="l"><span class="lf">${esc(x.w.tag==='current'?'now':x.name)}</span><span class="ls">${esc(x.w.tag==='current'?'now':x.name.replace(/^v\d+\./,''))}</span></span></div>`).join('');
+  document.getElementById('tally').innerHTML=`<div><div class="k">${label}</div><div class="big">${n(t.total)}<small>points</small></div>`+
+    `<div class="split"><span><b>${n(t.contributor)}</b> contributor</span><span><b>${n(t.steward)}</b> steward</span><span><b>${n(t.backer)}</b> backer</span><span><b>${n(t.people)}</b> people</span></div>${delta}</div>`+
+    `<div class="bars" aria-label="Points logged per release">${bars}</div>`;
+}
 function hashView(){
   const h=decodeURIComponent(location.hash.slice(1)).split('/')[0];
   const key=h==='all-time'?'all':h==='this-week'?'current':h;
@@ -313,6 +361,7 @@ function render(){
       ''):'')+
     (back?card(back,isCur?'Leading backer this week':all?'All-time backer':`Backer of the week &middot; ${esc(w.tag)}`,back.backer,'points',
       `$${(back.backer/10).toLocaleString(undefined,{maximumFractionDigits:2})} given on Open Collective`):'')+'</div>';
+  tally(v);
   document.getElementById('tbl-title').innerHTML=`Standings &middot; ${esc(v.name)} <span class="seg"><span class="${rankBy==='total'?'on':''}" onclick="rankBy='total';linkView();render()">Total</span><span class="${rankBy==='contributor'?'on':''}" onclick="rankBy='contributor';linkView();render()">Contributor</span><span class="${rankBy==='steward'?'on':''}" onclick="rankBy='steward';linkView();render()">Steward</span><span class="${rankBy==='backer'?'on':''}" onclick="rankBy='backer';linkView();render()">Backer</span></span>`;
   const tot=r=>r.total!=null?r.total:r.points+(r.steward||0);
   const rows=rankBy==='steward'?st.slice().sort((a,b)=>(b.steward-a.steward)||a.login.localeCompare(b.login))
