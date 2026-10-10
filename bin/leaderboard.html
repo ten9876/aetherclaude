@@ -121,6 +121,12 @@ th.gc,td.gc,th.gs,td.gs{border-left:1px solid var(--line-hi)}
 td.pts.soft{color:var(--muted);font-weight:500}
 .heroes{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px;margin-bottom:14px}
 .heroes .hero{margin-bottom:0}
+/* A tied award: two overlapping avatars (and a +N for more), smaller names. */
+.hero .avs{grid-area:img;position:relative;width:64px;height:64px}
+.hero .avs img{position:absolute;width:44px;height:44px}
+.hero .avs img:first-child{left:0;top:0}.hero .avs img:nth-child(2){left:20px;top:20px}
+.hero .avs .more{position:absolute;left:-4px;bottom:-4px;font-size:11px;font-weight:600;color:#041019;background:var(--gold);border-radius:100px;padding:1px 6px}
+.hero.tie .n{font-size:22px}
 /* Points logged per release: the open tab's total, and one bar per release. */
 .tally{display:grid;grid-template-columns:minmax(220px,auto) minmax(0,1fr);gap:22px;align-items:end;overflow:visible}
 .tally .k{font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--muted);font-weight:600}
@@ -364,27 +370,41 @@ function render(){
   const v=views.find(x=>x.key===cur),w=v.w,st=w.standings;
   const span=w.start||w.end?`${w.start?fmtD(w.start):'start'} &rarr; ${w.end?fmtD(w.end):'now'}`:'all collected history';
   document.getElementById('sub').innerHTML=`${esc(D.repo)} &middot; ${span} &middot; GitHub data as of ${fmtD(D.collected_at||D.generated_at)}`;
-  const top=st.find(r=>r.eligible);
-  const stew=st.filter(r=>r.steward_rank).sort((a,b)=>a.steward_rank-b.steward_rank)[0];
-  const back=st.filter(r=>r.backer_rank).sort((a,b)=>a.backer_rank-b.backer_rank)[0];
+  // Everyone ranked 1 leads: a tie shares the award (the scorer ranks ties equal).
+  const top=st.filter(r=>r.rank===1),stew=st.filter(r=>r.steward_rank===1),back=st.filter(r=>r.backer_rank===1);
   const isCur=w.tag==='current',all=!w.tag;
-  const card=(r,title,val,unit,detail)=>`<div class="hero"><img src="${esc(avatarOf(r))}" alt=""><div class="t">${title}</div>`+
-    `<div class="n">${esc(r.name||r.login)}${r.core?CORE_ICON.replace('width="15" height="15"','width="22" height="22"'):''}</div><div class="p">${val}<small>${unit}</small></div><div class="d dim">${detail||''}</div></div>`;
+  const title=(kind,n)=>{const K=kind[0].toUpperCase()+kind.slice(1),tie=n>1;
+    return isCur?(tie?`Tied for leading ${kind} this week`:`Leading ${kind} this week`)
+      :all?(tie?`All-time ${kind}s &middot; tied`:`All-time ${kind}`)
+      :(tie?`${K}s of the week &middot; ${esc(w.tag)} &middot; tied`:`${K} of the week &middot; ${esc(w.tag)}`)};
+  const nameOf=r=>esc(r.name||r.login);
+  const card=(rs,kind,val,detail)=>{
+    if(!rs.length)return '';
+    if(rs.length===1){const r=rs[0];
+      return `<div class="hero"><img src="${esc(avatarOf(r))}" alt=""><div class="t">${title(kind,1)}</div>`+
+        `<div class="n">${nameOf(r)}${r.core?CORE_ICON.replace('width="15" height="15"','width="22" height="22"'):''}</div><div class="p">${val}<small>points</small></div><div class="d dim">${detail||''}</div></div>`}
+    const names=rs.length<=3?rs.slice(0,-1).map(nameOf).join(', ')+' &amp; '+nameOf(rs[rs.length-1])
+      :rs.slice(0,2).map(nameOf).join(', ')+` &amp; ${rs.length-2} more`;
+    return `<div class="hero tie"><div class="avs">${rs.slice(0,2).map(r=>`<img src="${esc(avatarOf(r))}" alt="">`).join('')}`+
+      `${rs.length>2?`<span class="more">+${rs.length-2}</span>`:''}</div><div class="t">${title(kind,rs.length)}</div>`+
+      `<div class="n" title="${esc(rs.map(r=>r.name||r.login).join(', '))}">${names}</div><div class="p">${val}<small>points each</small></div><div class="d dim">${detail||''}</div></div>`};
+  const given=r=>`$${(r.backer/10).toLocaleString(undefined,{maximumFractionDigits:2})}`;
   document.getElementById('hero').innerHTML='<div class="heroes">'+
-    (top?card(top,isCur?'Leading contributor this week':all?'All-time contributor':`Contributor of the week &middot; ${esc(w.tag)}`,top.points,'points',''):'')+
-    (stew?card(stew,isCur?'Leading steward this week':all?'All-time steward':`Steward of the week &middot; ${esc(w.tag)}`,stew.steward,'points',
-      ''):'')+
-    (back?card(back,isCur?'Leading backer this week':all?'All-time backer':`Backer of the week &middot; ${esc(w.tag)}`,back.backer,'points',
-      `$${(back.backer/10).toLocaleString(undefined,{maximumFractionDigits:2})} given on Open Collective`):'')+'</div>';
+    (top.length?card(top,'contributor',top[0].points,''):'')+
+    (stew.length?card(stew,'steward',stew[0].steward,''):'')+
+    (back.length?card(back,'backer',back[0].backer,back.length>1?`${given(back[0])} each on Open Collective`:`${given(back[0])} given on Open Collective`):'')+'</div>';
   tally(v);
   document.getElementById('tbl-title').innerHTML=`Standings &middot; ${esc(v.name)} <span class="seg"><span class="${rankBy==='total'?'on':''}" onclick="rankBy='total';linkView();render()">Total</span><span class="${rankBy==='contributor'?'on':''}" onclick="rankBy='contributor';linkView();render()">Contributor</span><span class="${rankBy==='steward'?'on':''}" onclick="rankBy='steward';linkView();render()">Steward</span><span class="${rankBy==='backer'?'on':''}" onclick="rankBy='backer';linkView();render()">Backer</span></span>`;
   const tot=r=>r.total!=null?r.total:r.points+(r.steward||0);
-  const rows=rankBy==='steward'?st.slice().sort((a,b)=>(b.steward-a.steward)||a.login.localeCompare(b.login))
+  const rows=rankBy==='steward'?st.slice().sort((a,b)=>(b.steward-a.steward)||(((b.cats||{}).reviews||0)-((a.cats||{}).reviews||0))||a.login.localeCompare(b.login))
     :rankBy==='backer'?st.slice().sort((a,b)=>((b.backer||0)-(a.backer||0))||a.login.localeCompare(b.login))
     :rankBy==='total'?st.slice().sort((a,b)=>(tot(b)-tot(a))||a.login.localeCompare(b.login)):st;
-  // Total has no award of its own; rank the eligible in total order.
-  const totRank={};let tr=0;for(const r of rows)if(rankBy==='total'&&r.eligible)totRank[r.login]=++tr;
-  const leadLogin=rankBy==='steward'?(stew&&stew.login):rankBy==='backer'?(back&&back.login):rankBy==='total'?(rows.find(r=>r.eligible)||{}).login:(top&&top.login);
+  // Total has no award of its own; rank the eligible in total order, equal
+  // totals sharing a rank (1, 1, 3) like the awards.
+  const totRank={};let tr=0,tp=null,tk=0;
+  if(rankBy==='total')for(const r of rows)if(r.eligible){tr++;if(tot(r)!==tp){tk=tr;tp=tot(r)}totRank[r.login]=tk}
+  const leaders=new Set((rankBy==='steward'?stew:rankBy==='backer'?back
+    :rankBy==='total'?rows.filter(r=>totRank[r.login]===1):top).map(r=>r.login));
   let h='';
   const backers=new Set((D.all_time||[]).filter(x=>x.backer>0).map(x=>x.login));
   // Live name filter: login, display name, bio name or callsign. Rows keep
@@ -394,7 +414,7 @@ function render(){
     return [r.login,r.name,b.name,b.callsign].some(x=>x&&String(x).toLowerCase().includes(q))};
   const shown=q?rows.filter(matches):rows;
   shown.forEach((r,i)=>{
-    const lead=r.login===leadLogin,rk=rankBy==='steward'?r.steward_rank:rankBy==='backer'?r.backer_rank:rankBy==='total'?totRank[r.login]:r.rank;
+    const lead=leaders.has(r.login),rk=rankBy==='steward'?r.steward_rank:rankBy==='backer'?r.backer_rank:rankBy==='total'?totRank[r.login]:r.rank;
     h+=`<tr class="row${lead?' lead':''}" onclick="tog(${i})"><td class="rank">${r.eligible&&rk?(lead?'<span class="gold">1</span>':rk):'&mdash;'}</td>`+
       // Icon badges share one column, flowing from its left edge (core
       // shield, then 1st); the text labels stay beside the name.

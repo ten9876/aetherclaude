@@ -1327,7 +1327,7 @@ def bios(db, led, logins=None):
     ws = [w for w in windows(db) if w['tag'] != 'current']
     starts = [w['start'] or '' for w in ws]
     import bisect
-    agg = [defaultdict(lambda: [0, 0, 0, 0, 0]) for _ in ws]   # contributor, steward, backer, prs, issues
+    agg = [defaultdict(lambda: [0, 0, 0, defaultdict(int)]) for _ in ws]   # contributor, steward, backer, cats
     for e in led:
         at = e[2] or ''
         i = bisect.bisect_right(starts, at) - 1
@@ -1335,24 +1335,20 @@ def bios(db, led, logins=None):
             continue
         pts = e[5] if len(e) > 5 else RULES[e[1]][0]
         a = agg[i][e[0]]
-        if e[1] in STEWARD_RULES:
-            a[1] += pts
-        elif e[1] in BACKER_RULES:
-            a[2] += pts
-        else:
-            a[0] += pts
-            cat = RULES[e[1]][1]
-            a[3] += pts if cat == 'prs' else 0
-            a[4] += pts if cat == 'issues' else 0
+        a[1 if e[1] in STEWARD_RULES else 2 if e[1] in BACKER_RULES else 0] += pts
+        a[3][RULES[e[1]][1]] += pts
     awards = defaultdict(lambda: defaultdict(list))
     for w, a in zip(ws, agg):
         elig = {l: v for l, v in a.items()
                 if role_of(l, (people.get(l) or ('User',))[0]) == 'contributor'}
         for idx, kind in ((0, 'contributor'), (1, 'steward'), (2, 'backer')):
-            cand = [(v[idx], v[3], v[4], l) for l, v in elig.items() if v[idx] > 0]
-            if cand:
-                top = max(cand, key=lambda c: (c[0], c[1], c[2], [-ord(ch) for ch in c[3].lower()]))
-                awards[top[3]][kind].append(w['tag'])
+            keys = {l: AWARD_KEYS[kind]({'contributor': v[0], 'steward': v[1], 'backer': v[2]}, v[3])
+                    for l, v in elig.items() if v[idx] > 0}
+            if keys:
+                best = max(keys.values())
+                for l, k in keys.items():
+                    if k == best:   # every tied winner shares the award
+                        awards[l][kind].append(w['tag'])
     badges = achievements(db, led)
     out = {}
     for login in (want if want is not None else set(first)):
@@ -1567,6 +1563,26 @@ FIRSTS = (
 )
 
 
+# What ranks each weekly award, best first: its points, then the documented
+# tiebreakers. Equal keys are a tie — a shared rank and a shared award.
+AWARD_KEYS = {
+    'contributor': lambda pts, cats: (pts['contributor'], cats.get('prs', 0), cats.get('issues', 0)),
+    'steward': lambda pts, cats: (pts['steward'], cats.get('reviews', 0)),
+    'backer': lambda pts, cats: (pts['backer'],),
+}
+
+
+def rank_with_ties(rows, key, field):
+    """Competition ranking (1, 1, 3) of rows by key, best first."""
+    rows = sorted(rows, key=lambda r: (tuple(-k for k in key(r)), r['login'].lower()))
+    prev = None
+    for i, r in enumerate(rows, 1):
+        k = key(r)
+        if k != prev:
+            rank, prev = i, k
+        r[field] = rank
+
+
 def standings(db, led, start=None, end=None):
     earliest = {}   # (login, kind) -> the first time they ever did it
     for e in led:
@@ -1605,24 +1621,14 @@ def standings(db, led, start=None, end=None):
                     'points': r['points'] - steward - backer,   # contributor points
                     'steward': steward, 'backer': backer, 'total': r['points'], 'cats': dict(r['cats']),
                     'events': sorted(r['events'], key=lambda e: e['at'] or '', reverse=True)})
-    out.sort(key=lambda r: (-r['points'], -r['cats'].get('prs', 0), -r['cats'].get('issues', 0), r['login'].lower()))
-    rank = 0
-    for r in out:
-        if r['eligible']:
-            rank += 1
-            r['rank'] = rank
-    # Backer of the week: ranked on backer points alone.
-    brank = 0
-    for r in sorted(out, key=lambda r: (-r['backer'], r['login'].lower())):
-        if r['eligible'] and r['backer'] > 0:
-            brank += 1
-            r['backer_rank'] = brank
-    # Steward of the week: ranked on steward points alone.
-    srank = 0
-    for r in sorted(out, key=lambda r: (-r['steward'], -r['cats'].get('reviews', 0), r['login'].lower())):
-        if r['eligible'] and r['steward'] > 0:
-            srank += 1
-            r['steward_rank'] = srank
+    def key(kind):
+        return lambda r: AWARD_KEYS[kind]({'contributor': r['points'], 'steward': r['steward'],
+                                           'backer': r['backer']}, r['cats'])
+    out.sort(key=lambda r: (tuple(-k for k in key('contributor')(r)), r['login'].lower()))
+    eligible = [r for r in out if r['eligible']]
+    rank_with_ties(eligible, key('contributor'), 'rank')
+    rank_with_ties([r for r in eligible if r['steward'] > 0], key('steward'), 'steward_rank')
+    rank_with_ties([r for r in eligible if r['backer'] > 0], key('backer'), 'backer_rank')
     return out
 
 

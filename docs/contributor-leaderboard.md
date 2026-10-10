@@ -179,7 +179,10 @@ A week runs from one non-prerelease AetherSDR release (a `v` tag, such as
 `v26.10.1`) to the next, so the winners are known when the release is
 published. The current week is shown as
 "leading" until the next release lands. Contributor ties break on more PR points, then more issue points; steward
-ties on more review points.
+ties on more review points; backers have no tiebreaker. Beyond those, a tie
+is a tie: the tied share a rank (1, 1, 3), each is credited with the award,
+and the award card names them all. The Total ranking shares ranks on equal
+totals the same way.
 
 ## Data model
 
