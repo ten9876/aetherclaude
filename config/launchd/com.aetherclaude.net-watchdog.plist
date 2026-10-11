@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aetherclaude.net-watchdog</string>
+
+    <!--
+      Every minute, as root: checks the wired uplink (link, DHCP address,
+      default route, router answering) and resets the interface after 5
+      minutes down, then every 5 minutes until it is back. Runs the script
+      from the deploy checkout; state in /var/db, log in
+      /var/log/aetherclaude-net-watchdog.log.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/Shared/aetherclaude/bin/net-watchdog.sh</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/aetherclaude-net-watchdog.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/aetherclaude-net-watchdog.err.log</string>
+</dict>
+</plist>
