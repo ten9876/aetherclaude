@@ -46,6 +46,12 @@ BOTS = {b.lower() for b in ('aethersdr-agent[bot]', 'aethersdr-agent', 'AetherCl
                             'github-actions[bot]')}
 BREAK_WORKFLOWS = ('ci.yml', 'full-suite.yml')   # run on every push to main
 INFRA_CAUSES = {'disk', 'oom', 'timeout', 'runner'}
+
+
+def informative(concl, cause):
+    """A main run that says something about the code: green, or red for a
+    reason other than the runner."""
+    return concl == 'success' or (concl == 'failure' and cause not in INFRA_CAUSES)
 CONFIRM_LABELS = {'bug', 'enhancement'}
 SPAM_LABELS = {'spam'}          # -3, and no points for opening it
 VOID_LABELS = {'invalid'}        # no points for opening it, no penalty
@@ -596,6 +602,26 @@ def collect_codeowners(gh, db):
     db.commit()
 
 
+def collect_spans(gh, db):
+    """How many commits each red run's commit adds since the run before it.
+    A commit can land with no run of its own (a backlogged queue), and its
+    failure then first shows on a later commit's run; the scorer blames a
+    PR only when that span is one commit."""
+    for wf in BREAK_WORKFLOWS:
+        prev = None
+        for sha, concl, cause in db.execute('SELECT sha, conclusion, cause FROM runs WHERE workflow=?'
+                                            ' ORDER BY created_at', (wf,)).fetchall():
+            if not informative(concl, cause):
+                continue
+            key = f'span:{prev}..{sha}'
+            if concl == 'failure' and prev and prev != sha and not db.execute(
+                    'SELECT 1 FROM state WHERE name=?', (key,)).fetchone():
+                cmp_, _ = gh.get(f'repos/{REPO}/compare/{prev}...{sha}')
+                db.execute('INSERT OR REPLACE INTO state VALUES(?,?)', (key, str(cmp_.get('ahead_by', ''))))
+            prev = sha
+    db.commit()
+
+
 def collect(gh, db, since):
     q = urllib.parse.quote
     run_start = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -940,6 +966,9 @@ def collect(gh, db, since):
                         p.get('merge_commit_sha')))
             collect_reviews(gh, db, num)
 
+    print(f'  step: commits between runs ({gh.calls} calls)', file=sys.stderr, flush=True)
+    collect_spans(gh, db)
+
     print(f'  step: first merged pr ever ({gh.calls} calls)', file=sys.stderr, flush=True)
     # First merged PR ever, per person seen merging a PR since the cursor.
     # With the full history stored it is a lookup; until then, a search.
@@ -1180,12 +1209,14 @@ def score(db):
     runs = db.execute('SELECT id, workflow, sha, created_at, conclusion, url, cause, sig FROM runs'
                       ' ORDER BY created_at').fetchall()
     pr_of = {k[6:]: v for k, v in db.execute("SELECT name, value FROM state WHERE name LIKE 'pr_of:%'")}
+    span = {k[5:]: v for k, v in db.execute("SELECT name, value FROM state WHERE name LIKE 'span:%'")}
     breaks = []
     for wf in BREAK_WORKFLOWS:
-        stretch, open_breaks, seen_green = set(), [], False
+        stretch, open_breaks, seen_green, prev = set(), [], False, None
         for rid, w, sha, at, concl, url, cause, sig in [r for r in runs if r[1] == wf]:
-            if concl not in ('success', 'failure') or (concl == 'failure' and cause in INFRA_CAUSES):
+            if not informative(concl, cause):
                 continue
+            base, prev = prev, sha
             if concl == 'success':
                 for ob in open_breaks:
                     ob['fixed_sha'], ob['fixed_at'] = sha, at
@@ -1198,6 +1229,11 @@ def score(db):
                 b = {'sha': sha, 'at': at, 'url': url, 'workflow': wf, 'cause': cause,
                      'pr': int(pr_of.get(sha) or 0) or None, 'first': not stretch,
                      'new': sorted(x.split(':', 1)[1] or x for x in new)[:10]}
+                # More than one commit since the run before: any of them could
+                # have done it, so the break is recorded but nobody is blamed.
+                n = span.get(f'{base}..{sha}', '')
+                if n.isdigit() and int(n) > 1:
+                    b['pr'], b['range'] = None, {'from': base, 'commits': int(n)}
                 breaks.append(b)
                 open_breaks.append(b)
             stretch |= elems

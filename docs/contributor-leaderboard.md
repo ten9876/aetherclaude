@@ -138,8 +138,10 @@ The rules popup on the page builds this example from the live point values.
 | Issue or PR labelled `invalid` | no points for opening it, no penalty |
 
 - A **break** is the first failed `CI` or `Full Suite` run on `main` after a
-  green one; both run on every push, so the commit is attributable. The PR is
-  the one that commit came from.
+  green one. The PR is the one that commit came from, when it is the only
+  commit since the run before. When several commits landed between two runs
+  (a backlogged queue can skip a commit's run), any of them could have
+  caused it: the break is recorded with its range, and nobody is penalized.
 - While `main` is already red, a later commit is a break too if its run fails
   something **new**: a test (or, for build failures, a file) that has not
   failed at any point since `main` went red. Landing into a red `main`
@@ -237,7 +239,7 @@ window and by category.
 | Releases (and who published them) | `GET /repos/{repo}/releases` |
 | Issue closes | `GET /repos/{repo}/issues/events` (`closed`) |
 | Commits on merged PRs | `GET /pulls/{n}/commits`, once per merged PR |
-| Breaks | `GET /actions/workflows/{ci,full-suite}.yml/runs?branch=main`, the failed job's log (cause), `GET /commits/{sha}/pulls` |
+| Breaks | `GET /actions/workflows/{ci,full-suite}.yml/runs?branch=main`, the failed job's log (cause), `GET /commits/{sha}/pulls`, `GET /compare/{prev}...{sha}` (commits since the run before) |
 | First merged PR | search `is:pr is:merged author:{login}` |
 
 Collection is incremental from a `since` cursor and throttled so it never uses
