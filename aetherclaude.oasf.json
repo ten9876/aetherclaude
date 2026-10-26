@@ -1,7 +1,7 @@
 {
   "name": "github.com/ten9876/aetherclaude",
   "version": "v1.0.0",
-  "schema_version": "0.8.0",
+  "schema_version": "1.1.0",
   "description": "AetherClaude is an autonomous, security-first GitHub agent for the AetherSDR project. It triages incoming issues, reviews pull requests, explains CI failures, detects duplicates, welcomes first-time contributors, and drafts fixes for maintainer-authorized issues. It runs Claude (claude-opus-5) via Claude Code inside a defense-in-depth sandbox: dedicated unprivileged user, pf egress firewall, Cisco Isovalent Tetragon eBPF runtime observability, MCP token-isolation gateway, AI-output scanners, and mandatory human review on every merge. All runs emit traces consumable in the AGNTCY observability schema via the dashboard's /api/agent-walk-otel endpoint.",
   "authors": [
     "Jeremy Fielder (KK7GWY)"
@@ -9,67 +9,68 @@
   "created_at": "2026-06-11T01:30:00Z",
   "skills": [
     {
-      "name": "natural_language_processing/analytical_reasoning/problem_solving",
-      "id": 10702
+      "name": "reasoning_planning/logical_reasoning/problem_solving",
+      "id": 150102
     },
     {
-      "name": "natural_language_processing/natural_language_generation/summarization",
-      "id": 10202
+      "name": "language_processing/language_generation/summarization",
+      "id": 10302
     },
     {
-      "name": "analytical_skills/coding_skills/text_to_code",
-      "id": 50201
+      "name": "software_engineering/code_generation/text_to_code",
+      "id": 60101
     },
     {
-      "name": "analytical_skills/coding_skills/code_optimization",
-      "id": 50204
+      "name": "software_engineering/code_quality/code_refactoring",
+      "id": 60702
     },
     {
       "name": "governance_compliance/audit_trail_summarization",
-      "id": 1303
+      "id": 1804
     },
     {
       "name": "governance_compliance/risk_classification",
-      "id": 1304
+      "id": 1803
     },
     {
-      "name": "tool_interaction/tool_use_planning",
-      "id": 1403
+      "name": "tool_use_automation/tool_use_planning",
+      "id": 1701
     },
     {
-      "name": "advanced_reasoning_planning/long_horizon_reasoning",
-      "id": 1502
+      "name": "reasoning_planning/long_horizon_reasoning",
+      "id": 1503
     }
   ],
   "domains": [
     {
-      "id": 102,
-      "name": "technology/software_engineering"
-    },
-    {
-      "id": 10202,
-      "name": "technology/software_engineering/devops"
+      "name": "technology/software_engineering",
+      "id": 102
     }
   ],
   "locators": [
     {
       "type": "source_code",
-      "url": "https://github.com/ten9876/AetherClaude"
+      "urls": [
+        "https://github.com/ten9876/AetherClaude"
+      ]
     },
     {
       "type": "url",
-      "url": "https://dashboard.aethersdr.com"
+      "urls": [
+        "https://dashboard.aethersdr.com"
+      ]
     }
   ],
   "modules": [
     {
-      "name": "core/llm/model",
-      "id": 10201,
+      "name": "core/language_model",
+      "id": 103,
       "data": {
         "models": [
           {
             "provider": "anthropic",
-            "model": "claude-opus-5"
+            "model": "claude-opus-5",
+            "api_base": "https://api.anthropic.com"
           }
         ]
       }
