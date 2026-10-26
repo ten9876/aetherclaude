@@ -132,16 +132,21 @@ if [ -n "${AI_DEFENSE_API_KEY:-}" ]; then
 
     # This would be called per-prompt in the orchestrator, not here
     # Just verify connectivity
-    DEFENSE_STATUS=$(python3 -c "
+    # The key goes to Python through the environment, never on its command line,
+    # where any local process could read it. PyPI package: cisco-aidefense-sdk,
+    # imported as aidefense.
+    DEFENSE_STATUS=$(AI_DEFENSE_API_KEY="$AI_DEFENSE_API_KEY" python3 - 2>/dev/null <<'PY' || echo "SDK not available"
+import os
 try:
-    from cisco_ai_defense import AIDefenseClient
-    client = AIDefenseClient(api_key='${AI_DEFENSE_API_KEY}')
-    print('SDK available and configured')
+    from aidefense import ChatInspectionClient
+    ChatInspectionClient(api_key=os.environ["AI_DEFENSE_API_KEY"])
+    print("SDK available and configured")
 except ImportError:
-    print('SDK not installed (pip install cisco-ai-defense-python-sdk)')
+    print("SDK not installed (pip install cisco-aidefense-sdk)")
 except Exception as e:
-    print(f'SDK error: {e}')
-" 2>/dev/null || echo "SDK not available")
+    print(f"SDK error: {type(e).__name__}")
+PY
+)
 
     log "AI Defense SDK: $DEFENSE_STATUS"
 else
