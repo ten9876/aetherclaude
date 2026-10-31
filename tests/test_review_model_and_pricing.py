@@ -188,15 +188,14 @@ class PricingTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('bot_cost', ROOT / 'bin/bot-cost.py')
         cls.bot = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.bot)
-        cls.dashboard = pricing_functions(ROOT / 'bin/tetragon-dashboard.py',
-                                          {'_MODEL_RATES', '_MODEL_RATES_DEFAULT',
-                                           '_HAIKU_LONG_CONTEXT_RATES', '_turn_cost', 'scan_tokens'})
+        cls.pricing = cls.bot.model_pricing
+        cls.dashboard = pricing_functions(ROOT / 'bin/tetragon-dashboard.py', {'_turn_cost', 'scan_tokens'})
+        cls.dashboard['model_pricing'] = cls.pricing
 
     def test_each_token_category_uses_published_rate(self):
         keys = ['input_tokens', 'output_tokens', 'cache_read_input_tokens',
                 'cache_creation_input_tokens']
-        self.assertEqual(set(self.bot.PRICING), set(EXPECTED_MODEL_RATES))
-        self.assertEqual(set(self.dashboard['_MODEL_RATES']), set(EXPECTED_MODEL_RATES))
+        self.assertEqual(set(self.pricing.MODELS), set(EXPECTED_MODEL_RATES))
         for model, rates in EXPECTED_MODEL_RATES.items():
             for index, expected in enumerate(rates):
                 with self.subTest(model=model, category=keys[index]):
@@ -216,6 +215,11 @@ class PricingTests(unittest.TestCase):
                 counts = dict(zip(self.bot.TOKEN_KEYS, [1_000_000, 0, 0, 0]))
                 self.assertAlmostEqual(self.bot.cost_for(model, counts), expected)
                 self.assertAlmostEqual(self.dashboard['_turn_cost'](model, 1_000_000, 0, 0, 0), expected)
+
+    def test_unknown_model_uses_the_shared_fallback(self):
+        counts = dict(zip(self.bot.TOKEN_KEYS, [1_000_000, 0, 0, 0]))
+        self.assertAlmostEqual(self.bot.cost_for('claude-unlisted-9', counts), 4)
+        self.assertAlmostEqual(self.dashboard['_turn_cost']('claude-unlisted-9', 1_000_000, 0, 0, 0), 4)
 
     def test_haiku_threshold_counts_all_input_but_not_output(self):
         # At 100k input the lower rates apply. Crossing it changes all
@@ -248,16 +252,16 @@ class PricingTests(unittest.TestCase):
             self.bot.SESSION_GLOB = str(project / '*.jsonl')
             self.bot.OFFSET_FILE = str(Path(tmp) / 'offsets.json')
             try:
-                _, empty = self.bot.read_usage_since_marker()
-                self.assertEqual(self.bot.cost_for('', empty), 0)
+                _, _, usd = self.bot.read_usage_since_marker()
+                self.assertEqual(usd, 0)
                 path.write_text(''.join(json.dumps(record) + '\n' for record in self.usage_records()))
                 for reader in [lambda: self.bot.read_usage_for_session('session'),
                                self.bot.read_usage_since_marker]:
-                    model, totals = reader()
+                    model, totals, usd = reader()
                     self.assertEqual(totals['input_tokens'], 400_001)
-                    self.assertAlmostEqual(self.bot.cost_for(model, totals), .4700005)
-                _, empty = self.bot.read_usage_since_marker()
-                self.assertEqual(self.bot.cost_for('', empty), 0)
+                    self.assertAlmostEqual(usd, .4700005)
+                _, _, usd = self.bot.read_usage_since_marker()
+                self.assertEqual(usd, 0)
             finally:
                 self.bot.SESSION_ROOT, self.bot.SESSION_GLOB, self.bot.OFFSET_FILE = previous
 
@@ -305,6 +309,120 @@ class PricingTests(unittest.TestCase):
             self.assertEqual(stats['cost'], .48)
             self.assertEqual(stats['cycle_cost'], .48)
 
+    def split_response_records(self):
+        # Claude Code writes one line per content block of a response, each
+        # repeating the response's id and usage.
+        usage = dict(zip(self.bot.TOKEN_KEYS, [100_000, 0, 0, 0]))
+        return [{'type': 'assistant', 'message': {'id': 'msg_1', 'model': 'claude-opus-5-5', 'usage': usage,
+                                                  'content': [{'type': kind}]}}
+                for kind in ('thinking', 'text', 'tool_use', 'tool_use')]
+
+    def test_split_response_lines_count_once(self):
+        with tempfile.TemporaryDirectory(prefix='split-response-') as tmp:
+            project = Path(tmp) / '-project'
+            project.mkdir()
+            path = project / 'session.jsonl'
+            path.touch()
+            previous = self.bot.SESSION_ROOT, self.bot.SESSION_GLOB, self.bot.OFFSET_FILE
+            self.bot.SESSION_ROOT = tmp
+            self.bot.SESSION_GLOB = str(project / '*.jsonl')
+            self.bot.OFFSET_FILE = str(Path(tmp) / 'offsets.json')
+            try:
+                self.bot.read_usage_since_marker()
+                path.write_text(''.join(json.dumps(r) + '\n' for r in self.split_response_records()))
+                for reader in [lambda: self.bot.read_usage_for_session('session'),
+                               self.bot.read_usage_since_marker]:
+                    model, totals, usd = reader()
+                    self.assertEqual(totals['input_tokens'], 100_000)
+                    self.assertAlmostEqual(usd, .40)
+            finally:
+                self.bot.SESSION_ROOT, self.bot.SESSION_GLOB, self.bot.OFFSET_FILE = previous
+
+        class EndScan(BaseException):
+            pass
+
+        def stop(_):
+            raise EndScan()
+
+        with tempfile.TemporaryDirectory(prefix='split-dashboard-') as tmp:
+            (Path(tmp) / 'session.jsonl').write_text(
+                ''.join(json.dumps(r) + '\n' for r in self.split_response_records()))
+            start = datetime(2000, 1, 1)
+            errors, stats, tools = [], {}, {}
+            self.dashboard.update({
+                'os': os, 'glob': glob, 'json': json, 'defaultdict': defaultdict,
+                'time': SimpleNamespace(sleep=stop), '_tok_cache': {}, '_tok_cache_key': None,
+                '_current_cycle_start': lambda: start, '_discover_subscription_start': lambda: start,
+                '_tokenomics_epoch': lambda: None, '_bill_cycles_paid': lambda _: 1,
+                '_parse_record_ts': lambda _: None, '_log_exc': lambda *args: errors.append(args),
+                'SESSION_DIR': tmp, 'lock': nullcontext(), 'token_stats': stats, 'tool_stats': tools,
+                'SUBSCRIPTION_AMOUNT_USD': 200, 'TOKEN_REFRESH_SECS': 30,
+            })
+            with self.assertRaises(EndScan):
+                self.dashboard['scan_tokens']()
+            self.assertEqual(errors, [])
+            self.assertEqual(stats['input'], 100_000)
+            self.assertEqual(stats['messages'], 1)
+            self.assertEqual(stats['cost'], .40)
+
+    def test_trace_tokens_records_a_split_response_once(self):
+        import sqlite3
+        reconciler = pricing_functions(ROOT / 'bin/tetragon-dashboard.py', {'session_token_reconciler'})
+
+        class EndScan(BaseException):
+            pass
+
+        sleeps = []
+
+        def sleep(_):
+            sleeps.append(_)
+            if len(sleeps) > 1:   # the first is the startup delay
+                raise EndScan()
+
+        with tempfile.TemporaryDirectory(prefix='trace-tokens-') as tmp:
+            db = str(Path(tmp) / 'events.db')
+            conn = sqlite3.connect(db)
+            conn.execute('CREATE TABLE events (timestamp TEXT, trace_id TEXT, source TEXT)')
+            conn.execute('CREATE TABLE trace_tokens (trace_id TEXT, timestamp TEXT, input INT, output INT,'
+                         ' cache_read INT, cache_create INT, model TEXT)')
+            # claude-code events carry the timestamp of the transcript's tool_use line.
+            conn.execute("INSERT INTO events VALUES ('2026-10-31T00:00:02.000Z', 'trace-1', 'claude-code')")
+            conn.commit()
+            conn.close()
+            records = self.split_response_records()
+            for i, r in enumerate(records):
+                r['timestamp'] = '2026-10-31T00:00:0%d.000Z' % i
+            (Path(tmp) / 'session.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in records))
+            errors = []
+            reconciler.update({'os': os, 'glob': glob, 'json': json, 'sqlite3': sqlite3,
+                               'time': SimpleNamespace(sleep=sleep), 'EVENTS_DB': db, 'SESSION_DIR': tmp,
+                               'SESSION_TOKEN_RECONCILE_SECS': 1,
+                               '_log_exc': lambda *args: errors.append(args)})
+            with self.assertRaises(EndScan):
+                reconciler['session_token_reconciler']()
+            self.assertEqual(errors, [])
+            rows = sqlite3.connect(db).execute('SELECT trace_id, input FROM trace_tokens').fetchall()
+            self.assertEqual(rows, [('trace-1', 100_000)])
+
+    def test_request_without_model_does_not_borrow_a_neighbours(self):
+        with tempfile.TemporaryDirectory(prefix='model-less-') as tmp:
+            project = Path(tmp) / '-project'
+            project.mkdir()
+            usage = dict(zip(self.bot.TOKEN_KEYS, [1_000_000, 0, 0, 0]))
+            (project / 'session.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in [
+                {'type': 'assistant', 'message': {'id': 'a', 'model': 'claude-fable-5-1', 'usage': usage}},
+                {'type': 'assistant', 'message': {'id': 'b', 'usage': usage}},
+            ]))
+            previous = self.bot.SESSION_ROOT
+            self.bot.SESSION_ROOT = tmp
+            try:
+                model, totals, usd = self.bot.read_usage_for_session('session')
+            finally:
+                self.bot.SESSION_ROOT = previous
+            self.assertEqual(model, 'claude-fable-5-1')
+            self.assertEqual(self.bot.FALLBACK_MODEL, 'claude-opus-5-5')
+            self.assertAlmostEqual(usd, 10 + 4)
+
     def test_transcript_model_and_footer_use_opus_5_5(self):
         with tempfile.TemporaryDirectory(prefix='review-cost-') as tmp:
             project = Path(tmp) / '-review-project'
@@ -320,11 +438,10 @@ class PricingTests(unittest.TestCase):
             previous = self.bot.SESSION_ROOT
             self.bot.SESSION_ROOT = tmp
             try:
-                model, totals = self.bot.read_usage_for_session('review-session')
+                model, totals, cost = self.bot.read_usage_for_session('review-session')
             finally:
                 self.bot.SESSION_ROOT = previous
             self.assertEqual(model, 'claude-opus-5-5')
-            cost = self.bot.cost_for(model, totals)
             self.assertAlmostEqual(cost, 1.20)
             self.assertAlmostEqual(self.dashboard['_turn_cost'](model, 100_000, 10_000, 1_000_000, 50_000), 1.20)
             self.assertIn('cost: $1.2000 · model: claude-opus-5-5', self.bot.format_footer(model, cost))

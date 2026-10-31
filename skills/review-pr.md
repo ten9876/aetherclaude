@@ -95,9 +95,12 @@ Every finding, blocking or non-blocking, must identify all three:
 If an item does not meet all three, leave it out of the findings. Do not
 post preference-only suggestions, formatting or naming tastes, hypothetical
 defenses without a reachable failure, unrelated cleanup, or requests to
-repeat evidence already supplied in the PR or linked discussion. Check
-existing review comments before repeating a finding; add one only when you
-have new evidence or an unresolved consequence at this head.
+repeat evidence already supplied in the PR or linked discussion. Asking for
+the PR body to state a change the diff makes is not repeating evidence: the
+body becomes the squash commit message, so a change disclosed only in the
+thread is lost from history (§3's verdict table). Check existing review
+comments before repeating a finding; add one only when you have new evidence
+or an unresolved consequence at this head.
 
 Report access limits and untested claims briefly under "What I tried to
 break". They become findings only when separate evidence establishes a
@@ -254,10 +257,10 @@ Verdicts, applied consistently:
 | Finding | Verdict |
 |---|---|
 | Unrelated to the issue and to the stated fix | **Blocker** — ask to unbundle into its own PR |
-| Explained by the issue *thread* but absent from the PR body | Not a blocker — but name it, and ask for the body to be updated |
+| Explained by the issue *thread* but absent from the PR body | Non-blocking finding — the body becomes the squash commit message; ask for it there |
 | New public/protocol surface | **Needs maintainer decision** |
 | A removed guard whose symptom can recur | **Blocker** (a regression), quoting the deleted comment |
-| User-visible default changed, correct but undisclosed | Nit, plus a request to state it in the body |
+| User-visible default changed, correct but undisclosed | Non-blocking finding — ask to state it in the body |
 
 Scope is about whether a change belongs in *this PR*; §5 is about whether it
 is legitimate at all. A change can be perfectly correct and still out of scope

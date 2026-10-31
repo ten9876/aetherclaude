@@ -3165,57 +3165,13 @@ def scan_rings():
 # the cache stays current via append_event. Bounded to recent 7 days to
 # keep the warm-up bounded; the picker orders by first_ts DESC and shows
 # recent traces, so older ones fall off the list naturally.
-# Standard USD/MTok rates: input, output, cache read, one-hour cache write.
-# Mirrors bot-cost.py; verified against Anthropic's pricing on 2026-10-31:
-# https://platform.claude.com/docs/en/about-claude/pricing
-# Haiku 5.5 has a higher tier above 100,000 input tokens per request.
-# Unknown or synthetic models retain the existing Fable 5 fallback.
-_MODEL_RATES = {
-    'claude-fable-5-1':      (10.00, 50.00, 0.25, 20.00),
-    'claude-opus-5-5':       ( 4.00, 20.00, 0.20,  8.00),
-    'claude-sonnet-5-5':     ( 2.00, 10.00, 0.10,  4.00),
-    'claude-haiku-5-5':      ( 0.10,  0.50, 0.01,  0.20),
-    'claude-mythos-5-1':     (10.00, 50.00, 0.25, 20.00),
-    'claude-fable-5':        (10.00, 50.00, 1.00, 20.00),
-    'claude-mythos-5':       (10.00, 50.00, 1.00, 20.00),
-    'claude-opus-5':         ( 5.00, 25.00, 0.50, 10.00),
-    'claude-opus-4-8':       ( 5.00, 25.00, 0.50, 10.00),
-    'claude-opus-4-7':       ( 5.00, 25.00, 0.50, 10.00),
-    'claude-opus-4-6':       ( 5.00, 25.00, 0.50, 10.00),
-    'claude-opus-4-5':       ( 5.00, 25.00, 0.50, 10.00),
-    'claude-opus-4-1':       (15.00, 75.00, 1.50, 30.00),
-    'claude-opus-4':         (15.00, 75.00, 1.50, 30.00),
-    'claude-sonnet-5':       ( 2.00, 10.00, 0.20,  4.00),
-    'claude-sonnet-4-6':     ( 3.00, 15.00, 0.30,  6.00),
-    'claude-sonnet-4-5':     ( 3.00, 15.00, 0.30,  6.00),
-    'claude-sonnet-4':       ( 3.00, 15.00, 0.30,  6.00),
-    'claude-haiku-4-5':      ( 1.00,  5.00, 0.10,  2.00),
-    'claude-3-5-haiku':      ( 0.80,  4.00, 0.08,  1.60),
-}
-_MODEL_RATES_DEFAULT = _MODEL_RATES['claude-fable-5']
-_HAIKU_LONG_CONTEXT_RATES = (0.50, 2.50, 0.05, 1.00)
+# Per-request API-equivalent cost. Prices live in config/model-pricing.json,
+# shared with the post footer (bot-cost.py) through bin/model_pricing.py.
+import model_pricing  # noqa: E402
 
 def _turn_cost(model, inp, out, cr, cc):
-    model = model or ''
-    base, _, date = model.rpartition('-')
-    if len(date) == 8 and date.isdigit():
-        model = base
-    if model in ('claude-opus-4-0', 'claude-sonnet-4-0'):
-        model = model[:-2]
-    rates = _MODEL_RATES.get(model, _MODEL_RATES_DEFAULT)
-    if model == 'claude-haiku-5-5' and inp + cr + cc > 100_000:
-        rates = _HAIKU_LONG_CONTEXT_RATES
-    ri, ro, rcr, rcc = rates
-    return inp / 1e6 * ri + out / 1e6 * ro + cr / 1e6 * rcr + cc / 1e6 * rcc
+    return model_pricing.request_cost(model, inp, out, cr, cc)
 
-
-def _api_equivalent_cost(inp, out, cache_read, cache_create):
-    # API-equivalent cost at Fable 5 rates (model in use since the
-    # 2026-06-10 cutover): input $10 / output $50 / cache-read $1.00 /
-    # cache-write $20.00 per MTok.
-    return round(
-        inp/1e6 * 10.0 + out/1e6 * 50.0
-      + cache_read/1e6 * 1.00 + cache_create/1e6 * 20.0, 2)
 
 def warmup_claude_active_traces():
     time.sleep(2)  # let init_db / load_memory_buffer finish first
@@ -3473,6 +3429,7 @@ def scan_tokens():
                 cyc  = defaultdict(lambda: [0, 0, 0, 0, 0, 0.0])
                 t_total = 0
                 t_bd = defaultdict(int)
+                msg_ids = set()   # one usage per response, not per content-block line
                 file_in_cycle = stt.st_mtime >= cyc_ts
                 try:
                     with open(f) as fh:
@@ -3488,6 +3445,11 @@ def scan_tokens():
                             msg = d.get('message', {})
                             if has_usage:
                                 u = msg.get('usage', {})
+                                mid = msg.get('id')
+                                if u and mid in msg_ids:
+                                    u = None
+                                elif u and mid:
+                                    msg_ids.add(mid)
                                 if u:
                                     inp = u.get('input_tokens', 0)
                                     out = u.get('output_tokens', 0)
@@ -3924,6 +3886,7 @@ def session_token_reconciler():
                 seen_sig[f] = sig
                 usage = []
                 map_ts = []
+                msg_ids = set()   # one usage row per response, not per content-block line
                 try:
                     with open(f) as fh:
                         for line in fh:
@@ -3938,6 +3901,11 @@ def session_token_reconciler():
                                 continue
                             msg = d.get('message') or {}
                             u = msg.get('usage') or {}
+                            mid = msg.get('id')
+                            if u and mid in msg_ids:
+                                u = None
+                            elif u and mid:
+                                msg_ids.add(mid)
                             if u:
                                 usage.append((ts, u.get('input_tokens', 0),
                                               u.get('output_tokens', 0),
@@ -8821,7 +8789,7 @@ header a.back:hover{color:var(--accent-bright);border-color:var(--accent-bright)
   <button class="speed-btn" data-speed="64">64×</button>
   <div class="progress"><div class="bar" id="progress-bar"></div></div>
   <span class="ts-label" id="progress-ts">—</span>
-  <span class="tok-counter" id="tok-counter" title="Tokens (input+output) and API-equivalent cost at Fable 5 rates">—</span>
+  <span class="tok-counter" id="tok-counter" title="Tokens (input+output) and API-equivalent cost at each request's model rates">—</span>
 </div>
 <div class="live-bar" id="live-bar">
   <span class="dot"></span><span class="label">LIVE</span>
@@ -11403,7 +11371,7 @@ a{{color:#0a6aba}}
                 _attr('gen_ai.agent.id', 'github.com/ten9876/aetherclaude'),
                 _attr('gen_ai.agent.description',
                       'Autonomous GitHub issue-triage, PR-review and CI-explainer agent for AetherSDR'),
-                _attr('gen_ai.request.model', 'claude-fable-5'),
+                _attr('gen_ai.request.model', 'claude-opus-5-5'),
                 _attr('gen_ai.ioa.span_kind', 'agent'),
                 _attr('gen_ai.ioa.collection_method', 'instrumentation'),
             ]
@@ -11965,7 +11933,7 @@ a{{color:#0a6aba}}
                         _tl.append({'time': _r[0], 'input': _r[1], 'output': _r[2],
                                     'cache_read': _r[3], 'cache_create': _r[4],
                                     'model': _r[5],
-                                    'cost': _turn_cost(_r[5], _r[1], _r[2], _r[3], _r[4])})
+                                    'cost': round(_turn_cost(_r[5], _r[1], _r[2], _r[3], _r[4]), 6)})
                     _tc.close()
                 except Exception as _e:
                     _log_exc('agent_walk.token_timeline', _e)

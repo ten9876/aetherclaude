@@ -35,12 +35,16 @@ and an actionable correction for each finding. Verification limits are
 disclosed separately, and an empty non-blocking findings section is omitted.
 Code-supported defects and explicit project requirements still qualify.
 
-`bin/bot-cost.py` and `bin/tetragon-dashboard.py` cover all 20 models on
+`config/model-pricing.json` holds the rates for all 20 models on
 [Anthropic's price list](https://platform.claude.com/docs/en/about-claude/pricing),
-verified October 31, 2026. They use standard input, output, cached-read, and
-one-hour cache-write rates, including the newer Fable/Mythos 5.1 and
-Sonnet/Haiku 5.5 rates and legacy model snapshots. Older dated transcript
-IDs resolve to their model's rate rather than the unknown-model fallback.
+verified October 31, 2026; `bin/bot-cost.py` and `bin/tetragon-dashboard.py`
+both read it through `bin/model_pricing.py`, so a price change is one edit.
+They use standard input, output, cached-read, and one-hour cache-write rates,
+including the newer Fable/Mythos 5.1 and Sonnet/Haiku 5.5 rates and legacy
+model snapshots. Older dated transcript IDs resolve to their model's rate;
+any other unknown model is priced as Opus 5.5. Claude Code writes one
+transcript line per content block, each repeating the response's usage, so
+each response is counted once by its message ID.
 
 Haiku 5.5's higher rate applies only when a request exceeds 100,000 input
 tokens, counting uncached input, cache reads, and cache writes. Each request

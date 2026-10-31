@@ -26,58 +26,15 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 
-# ---------------------------------------------------------------------------
-# PRICING — UPDATE-ME when Anthropic published prices change.
-# Source: https://platform.claude.com/docs/en/about-claude/pricing
-# Standard rates for every model on the published price list, verified 2026-10-31.
-# All rates are USD per 1,000,000 tokens.
-#   cache_read   = published per-model rate (discounts differ by generation)
-#   cache_create = 2.00x base input  (1-HOUR ephemeral cache surcharge)
-#
-# Cache_create uses the 1-hour rate, not the 5-minute rate (1.25x), because
-# Claude Code defaults to ephemeral_1h_input_tokens — confirmed by
-# inspecting session JSONLs (`cache_creation.ephemeral_1h_input_tokens`
-# is populated; 5m field stays at 0). Earlier table used 5-min rates and
-# was under-attributing cache writes by 37%.
-# ---------------------------------------------------------------------------
-PRICING = {
-    'claude-fable-5-1':      {'input': 10.00, 'cache_read': 0.25, 'cache_create': 20.00, 'output': 50.00},
-    'claude-opus-5-5':       {'input':  4.00, 'cache_read': 0.20, 'cache_create':  8.00, 'output': 20.00},
-    'claude-sonnet-5-5':     {'input':  2.00, 'cache_read': 0.10, 'cache_create':  4.00, 'output': 10.00},
-    'claude-haiku-5-5':      {'input':  0.10, 'cache_read': 0.01, 'cache_create':  0.20, 'output':  0.50},
-    'claude-mythos-5-1':     {'input': 10.00, 'cache_read': 0.25, 'cache_create': 20.00, 'output': 50.00},
-    'claude-fable-5':        {'input': 10.00, 'cache_read': 1.00, 'cache_create': 20.00, 'output': 50.00},
-    'claude-mythos-5':       {'input': 10.00, 'cache_read': 1.00, 'cache_create': 20.00, 'output': 50.00},
-    'claude-opus-5':         {'input':  5.00, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.00},
-    'claude-opus-4-8':       {'input':  5.00, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.00},
-    'claude-opus-4-7':       {'input':  5.00, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.00},
-    'claude-opus-4-6':       {'input':  5.00, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.00},
-    'claude-opus-4-5':       {'input':  5.00, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.00},
-    'claude-opus-4-1':       {'input': 15.00, 'cache_read': 1.50, 'cache_create': 30.00, 'output': 75.00},
-    'claude-opus-4':         {'input': 15.00, 'cache_read': 1.50, 'cache_create': 30.00, 'output': 75.00},
-    'claude-sonnet-5':       {'input':  2.00, 'cache_read': 0.20, 'cache_create':  4.00, 'output': 10.00},
-    'claude-sonnet-4-6':     {'input':  3.00, 'cache_read': 0.30, 'cache_create':  6.00, 'output': 15.00},
-    'claude-sonnet-4-5':     {'input':  3.00, 'cache_read': 0.30, 'cache_create':  6.00, 'output': 15.00},
-    'claude-sonnet-4':       {'input':  3.00, 'cache_read': 0.30, 'cache_create':  6.00, 'output': 15.00},
-    'claude-haiku-4-5':      {'input':  1.00, 'cache_read': 0.10, 'cache_create':  2.00, 'output':  5.00},
-    'claude-3-5-haiku':      {'input':  0.80, 'cache_read': 0.08, 'cache_create':  1.60, 'output':  4.00},
-}
-FALLBACK_MODEL = 'claude-sonnet-4-6'
-HAIKU_LONG_CONTEXT_PRICING = {'input': 0.50, 'output': 2.50, 'cache_read': 0.05, 'cache_create': 1.00}
+# Prices: config/model-pricing.json, shared with the dashboard through
+# bin/model_pricing.py. Update prices there, not here.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import model_pricing  # noqa: E402
+
+PRICING = model_pricing.MODELS
+FALLBACK_MODEL = model_pricing.FALLBACK_MODEL
 TOKEN_KEYS = ('input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens')
 
-
-def rates_for(model, prompt_tokens):
-    # Earlier model transcripts use dated snapshot IDs instead of aliases.
-    model = model or ''
-    base, _, date = model.rpartition('-')
-    if len(date) == 8 and date.isdigit():
-        model = base
-    if model in ('claude-opus-4-0', 'claude-sonnet-4-0'):
-        model = model[:-2]
-    if model == 'claude-haiku-5-5' and prompt_tokens > 100_000:
-        return HAIKU_LONG_CONTEXT_PRICING
-    return PRICING.get(model) or PRICING[FALLBACK_MODEL]
 
 # ── Framework-tag sanitizer ─────────────────────────────────────────────────
 # Strip framework-internal XML-style tags from bot post bodies. These
@@ -157,20 +114,13 @@ DB_PATH      = os.environ.get('ACTIONS_DB',       '/Users/aetherclaude/data/issu
 OFFSET_FILE  = os.environ.get('BOT_COST_OFFSETS', '/Users/aetherclaude/data/.bot-cost-offsets.json')
 
 
-def cost_for(model, totals):
-    # Transcript readers sum request costs before aggregating token totals.
-    # Applying Haiku's threshold to a whole session would select the wrong tier.
-    if '_usd_cost' in totals:
-        return totals['_usd_cost']
-    prompt_tokens = (totals['input_tokens'] + totals['cache_read_input_tokens']
-                     + totals['cache_creation_input_tokens'])
-    p = rates_for(model, prompt_tokens)
-    return (
-        totals['input_tokens']                * p['input']        / 1_000_000
-      + totals['cache_read_input_tokens']     * p['cache_read']   / 1_000_000
-      + totals['cache_creation_input_tokens'] * p['cache_create'] / 1_000_000
-      + totals['output_tokens']               * p['output']       / 1_000_000
-    )
+def cost_for(model, counts):
+    """USD for ONE request's token counts. Sessions are priced by summing
+    their requests (the readers below), never by pricing summed totals:
+    a per-request tier like Haiku 5.5's would select the wrong rates."""
+    return model_pricing.request_cost(
+        model, counts['input_tokens'], counts['output_tokens'],
+        counts['cache_read_input_tokens'], counts['cache_creation_input_tokens'])
 
 
 def format_cost(usd):
@@ -189,8 +139,8 @@ def format_footer(model, usd):
 
 def _sum_usage_records(paths, totals, model_seen):
     """Read every line in each path, accumulate usage tokens into totals,
-    and return the most-recent model string seen. Shared by the
-    per-session and legacy offset readers."""
+    and return (the most-recent model string seen, the summed USD cost)."""
+    seen, usd = set(), 0.0
     for path in paths:
         try:
             with open(path, 'rb') as fh:
@@ -208,19 +158,28 @@ def _sum_usage_records(paths, totals, model_seen):
             u = msg.get('usage') or {}
             if not u:
                 continue
-            model_seen = _accumulate_usage(msg, totals, model_seen)
-    return model_seen
+            model_seen, cost = _accumulate_usage(msg, totals, model_seen, seen)
+            usd += cost
+    return model_seen, usd
 
 
-def _accumulate_usage(msg, totals, model_seen):
+def _accumulate_usage(msg, totals, model_seen, seen):
+    """Add one response's tokens to totals; return (model_seen, its USD)."""
+    # Claude Code writes one transcript line per content block of a response,
+    # each repeating the response's id and usage: count each response once.
+    mid = msg.get('id')
+    if mid:
+        if mid in seen:
+            return model_seen, 0.0
+        seen.add(mid)
     usage = msg.get('usage') or {}
     counts = {key: int(usage.get(key, 0)) if isinstance(usage.get(key, 0), (int, float)) else 0
               for key in TOKEN_KEYS}
     for key in TOKEN_KEYS:
         totals[key] += counts[key]
-    model_seen = msg.get('model') or model_seen
-    totals['_usd_cost'] += cost_for(model_seen, counts)
-    return model_seen
+    model = msg.get('model')
+    # Price each request at its own model, never a neighbour's.
+    return model or model_seen, cost_for(model or FALLBACK_MODEL, counts)
 
 
 def read_usage_for_session(session_id):
@@ -230,24 +189,24 @@ def read_usage_for_session(session_id):
     Reads the FULL file each time (no offset tracking): the session JSONL
     is created fresh per `run_claude` invocation and belongs entirely to
     this run, so the whole file is the right delta to attribute. Sibling
-    sessions running concurrently are ignored — that's the whole point."""
+    sessions running concurrently are ignored — that's the whole point.
+    Returns (model_seen_or_fallback, totals, usd)."""
     totals = {
         'input_tokens': 0,
         'output_tokens': 0,
         'cache_read_input_tokens': 0,
         'cache_creation_input_tokens': 0,
-        '_usd_cost': 0.0,
     }
     main_paths = glob.glob(os.path.join(SESSION_ROOT, '*', session_id + '.jsonl'))
     sub_paths  = glob.glob(os.path.join(SESSION_ROOT, '*', session_id,
                                         'subagents', 'agent-*.jsonl'))
-    model_seen = _sum_usage_records(main_paths + sub_paths, totals, None)
-    return (model_seen or FALLBACK_MODEL), totals
+    model_seen, usd = _sum_usage_records(main_paths + sub_paths, totals, None)
+    return (model_seen or FALLBACK_MODEL), totals, usd
 
 
 def read_usage_since_marker():
     """Sum usage records appearing after each session JSONL's last-read
-    byte offset. Returns (model_seen_or_fallback, totals). Advances the
+    byte offset. Returns (model_seen_or_fallback, totals, usd). Advances the
     offsets file even on partial failure (next call won't double-count
     bytes we already managed to read)."""
     try:
@@ -261,9 +220,9 @@ def read_usage_since_marker():
         'output_tokens': 0,
         'cache_read_input_tokens': 0,
         'cache_creation_input_tokens': 0,
-        '_usd_cost': 0.0,
     }
     model_seen = None
+    seen, usd = set(), 0.0
     new_offsets = dict(offsets) if offsets is not None else {}
 
     paths = glob.glob(SESSION_GLOB, recursive=True)
@@ -278,7 +237,7 @@ def read_usage_since_marker():
             except OSError:
                 pass
         _save_offsets(new_offsets)
-        return FALLBACK_MODEL, totals
+        return FALLBACK_MODEL, totals, 0.0
 
     for path in paths:
         try:
@@ -310,10 +269,11 @@ def read_usage_since_marker():
             u = msg.get('usage') or {}
             if not u:
                 continue
-            model_seen = _accumulate_usage(msg, totals, model_seen)
+            model_seen, cost = _accumulate_usage(msg, totals, model_seen, seen)
+            usd += cost
 
     _save_offsets(new_offsets)
-    return (model_seen or FALLBACK_MODEL), totals
+    return (model_seen or FALLBACK_MODEL), totals, usd
 
 
 def _save_offsets(offsets):
@@ -502,10 +462,9 @@ def cmd_wrap(args):
                 ','.join(e['kind'] for e in strip_events), aborted))
 
     if session_id:
-        model, totals = read_usage_for_session(session_id)
+        model, totals, usd = read_usage_for_session(session_id)
     else:
-        model, totals = read_usage_since_marker()
-    usd = cost_for(model, totals)
+        model, totals, usd = read_usage_since_marker()
     try:
         log_audit(model, totals, usd, args.kind, target,
                   args.run_id or os.environ.get('RUN_ID', ''))
