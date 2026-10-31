@@ -28,9 +28,10 @@ from datetime import datetime, timezone
 
 # ---------------------------------------------------------------------------
 # PRICING — UPDATE-ME when Anthropic published prices change.
-# Source: https://www.anthropic.com/pricing (values as of 2026-05).
+# Source: https://platform.claude.com/docs/en/about-claude/pricing
+# Opus 5.5 rates verified 2026-10-31.
 # All rates are USD per 1,000,000 tokens.
-#   cache_read   ≈ 0.10x base input  (cached prompt-read discount)
+#   cache_read   = 0.05x base input for Opus 5.5; 0.10x for older models
 #   cache_create = 2.00x base input  (1-HOUR ephemeral cache surcharge)
 #
 # Cache_create uses the 1-hour rate, not the 5-minute rate (1.25x), because
@@ -40,6 +41,7 @@ from datetime import datetime, timezone
 # was under-attributing cache writes by 37%.
 # ---------------------------------------------------------------------------
 PRICING = {
+    'claude-opus-5-5':   {'input':  4.0, 'cache_read': 0.20, 'cache_create':  8.00, 'output': 20.0},
     'claude-fable-5':    {'input': 10.0, 'cache_read': 1.00, 'cache_create': 20.00, 'output': 50.0},
     'claude-opus-5':     {'input':  5.0, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.0},
     'claude-opus-4-8':   {'input':  5.0, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.0},
