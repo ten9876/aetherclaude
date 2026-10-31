@@ -3,11 +3,24 @@
 # SECURITY: Uses Python urllib instead of curl to avoid token in process args
 set -euo pipefail
 
-# Use the homebrew python3 explicitly: the system /usr/bin/python3 (3.9.x)
-# doesn't have the `cryptography` module, while the homebrew python3 does.
-# Without this, invocations from interactive shells (sudo -u aetherclaude)
-# silently fail because PATH puts /usr/bin first.
-exec /opt/homebrew/bin/python3 -c "
+# Signing the App JWT needs the `cryptography` module, so use the first
+# interpreter that has it: the project venv, then Homebrew's python@3.14,
+# then whatever /opt/homebrew/bin/python3 is. Never PATH's python3: the
+# system /usr/bin/python3 (3.9.x) lacks the module, and PATH puts /usr/bin
+# first for interactive shells (sudo -u aetherclaude). A Homebrew upgrade
+# that repoints python3 to a new minor version without the module must
+# not take every GitHub call down with it.
+PY=
+for c in /Users/Shared/aetherclaude/.venv/bin/python3 \
+         /opt/homebrew/opt/python@3.14/bin/python3.14 \
+         /opt/homebrew/bin/python3; do
+    if [ -x "$c" ] && "$c" -c 'import cryptography' 2>/dev/null; then PY=$c; break; fi
+done
+if [ -z "$PY" ]; then
+    echo "github-app-token: no python3 with the cryptography module" >&2
+    exit 1
+fi
+exec "$PY" -c "
 import json, time, sys, os, urllib.request, urllib.error
 
 
