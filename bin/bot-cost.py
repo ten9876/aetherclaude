@@ -29,9 +29,9 @@ from datetime import datetime, timezone
 # ---------------------------------------------------------------------------
 # PRICING — UPDATE-ME when Anthropic published prices change.
 # Source: https://platform.claude.com/docs/en/about-claude/pricing
-# Opus 5.5 rates verified 2026-10-31.
+# Standard rates for every model on the published price list, verified 2026-10-31.
 # All rates are USD per 1,000,000 tokens.
-#   cache_read   = 0.05x base input for Opus 5.5; 0.10x for older models
+#   cache_read   = published per-model rate (discounts differ by generation)
 #   cache_create = 2.00x base input  (1-HOUR ephemeral cache surcharge)
 #
 # Cache_create uses the 1-hour rate, not the 5-minute rate (1.25x), because
@@ -41,15 +41,43 @@ from datetime import datetime, timezone
 # was under-attributing cache writes by 37%.
 # ---------------------------------------------------------------------------
 PRICING = {
-    'claude-opus-5-5':   {'input':  4.0, 'cache_read': 0.20, 'cache_create':  8.00, 'output': 20.0},
-    'claude-fable-5':    {'input': 10.0, 'cache_read': 1.00, 'cache_create': 20.00, 'output': 50.0},
-    'claude-opus-5':     {'input':  5.0, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.0},
-    'claude-opus-4-8':   {'input':  5.0, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.0},
-    'claude-opus-4-7':   {'input':  5.0, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.0},
-    'claude-sonnet-4-6': {'input':  3.0, 'cache_read': 0.30, 'cache_create':  6.00, 'output': 15.0},
-    'claude-haiku-4-5':  {'input':  1.0, 'cache_read': 0.10, 'cache_create':  2.00, 'output':  5.0},
+    'claude-fable-5-1':      {'input': 10.00, 'cache_read': 0.25, 'cache_create': 20.00, 'output': 50.00},
+    'claude-opus-5-5':       {'input':  4.00, 'cache_read': 0.20, 'cache_create':  8.00, 'output': 20.00},
+    'claude-sonnet-5-5':     {'input':  2.00, 'cache_read': 0.10, 'cache_create':  4.00, 'output': 10.00},
+    'claude-haiku-5-5':      {'input':  0.10, 'cache_read': 0.01, 'cache_create':  0.20, 'output':  0.50},
+    'claude-mythos-5-1':     {'input': 10.00, 'cache_read': 0.25, 'cache_create': 20.00, 'output': 50.00},
+    'claude-fable-5':        {'input': 10.00, 'cache_read': 1.00, 'cache_create': 20.00, 'output': 50.00},
+    'claude-mythos-5':       {'input': 10.00, 'cache_read': 1.00, 'cache_create': 20.00, 'output': 50.00},
+    'claude-opus-5':         {'input':  5.00, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.00},
+    'claude-opus-4-8':       {'input':  5.00, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.00},
+    'claude-opus-4-7':       {'input':  5.00, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.00},
+    'claude-opus-4-6':       {'input':  5.00, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.00},
+    'claude-opus-4-5':       {'input':  5.00, 'cache_read': 0.50, 'cache_create': 10.00, 'output': 25.00},
+    'claude-opus-4-1':       {'input': 15.00, 'cache_read': 1.50, 'cache_create': 30.00, 'output': 75.00},
+    'claude-opus-4':         {'input': 15.00, 'cache_read': 1.50, 'cache_create': 30.00, 'output': 75.00},
+    'claude-sonnet-5':       {'input':  2.00, 'cache_read': 0.20, 'cache_create':  4.00, 'output': 10.00},
+    'claude-sonnet-4-6':     {'input':  3.00, 'cache_read': 0.30, 'cache_create':  6.00, 'output': 15.00},
+    'claude-sonnet-4-5':     {'input':  3.00, 'cache_read': 0.30, 'cache_create':  6.00, 'output': 15.00},
+    'claude-sonnet-4':       {'input':  3.00, 'cache_read': 0.30, 'cache_create':  6.00, 'output': 15.00},
+    'claude-haiku-4-5':      {'input':  1.00, 'cache_read': 0.10, 'cache_create':  2.00, 'output':  5.00},
+    'claude-3-5-haiku':      {'input':  0.80, 'cache_read': 0.08, 'cache_create':  1.60, 'output':  4.00},
 }
 FALLBACK_MODEL = 'claude-sonnet-4-6'
+HAIKU_LONG_CONTEXT_PRICING = {'input': 0.50, 'output': 2.50, 'cache_read': 0.05, 'cache_create': 1.00}
+TOKEN_KEYS = ('input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens')
+
+
+def rates_for(model, prompt_tokens):
+    # Earlier model transcripts use dated snapshot IDs instead of aliases.
+    model = model or ''
+    base, _, date = model.rpartition('-')
+    if len(date) == 8 and date.isdigit():
+        model = base
+    if model in ('claude-opus-4-0', 'claude-sonnet-4-0'):
+        model = model[:-2]
+    if model == 'claude-haiku-5-5' and prompt_tokens > 100_000:
+        return HAIKU_LONG_CONTEXT_PRICING
+    return PRICING.get(model) or PRICING[FALLBACK_MODEL]
 
 # ── Framework-tag sanitizer ─────────────────────────────────────────────────
 # Strip framework-internal XML-style tags from bot post bodies. These
@@ -130,7 +158,13 @@ OFFSET_FILE  = os.environ.get('BOT_COST_OFFSETS', '/Users/aetherclaude/data/.bot
 
 
 def cost_for(model, totals):
-    p = PRICING.get(model) or PRICING[FALLBACK_MODEL]
+    # Transcript readers sum request costs before aggregating token totals.
+    # Applying Haiku's threshold to a whole session would select the wrong tier.
+    if '_usd_cost' in totals:
+        return totals['_usd_cost']
+    prompt_tokens = (totals['input_tokens'] + totals['cache_read_input_tokens']
+                     + totals['cache_creation_input_tokens'])
+    p = rates_for(model, prompt_tokens)
     return (
         totals['input_tokens']                * p['input']        / 1_000_000
       + totals['cache_read_input_tokens']     * p['cache_read']   / 1_000_000
@@ -174,13 +208,18 @@ def _sum_usage_records(paths, totals, model_seen):
             u = msg.get('usage') or {}
             if not u:
                 continue
-            for k in totals:
-                v = u.get(k, 0)
-                if isinstance(v, (int, float)):
-                    totals[k] += int(v)
-            m = msg.get('model')
-            if m:
-                model_seen = m
+            model_seen = _accumulate_usage(msg, totals, model_seen)
+    return model_seen
+
+
+def _accumulate_usage(msg, totals, model_seen):
+    usage = msg.get('usage') or {}
+    counts = {key: int(usage.get(key, 0)) if isinstance(usage.get(key, 0), (int, float)) else 0
+              for key in TOKEN_KEYS}
+    for key in TOKEN_KEYS:
+        totals[key] += counts[key]
+    model_seen = msg.get('model') or model_seen
+    totals['_usd_cost'] += cost_for(model_seen, counts)
     return model_seen
 
 
@@ -197,6 +236,7 @@ def read_usage_for_session(session_id):
         'output_tokens': 0,
         'cache_read_input_tokens': 0,
         'cache_creation_input_tokens': 0,
+        '_usd_cost': 0.0,
     }
     main_paths = glob.glob(os.path.join(SESSION_ROOT, '*', session_id + '.jsonl'))
     sub_paths  = glob.glob(os.path.join(SESSION_ROOT, '*', session_id,
@@ -221,6 +261,7 @@ def read_usage_since_marker():
         'output_tokens': 0,
         'cache_read_input_tokens': 0,
         'cache_creation_input_tokens': 0,
+        '_usd_cost': 0.0,
     }
     model_seen = None
     new_offsets = dict(offsets) if offsets is not None else {}
@@ -269,13 +310,7 @@ def read_usage_since_marker():
             u = msg.get('usage') or {}
             if not u:
                 continue
-            for k in totals:
-                v = u.get(k, 0)
-                if isinstance(v, (int, float)):
-                    totals[k] += int(v)
-            m = msg.get('model')
-            if m:
-                model_seen = m
+            model_seen = _accumulate_usage(msg, totals, model_seen)
 
     _save_offsets(new_offsets)
     return (model_seen or FALLBACK_MODEL), totals

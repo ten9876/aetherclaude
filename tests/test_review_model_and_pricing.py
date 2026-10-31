@@ -16,10 +16,40 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections import defaultdict
+from contextlib import nullcontext
+from datetime import datetime
+import glob
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = (ROOT / 'bin/run-agent.sh').read_text()
+
+# USD/MTok: input, output, cache read, one-hour cache write. Verified
+# 2026-10-31 against https://platform.claude.com/docs/en/about-claude/pricing.
+EXPECTED_MODEL_RATES = {
+    'claude-fable-5-1': (10, 50, .25, 20),
+    'claude-opus-5-5': (4, 20, .20, 8),
+    'claude-sonnet-5-5': (2, 10, .10, 4),
+    'claude-haiku-5-5': (.10, .50, .01, .20),
+    'claude-mythos-5-1': (10, 50, .25, 20),
+    'claude-fable-5': (10, 50, 1, 20),
+    'claude-mythos-5': (10, 50, 1, 20),
+    'claude-opus-5': (5, 25, .50, 10),
+    'claude-opus-4-8': (5, 25, .50, 10),
+    'claude-opus-4-7': (5, 25, .50, 10),
+    'claude-opus-4-6': (5, 25, .50, 10),
+    'claude-opus-4-5': (5, 25, .50, 10),
+    'claude-opus-4-1': (15, 75, 1.50, 30),
+    'claude-opus-4': (15, 75, 1.50, 30),
+    'claude-sonnet-5': (2, 10, .20, 4),
+    'claude-sonnet-4-6': (3, 15, .30, 6),
+    'claude-sonnet-4-5': (3, 15, .30, 6),
+    'claude-sonnet-4': (3, 15, .30, 6),
+    'claude-haiku-4-5': (1, 5, .10, 2),
+    'claude-3-5-haiku': (.80, 4, .08, 1.60),
+}
 
 
 def shell_function(name):
@@ -159,19 +189,121 @@ class PricingTests(unittest.TestCase):
         cls.bot = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.bot)
         cls.dashboard = pricing_functions(ROOT / 'bin/tetragon-dashboard.py',
-                                          {'_MODEL_RATES', '_MODEL_RATES_DEFAULT', '_turn_cost'})
+                                          {'_MODEL_RATES', '_MODEL_RATES_DEFAULT',
+                                           '_HAIKU_LONG_CONTEXT_RATES', '_turn_cost', 'scan_tokens'})
 
     def test_each_token_category_uses_published_rate(self):
         keys = ['input_tokens', 'output_tokens', 'cache_read_input_tokens',
                 'cache_creation_input_tokens']
-        for model, rates in [('claude-opus-5-5', [4.0, 20.0, 0.20, 8.0]),
-                             ('claude-opus-5', [5.0, 25.0, 0.50, 10.0])]:
+        self.assertEqual(set(self.bot.PRICING), set(EXPECTED_MODEL_RATES))
+        self.assertEqual(set(self.dashboard['_MODEL_RATES']), set(EXPECTED_MODEL_RATES))
+        for model, rates in EXPECTED_MODEL_RATES.items():
             for index, expected in enumerate(rates):
                 with self.subTest(model=model, category=keys[index]):
                     counts = [0, 0, 0, 0]
-                    counts[index] = 1_000_000
-                    self.assertAlmostEqual(self.bot.cost_for(model, dict(zip(keys, counts))), expected)
-                    self.assertAlmostEqual(self.dashboard['_turn_cost'](model, *counts), expected)
+                    counts[index] = 10_000
+                    self.assertAlmostEqual(self.bot.cost_for(model, dict(zip(keys, counts))), expected / 100)
+                    self.assertAlmostEqual(self.dashboard['_turn_cost'](model, *counts), expected / 100)
+
+    def test_dated_legacy_snapshots_use_their_rates(self):
+        for model, expected in [('claude-haiku-4-5-20251001', 1),
+                                ('claude-opus-4-1-20250805', 15),
+                                ('claude-opus-4-20250514', 15),
+                                ('claude-opus-4-0', 15),
+                                ('claude-sonnet-4-5-20250929', 3),
+                                ('claude-3-5-haiku-20241022', .80)]:
+            with self.subTest(model=model):
+                counts = dict(zip(self.bot.TOKEN_KEYS, [1_000_000, 0, 0, 0]))
+                self.assertAlmostEqual(self.bot.cost_for(model, counts), expected)
+                self.assertAlmostEqual(self.dashboard['_turn_cost'](model, 1_000_000, 0, 0, 0), expected)
+
+    def test_haiku_threshold_counts_all_input_but_not_output(self):
+        # At 100k input the lower rates apply. Crossing it changes all
+        # categories for this request, including its output and cache writes.
+        for counts, expected in [([100_000, 0, 0, 0], .01),
+                                 ([100_001, 0, 0, 0], .0500005),
+                                 ([0, 1_000_000, 100_000, 0], .501),
+                                 ([0, 1_000_000, 100_001, 0], 2.50500005),
+                                 ([1, 1_000_000, 50_000, 50_000], 2.5525005)]:
+            with self.subTest(counts=counts):
+                self.assertAlmostEqual(self.bot.cost_for('claude-haiku-5-5',
+                                                        dict(zip(self.bot.TOKEN_KEYS, counts))), expected)
+                self.assertAlmostEqual(self.dashboard['_turn_cost']('claude-haiku-5-5', *counts), expected)
+
+    def usage_records(self):
+        return [{'type': 'assistant', 'message': {'model': model, 'usage': dict(zip(self.bot.TOKEN_KEYS, counts))}}
+                for model, counts in [('claude-haiku-5-5', [100_000, 0, 0, 0]),
+                                      ('claude-haiku-5-5', [100_000, 0, 0, 0]),
+                                      ('claude-haiku-5-5', [100_001, 0, 0, 0]),
+                                      ('claude-opus-5-5', [100_000, 0, 0, 0])]]
+
+    def test_session_and_marker_price_each_request_before_summing(self):
+        with tempfile.TemporaryDirectory(prefix='all-model-cost-') as tmp:
+            project = Path(tmp) / '-project'
+            project.mkdir()
+            path = project / 'session.jsonl'
+            path.touch()
+            previous = self.bot.SESSION_ROOT, self.bot.SESSION_GLOB, self.bot.OFFSET_FILE
+            self.bot.SESSION_ROOT = tmp
+            self.bot.SESSION_GLOB = str(project / '*.jsonl')
+            self.bot.OFFSET_FILE = str(Path(tmp) / 'offsets.json')
+            try:
+                _, empty = self.bot.read_usage_since_marker()
+                self.assertEqual(self.bot.cost_for('', empty), 0)
+                path.write_text(''.join(json.dumps(record) + '\n' for record in self.usage_records()))
+                for reader in [lambda: self.bot.read_usage_for_session('session'),
+                               self.bot.read_usage_since_marker]:
+                    model, totals = reader()
+                    self.assertEqual(totals['input_tokens'], 400_001)
+                    self.assertAlmostEqual(self.bot.cost_for(model, totals), .4700005)
+                _, empty = self.bot.read_usage_since_marker()
+                self.assertEqual(self.bot.cost_for('', empty), 0)
+            finally:
+                self.bot.SESSION_ROOT, self.bot.SESSION_GLOB, self.bot.OFFSET_FILE = previous
+
+    def test_dashboard_totals_keep_per_request_haiku_tiers(self):
+        class EndScan(BaseException):
+            pass
+
+        def stop(_):
+            raise EndScan()
+
+        with tempfile.TemporaryDirectory(prefix='dashboard-cost-') as tmp:
+            path = Path(tmp) / 'session.jsonl'
+            path.write_text(''.join(json.dumps(record) + '\n' for record in self.usage_records()))
+            start = datetime(2000, 1, 1)
+            errors = []
+            stats = {}
+            self.dashboard.update({
+                'os': os, 'glob': glob, 'json': json, 'defaultdict': defaultdict,
+                'time': SimpleNamespace(sleep=stop), '_tok_cache': {}, '_tok_cache_key': None,
+                '_current_cycle_start': lambda: start, '_discover_subscription_start': lambda: start,
+                '_tokenomics_epoch': lambda: None, '_bill_cycles_paid': lambda _: 1,
+                '_parse_record_ts': lambda _: None, '_log_exc': lambda *args: errors.append(args),
+                'SESSION_DIR': tmp, 'lock': nullcontext(), 'token_stats': stats, 'tool_stats': {},
+                'SUBSCRIPTION_AMOUNT_USD': 200, 'TOKEN_REFRESH_SECS': 30,
+            })
+            with self.assertRaises(EndScan):
+                self.dashboard['scan_tokens']()
+            self.assertEqual(errors, [])
+            self.assertEqual(stats['input'], 400_001)
+            self.assertEqual(stats['messages'], 4)
+            self.assertEqual(stats['cost'], .47)
+            self.assertEqual(stats['cycle_cost'], .47)
+            # Reusing the cache must not reprice the session's combined
+            # Haiku input at the long-context tier or double-count costs.
+            with self.assertRaises(EndScan):
+                self.dashboard['scan_tokens']()
+            self.assertEqual(errors, [])
+            self.assertEqual(stats['cost'], .47)
+            with path.open('a') as stream:
+                stream.write(json.dumps(self.usage_records()[0]) + '\n')
+            with self.assertRaises(EndScan):
+                self.dashboard['scan_tokens']()
+            self.assertEqual(errors, [])
+            self.assertEqual(stats['messages'], 5)
+            self.assertEqual(stats['cost'], .48)
+            self.assertEqual(stats['cycle_cost'], .48)
 
     def test_transcript_model_and_footer_use_opus_5_5(self):
         with tempfile.TemporaryDirectory(prefix='review-cost-') as tmp:
@@ -194,7 +326,7 @@ class PricingTests(unittest.TestCase):
             self.assertEqual(model, 'claude-opus-5-5')
             cost = self.bot.cost_for(model, totals)
             self.assertAlmostEqual(cost, 1.20)
-            self.assertEqual(self.dashboard['_turn_cost'](model, 100_000, 10_000, 1_000_000, 50_000), 1.20)
+            self.assertAlmostEqual(self.dashboard['_turn_cost'](model, 100_000, 10_000, 1_000_000, 50_000), 1.20)
             self.assertIn('cost: $1.2000 · model: claude-opus-5-5', self.bot.format_footer(model, cost))
 
 

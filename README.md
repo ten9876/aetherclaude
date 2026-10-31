@@ -35,11 +35,20 @@ and an actionable correction for each finding. Verification limits are
 disclosed separately, and an empty non-blocking findings section is omitted.
 Code-supported defects and explicit project requirements still qualify.
 
-`bin/bot-cost.py` and `bin/tetragon-dashboard.py` both price Opus 5.5 at
-$4 input / $20 output / $0.20 cached reads / $8 one-hour cache writes per
-million tokens, using [Anthropic's pricing](https://platform.claude.com/docs/en/about-claude/pricing).
-The footer model comes from the session transcript. These are API-equivalent
-cost estimates; the dashboard also tracks the agent's Max subscription.
+`bin/bot-cost.py` and `bin/tetragon-dashboard.py` cover all 20 models on
+[Anthropic's price list](https://platform.claude.com/docs/en/about-claude/pricing),
+verified October 31, 2026. They use standard input, output, cached-read, and
+one-hour cache-write rates, including the newer Fable/Mythos 5.1 and
+Sonnet/Haiku 5.5 rates and legacy model snapshots. Older dated transcript
+IDs resolve to their model's rate rather than the unknown-model fallback.
+
+Haiku 5.5's higher rate applies only when a request exceeds 100,000 input
+tokens, counting uncached input, cache reads, and cache writes. Each request
+is priced before session/cycle totals are summed, including mixed-model
+sessions. Output tokens do not determine the tier. The footer model comes
+from the session transcript. These are standard API-equivalent estimates,
+excluding fast mode, batch discounts, and regional premiums; the dashboard
+also tracks the agent's Max subscription.
 
 Before deploying, check the runner version and compare reviews of the same
 PR under both models for useful findings, irrelevant suggestions, tokens,
