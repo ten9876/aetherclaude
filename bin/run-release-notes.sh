@@ -107,6 +107,7 @@ env \
     HOME="$HOME" PATH="$PATH" \
     HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" NO_PROXY="$NO_PROXY" \
     claude -p "$PROMPT" \
+        --model claude-opus-5-5 \
         --setting-sources user \
         --strict-mcp-config \
         --permission-mode bypassPermissions \

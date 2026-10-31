@@ -93,7 +93,7 @@ def run_agent(flow, case):
         # No bypassPermissions; action tools disallowed. Pure text assessment.
         # Prompt goes via stdin (claude -p reads it) so no prompt content can
         # ever be parsed as a CLI flag.
-        out = subprocess.run(['claude', '-p', '--model', 'opus',
+        out = subprocess.run(['claude', '-p', '--model', 'claude-opus-5-5',
                               '--disallowedTools', _SCORER_DISALLOWED],
                              input=prompt, capture_output=True, text=True, timeout=600)
         if not out.stdout.strip():
