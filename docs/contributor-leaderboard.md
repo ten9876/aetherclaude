@@ -156,8 +156,9 @@ The rules popup on the page builds this example from the live point values.
   earlier push, or one GitHub dismissed, does not.
 - An admin merge, with no one else's approval of the merged commit, counts
   as the merger approving it, their own PR included: they pay −60.
-- Every approver pays. A person with several roles in the same PR takes only
-  their largest penalty.
+- Every approver pays. The author penalty stacks with the approver or merger
+  one: an author who also approves their own break (an admin merge) loses
+  45 + 60. Of approving and merging, only the larger counts.
 
 ### Anti-farming rules
 

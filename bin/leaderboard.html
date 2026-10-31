@@ -256,7 +256,7 @@ tr.ev td{background:rgba(6,11,19,.55)}
 <li>While <code>main</code> is already red, a later PR is a break too if it makes something <b>new</b> fail: a test that hasn't failed since <code>main</code> went red. Merging into a red <code>main</code> without breaking anything further costs nothing.</li>
 <li>Runner problems (out of disk or memory, timeouts, a lost runner) and failures that pass when re-run don't count.</li>
 <li>Only approvals of the code that was actually merged count. An approval of an earlier push, or one GitHub dismissed, doesn't.</li>
-<li>Someone with several roles in the same PR (say, author and merger) takes only their largest penalty.</li></ul>
+<li>Authoring and approving are separate faults: an author who also approves or merges their own break pays both penalties. Of approving and merging, only the larger counts.</li></ul>
 <h3>Fair play</h3>
 <ul><li>Comments need at least 15 characters and more than "+1", "thanks" or "LGTM".</li>
 <li>Comments score at most once per person per thread per day, and at most 10 comments a day score.</li>
@@ -495,7 +495,7 @@ function renderStack(){
     `Bob's PR alone is worth ${tot.Bob-pts('issue_comment')} (${tot.Bob-pts('issue_comment')-first} without the one-time first-PR bonus). `+
     `Reviews only count once per reviewer per PR per day, so Carol's two reviews score because they were on different days. Same day, she'd get the stronger one only.</p>`;
   const a=pts('break_approver'),au=pts('break_author'),m=pts('break_merger'),fx=pts('break_self_fix');
-  h+=`<p><b>If that PR had broken main</b>, Carol would lose ${-a}: she approved and merged it, and someone with several roles takes only the largest penalty (approving, ${a}; merging alone would be ${m}). `+
+  h+=`<p><b>If that PR had broken main</b>, Carol would lose ${-a}: she approved and merged it, and of approving and merging only the larger counts (approving, ${a}; merging alone would be ${m}). `+
     `Bob (author) would lose ${-au}, and get ${fx} back if he fixes it within 24 hours. Whoever else turns main green earns +${pts('main_fixed')}.</p>`;
   document.getElementById('rules-stack').innerHTML=h;
 }

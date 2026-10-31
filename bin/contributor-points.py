@@ -1262,8 +1262,14 @@ def score(db):
         if not approvers and it.get('merged_by') and role_of(it['merged_by']) != 'bot':
             roles[it['merged_by']].add('break_approver')
         for login, rs in roles.items():
-            worst = min(rs, key=lambda r: RULES[r][0])    # one penalty per person, the largest
-            add(login, worst, b['at'], ref, note)
+            # Authoring and approving are separate faults, so the author
+            # penalty stacks with the steward one; of approving and merging,
+            # only the larger counts.
+            if 'break_author' in rs:
+                add(login, 'break_author', b['at'], ref, note)
+            steward = rs - {'break_author'}
+            if steward:
+                add(login, min(steward, key=lambda r: RULES[r][0]), b['at'], ref, note)
         fx = items.get(('pr', b.get('fixed_pr'))) if b.get('fixed_pr') else None
         if fx and fx.get('author'):
             fixed_quick = b.get('fixed_at') and (datetime.fromisoformat(b['fixed_at'].replace('Z', '+00:00')) -
