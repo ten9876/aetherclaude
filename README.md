@@ -13,12 +13,54 @@ hourly fallback timer). Each cycle:
 2. Triages new issues (Claude Code with the AetherSDR CLAUDE.md in context)
 3. Posts analysis, requests missing info, or transitions to implementation
 4. Implements fixes in a clean git worktree, runs validation, creates a PR
-5. Reviews incoming community PRs for convention compliance
+5. Reviews incoming community PRs for actionable defects and project requirements
 6. Localizes candidate vulnerabilities with a local Cisco Foundation AI model
    (Antares-1B) and confirms them under sanitizers before feeding the fixer
 7. Auto-closes zero-effort submissions
 8. Logs every run to Galileo and scores its own triage/implement/review
    quality against curated datasets (the "is the agent any good?" layer)
+
+## Claude model and PR review findings
+
+All Claude invocation paths explicitly select `claude-opus-5-5`: the main
+orchestrator (triage, implementation, reviews, CI explanations, duplicate
+checks, mentions, and security-audit passes), batch and stale triage,
+release notes, evaluation, and codegraph document extraction. The main
+orchestrator keeps `--effort medium`. The read-only security-audit subagent
+inherits the invoking model. The runner needs Claude Code 2.1.280 or newer
+(`claude --version`).
+
+The review prompt requires a concrete consequence, evidence at the PR head,
+and an actionable correction for each finding. Verification limits are
+disclosed separately, and an empty non-blocking findings section is omitted.
+Code-supported defects and explicit project requirements still qualify.
+
+`config/model-pricing.json` holds the rates for all 20 models on
+[Anthropic's price list](https://platform.claude.com/docs/en/about-claude/pricing),
+verified October 31, 2026; `bin/bot-cost.py` and `bin/tetragon-dashboard.py`
+both read it through `bin/model_pricing.py`, so a price change is one edit.
+They use standard input, output, cached-read, and one-hour cache-write rates,
+including the newer Fable/Mythos 5.1 and Sonnet/Haiku 5.5 rates and legacy
+model snapshots. Older dated transcript IDs resolve to their model's rate;
+any other unknown model is priced as Opus 5.5. Claude Code writes one
+transcript line per content block, each repeating the response's usage, so
+each response is counted once by its message ID.
+
+Haiku 5.5's higher rate applies only when a request exceeds 100,000 input
+tokens, counting uncached input, cache reads, and cache writes. Each request
+is priced before session/cycle totals are summed, including mixed-model
+sessions. Output tokens do not determine the tier. The footer model comes
+from the session transcript. These are standard API-equivalent estimates,
+excluding fast mode, batch discounts, and regional premiums; the dashboard
+also tracks the agent's Max subscription.
+
+Before deploying, check the runner version and compare reviews of the same
+PR under both models for useful findings, irrelevant suggestions, tokens,
+and runtime. Pushes to `main` trigger the Mac Mini deploy workflow; a PR
+branch does not deploy the change.
+
+Run `python3 tests/test_review_model_and_pricing.py` for offline checks of
+model selection, tool arguments, per-token pricing, and transcript footers.
 
 ## Security architecture
 

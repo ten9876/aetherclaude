@@ -87,7 +87,7 @@ try:
         [{'input': 99999, 'output': 99999,
           'cache_read': 99999, 'cache_create': 99999}])
 
-    model, totals = bc.read_usage_for_session(sid_a)
+    model, totals, _usd = bc.read_usage_for_session(sid_a)
     _check('session A totals match A only (input)',
            totals['input_tokens'] == 1000,
            'got {}'.format(totals['input_tokens']))
@@ -104,7 +104,7 @@ try:
            model == 'claude-opus-4-7', 'got {}'.format(model))
 
     # Sanity: B's read sees only B's data, not contaminated by A.
-    _, totals_b = bc.read_usage_for_session(sid_b)
+    _, totals_b, _usd = bc.read_usage_for_session(sid_b)
     _check('session B totals match B only (no bleed from A)',
            totals_b['input_tokens'] == 99999)
 
@@ -125,7 +125,7 @@ try:
         os.path.join(sub_dir, 'agent-bbb.jsonl'),
         [{'input': 300, 'output': 100}])
 
-    _, totals_c = bc.read_usage_for_session(sid_c)
+    _, totals_c, _usd = bc.read_usage_for_session(sid_c)
     _check('parent + 2 sub-agents sum into one total (input)',
            totals_c['input_tokens'] == 600,
            'got {}'.format(totals_c['input_tokens']))
@@ -138,7 +138,7 @@ try:
     print('\n[3] Missing session is zero, not error')
 
     sid_ghost = str(uuid.uuid4())
-    model_g, totals_g = bc.read_usage_for_session(sid_ghost)
+    model_g, totals_g, _usd = bc.read_usage_for_session(sid_ghost)
     _check('missing session returns all-zero totals',
            all(v == 0 for v in totals_g.values()))
     _check('missing session falls back to FALLBACK_MODEL',
@@ -157,7 +157,7 @@ try:
     _write_usage_jsonl(
         os.path.join(proj2, sid_x + '.jsonl'),
         [{'input': 20, 'output': 7}])
-    _, totals_x = bc.read_usage_for_session(sid_x)
+    _, totals_x, _usd = bc.read_usage_for_session(sid_x)
     # Both project dirs contribute — same UUID, two locations. This is
     # the documented behavior of the glob; UUIDs collide effectively
     # never (random v4), so the union is fine.
@@ -184,7 +184,7 @@ try:
             'message': {'model': 'claude-sonnet-4-6',
                         'usage': {'input_tokens': 42}},
         }) + '\n')
-    model_q, totals_q = bc.read_usage_for_session(sid_q)
+    model_q, totals_q, _usd = bc.read_usage_for_session(sid_q)
     _check('non-usage lines silently skipped, real one counted',
            totals_q['input_tokens'] == 42 and model_q == 'claude-sonnet-4-6')
 

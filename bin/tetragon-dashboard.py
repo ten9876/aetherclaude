@@ -3165,39 +3165,13 @@ def scan_rings():
 # the cache stays current via append_event. Bounded to recent 7 days to
 # keep the warm-up bounded; the picker orders by first_ts DESC and shows
 # recent traces, so older ones fall off the list naturally.
-# Anthropic API-equivalent cost for an opus run. Mirrors bot-cost.py's
-# PRICING (opus-4-8 / 4-7 — same rates). Includes cache_read and
-# cache_create which the prior formula ignored — that under-attributed
-# the lifetime API-equivalent cost by ~25% for typical agent workloads.
-# Cache_create uses the 1-hour ephemeral rate (2.0x base input) — Claude
-# Code defaults to 1h cache, confirmed by inspecting JSONL records
-# (ephemeral_1h_input_tokens populated, 5m always 0).
-# Per-model API rates -- ($/MTok: input, output, cache_read, cache_create),
-# mirroring bot-cost.py PRICING. Used to price each agent-walk turn at the
-# model it actually ran on (the corpus spans fable-5 / opus-4-7 / opus-4-8 /
-# opus-5). Unknown or synthetic models fall back to Fable 5.
-_MODEL_RATES = {
-    'claude-fable-5':    (10.0, 50.0, 1.00, 20.00),
-    'claude-opus-5':     ( 5.0, 25.0, 0.50, 10.00),
-    'claude-opus-4-8':   ( 5.0, 25.0, 0.50, 10.00),
-    'claude-opus-4-7':   ( 5.0, 25.0, 0.50, 10.00),
-    'claude-sonnet-4-6': ( 3.0, 15.0, 0.30,  6.00),
-    'claude-haiku-4-5':  ( 1.0,  5.0, 0.10,  2.00),
-}
-_MODEL_RATES_DEFAULT = _MODEL_RATES['claude-fable-5']
+# Per-request API-equivalent cost. Prices live in config/model-pricing.json,
+# shared with the post footer (bot-cost.py) through bin/model_pricing.py.
+import model_pricing  # noqa: E402
 
 def _turn_cost(model, inp, out, cr, cc):
-    ri, ro, rcr, rcc = _MODEL_RATES.get(model or '', _MODEL_RATES_DEFAULT)
-    return round(inp / 1e6 * ri + out / 1e6 * ro + cr / 1e6 * rcr + cc / 1e6 * rcc, 6)
+    return model_pricing.request_cost(model, inp, out, cr, cc)
 
-
-def _api_equivalent_cost(inp, out, cache_read, cache_create):
-    # API-equivalent cost at Fable 5 rates (model in use since the
-    # 2026-06-10 cutover): input $10 / output $50 / cache-read $1.00 /
-    # cache-write $20.00 per MTok.
-    return round(
-        inp/1e6 * 10.0 + out/1e6 * 50.0
-      + cache_read/1e6 * 1.00 + cache_create/1e6 * 20.0, 2)
 
 def warmup_claude_active_traces():
     time.sleep(2)  # let init_db / load_memory_buffer finish first
@@ -3450,10 +3424,12 @@ def scan_tokens():
                     continue  # unchanged — reuse cached aggregate
                 # Cache miss / changed file: read ONCE, computing lifetime,
                 # cycle, and tool aggregates in a single pass.
-                life = defaultdict(lambda: [0, 0, 0, 0, 0])
-                cyc  = defaultdict(lambda: [0, 0, 0, 0, 0])
+                # Tokens, message count, then sum of per-request USD costs.
+                life = defaultdict(lambda: [0, 0, 0, 0, 0, 0.0])
+                cyc  = defaultdict(lambda: [0, 0, 0, 0, 0, 0.0])
                 t_total = 0
                 t_bd = defaultdict(int)
+                msg_ids = set()   # one usage per response, not per content-block line
                 file_in_cycle = stt.st_mtime >= cyc_ts
                 try:
                     with open(f) as fh:
@@ -3469,6 +3445,11 @@ def scan_tokens():
                             msg = d.get('message', {})
                             if has_usage:
                                 u = msg.get('usage', {})
+                                mid = msg.get('id')
+                                if u and mid in msg_ids:
+                                    u = None
+                                elif u and mid:
+                                    msg_ids.add(mid)
                                 if u:
                                     inp = u.get('input_tokens', 0)
                                     out = u.get('output_tokens', 0)
@@ -3485,10 +3466,13 @@ def scan_tokens():
                                         L = life[mdl]
                                         L[0] += inp; L[1] += out
                                         L[2] += cr;  L[3] += cc; L[4] += 1
+                                        request_cost = _turn_cost(mdl, inp, out, cr, cc)
+                                        L[5] += request_cost
                                         if file_in_cycle and (rec_dt is None or rec_dt >= cycle_start):
                                             C = cyc[mdl]
                                             C[0] += inp; C[1] += out
                                             C[2] += cr;  C[3] += cc; C[4] += 1
+                                            C[5] += request_cost
                             if has_tool:
                                 for c in msg.get('content', []):
                                     if c.get('type') == 'tool_use':
@@ -3506,17 +3490,19 @@ def scan_tokens():
 
             # Aggregate across all cached per-file totals, bucketed by model so
             # cost can be priced per model (the corpus spans fable-5 + opus).
-            life_by_model = defaultdict(lambda: [0, 0, 0, 0, 0])
-            cyc_by_model  = defaultdict(lambda: [0, 0, 0, 0, 0])
+            life_by_model = defaultdict(lambda: [0, 0, 0, 0, 0, 0.0])
+            cyc_by_model  = defaultdict(lambda: [0, 0, 0, 0, 0, 0.0])
             tool_total = 0
             tool_bd = defaultdict(int)
             for ent in _tok_cache.values():
                 for _m, lf in ent['life'].items():
                     L = life_by_model[_m]
                     L[0] += lf[0]; L[1] += lf[1]; L[2] += lf[2]; L[3] += lf[3]; L[4] += lf[4]
+                    L[5] += lf[5]
                 for _m, cy in ent['cyc'].items():
                     C = cyc_by_model[_m]
                     C[0] += cy[0]; C[1] += cy[1]; C[2] += cy[2]; C[3] += cy[3]; C[4] += cy[4]
+                    C[5] += cy[5]
                 tt, bd = ent['tools']
                 tool_total += tt
                 for nm, ct in bd.items():
@@ -3531,10 +3517,8 @@ def scan_tokens():
             cyc_cr  = sum(C[2] for C in cyc_by_model.values())
             cyc_cc  = sum(C[3] for C in cyc_by_model.values())
             cyc_msgs = sum(C[4] for C in cyc_by_model.values())
-            life_cost = round(sum(_turn_cost(_m, L[0], L[1], L[2], L[3])
-                                  for _m, L in life_by_model.items()), 4)
-            cyc_cost  = round(sum(_turn_cost(_m, C[0], C[1], C[2], C[3])
-                                  for _m, C in cyc_by_model.items()), 4)
+            life_cost = round(sum(L[5] for L in life_by_model.values()), 4)
+            cyc_cost  = round(sum(C[5] for C in cyc_by_model.values()), 4)
 
             with lock:
                 token_stats['input'] = total_in
@@ -3902,6 +3886,7 @@ def session_token_reconciler():
                 seen_sig[f] = sig
                 usage = []
                 map_ts = []
+                msg_ids = set()   # one usage row per response, not per content-block line
                 try:
                     with open(f) as fh:
                         for line in fh:
@@ -3916,6 +3901,11 @@ def session_token_reconciler():
                                 continue
                             msg = d.get('message') or {}
                             u = msg.get('usage') or {}
+                            mid = msg.get('id')
+                            if u and mid in msg_ids:
+                                u = None
+                            elif u and mid:
+                                msg_ids.add(mid)
                             if u:
                                 usage.append((ts, u.get('input_tokens', 0),
                                               u.get('output_tokens', 0),
@@ -8799,7 +8789,7 @@ header a.back:hover{color:var(--accent-bright);border-color:var(--accent-bright)
   <button class="speed-btn" data-speed="64">64×</button>
   <div class="progress"><div class="bar" id="progress-bar"></div></div>
   <span class="ts-label" id="progress-ts">—</span>
-  <span class="tok-counter" id="tok-counter" title="Tokens (input+output) and API-equivalent cost at Fable 5 rates">—</span>
+  <span class="tok-counter" id="tok-counter" title="Tokens (input+output) and API-equivalent cost at each request's model rates">—</span>
 </div>
 <div class="live-bar" id="live-bar">
   <span class="dot"></span><span class="label">LIVE</span>
@@ -11381,7 +11371,7 @@ a{{color:#0a6aba}}
                 _attr('gen_ai.agent.id', 'github.com/ten9876/aetherclaude'),
                 _attr('gen_ai.agent.description',
                       'Autonomous GitHub issue-triage, PR-review and CI-explainer agent for AetherSDR'),
-                _attr('gen_ai.request.model', 'claude-fable-5'),
+                _attr('gen_ai.request.model', 'claude-opus-5-5'),
                 _attr('gen_ai.ioa.span_kind', 'agent'),
                 _attr('gen_ai.ioa.collection_method', 'instrumentation'),
             ]
@@ -11943,7 +11933,7 @@ a{{color:#0a6aba}}
                         _tl.append({'time': _r[0], 'input': _r[1], 'output': _r[2],
                                     'cache_read': _r[3], 'cache_create': _r[4],
                                     'model': _r[5],
-                                    'cost': _turn_cost(_r[5], _r[1], _r[2], _r[3], _r[4])})
+                                    'cost': round(_turn_cost(_r[5], _r[1], _r[2], _r[3], _r[4]), 6)})
                     _tc.close()
                 except Exception as _e:
                     _log_exc('agent_walk.token_timeline', _e)

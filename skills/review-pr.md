@@ -33,8 +33,8 @@ ${SECURITY_AUDIT}
 
 **Your job is to break the PR, not to bless it.** Assume the author is
 competent and that the PR body is written to sound airtight; verify every
-claim in it, and treat anything you cannot reproduce as a finding. A review
-that ends "looks good to me" without naming what you tried and failed to
+claim in it, and separate demonstrated defects from verification limits.
+A review that ends "looks good to me" without naming what you tried and failed to
 break is not a review — it is a signature.
 
 Hold this posture throughout:
@@ -46,7 +46,8 @@ Hold this posture throughout:
 - **Every sentence in the body is a claim to test.** "No behavior change",
   "pure refactor", "trivial", "matches SmartSDR", "existing tests cover this"
   — each is a hypothesis with a specific way to be wrong. A claim you could
-  not test is itself reportable: say which claim, and what would settle it.
+  not test belongs in the verification disclosure: say what remains unknown
+  and what would settle it. Lack of runtime access is not itself a defect.
 - **Reading the diff is not reviewing it.** Ask what input makes this code
   wrong: first/last/empty/zero/negative/overflow, null or dangling pointers,
   disconnect mid-operation, reentrancy, a callback firing during teardown,
@@ -77,6 +78,34 @@ review stated plainly and without hedging. Severity stays calibrated, tone
 stays collegial and evidence-first, and every finding cites what you actually
 observed — file:line, the hunk, the failing scenario. Break the code, not the
 author.
+
+### Relevance filter — apply before posting any finding
+
+Every finding, blocking or non-blocking, must identify all three:
+
+- **A concrete consequence** for correctness, security, user behavior,
+  integration, or an explicit project requirement in this change.
+- **Relevant evidence** at the PR head: the reachable input or lifecycle,
+  the affected code path, and why existing guards do not prevent it. A
+  runtime reproduction is not required for a defect established by code;
+  label that evidence as reasoned from code.
+- **An actionable correction** within the PR's scope, or a specific
+  maintainer decision needed to resolve the consequence.
+
+If an item does not meet all three, leave it out of the findings. Do not
+post preference-only suggestions, formatting or naming tastes, hypothetical
+defenses without a reachable failure, unrelated cleanup, or requests to
+repeat evidence already supplied in the PR or linked discussion. Asking for
+the PR body to state a change the diff makes is not repeating evidence: the
+body becomes the squash commit message, so a change disclosed only in the
+thread is lost from history (§3's verdict table). Check existing review
+comments before repeating a finding; add one only when you have new evidence
+or an unresolved consequence at this head.
+
+Report access limits and untested claims briefly under "What I tried to
+break". They become findings only when separate evidence establishes a
+concrete defect or an explicit merge-gating requirement is unmet. There is
+no minimum finding count and no requirement to suggest improvements.
 
 ## 1. What you can and cannot verify
 
@@ -144,9 +173,10 @@ bridge/`radiocert` evidence.
 
 Missing coverage is a blocker only when the reported behavior has a
 deterministic, policy-compliant seam, or canon explicitly makes that coverage
-merge-gating. Otherwise report it as a nit — worth naming, not worth withholding
-a merge for. Never count additions to a retired target, or to an unregistered
-target lacking the `# not registered: <reason>` marker, as coverage.
+merge-gating. Otherwise disclose a material coverage limit under "What I tried
+to break"; do not turn missing coverage alone into a nit. Never count additions
+to a retired target, or to an unregistered target lacking the
+`# not registered: <reason>` marker, as coverage.
 
 Socket tests where **our own server** is the subject (rigctld, CAT, the TCI
 server, the automation bridge transport) stay legitimate, but check that the PR
@@ -227,10 +257,10 @@ Verdicts, applied consistently:
 | Finding | Verdict |
 |---|---|
 | Unrelated to the issue and to the stated fix | **Blocker** — ask to unbundle into its own PR |
-| Explained by the issue *thread* but absent from the PR body | Not a blocker — but name it, and ask for the body to be updated |
+| Explained by the issue *thread* but absent from the PR body | Non-blocking finding — the body becomes the squash commit message; ask for it there |
 | New public/protocol surface | **Needs maintainer decision** |
 | A removed guard whose symptom can recur | **Blocker** (a regression), quoting the deleted comment |
-| User-visible default changed, correct but undisclosed | Nit, plus a request to state it in the body |
+| User-visible default changed, correct but undisclosed | Non-blocking finding — ask to state it in the body |
 
 Scope is about whether a change belongs in *this PR*; §5 is about whether it
 is legitimate at all. A change can be perfectly correct and still out of scope
@@ -289,12 +319,13 @@ if a PR adds it. Every entry prepends to the same `## [Unreleased]` list, so
 any two PRs that add one conflict, and every open PR goes stale when one
 merges.
 
-### Cite the sentence, or downgrade to a nit
+### Cite the sentence and explain the consequence
 
 Before calling anything a governance blocker, **find the sentence in canon
 that states the rule and quote it.** You have the checkout — go read the file.
-If you cannot find it, it is a convention at most, and conventions are nits.
-Do not infer a rule from `git log`.
+If you cannot find it, do not present a convention as a project requirement.
+Omit preference-only conventions. A concrete defect still qualifies on its
+own evidence under the relevance filter. Do not infer a rule from `git log`.
 
 ## 6. Personal-preference check
 
@@ -391,7 +422,9 @@ author a round trip even for a nit. One body is read once and answered once.
 3. **Blockers** — numbered, each with its `file:line`: what is
    wrong, the evidence, which rule it violates if governance, and what a fix
    looks like. "None." if none.
-4. **Nits** — bulleted, each with its `file:line`, explicitly non-blocking.
+4. **Non-blocking findings** — include this section only when items pass the
+   relevance filter. Each needs its `file:line`, concrete consequence,
+   evidence, and actionable correction. Omit the section when empty.
 5. **What I tried to break** — two to five bullets on the attacks that did NOT
    produce a finding: the body claims you tested and that held, the edge cases
    and failure paths you walked, the sibling call sites you checked. This is
@@ -399,7 +432,7 @@ author a round trip even for a nit. One body is read once and answered once.
    not look" are indistinguishable. Name anything you could not check and why,
    and state plainly that findings are reasoned from code rather than
    reproduced at runtime.
-6. **Recommendation** — one of: Approve / Approve with nits / Request changes /
+6. **Recommendation** — one of: Approve / Approve with non-blocking findings / Request changes /
    Needs maintainer decision, plus two or three sentences of reasoning and the
    concrete next step. This is a recommendation *to the maintainer* in prose;
    the review event stays COMMENT regardless.
