@@ -154,6 +154,8 @@ The rules popup on the page builds this example from the live point values.
   when re-run (a re-run that passes replaces the failure).
 - Only approvals of the commit that was merged count; an approval of an
   earlier push, or one GitHub dismissed, does not.
+- An admin merge, with no one else's approval of the merged commit, counts
+  as the merger approving it, their own PR included: they pay −60.
 - Every approver pays. A person with several roles in the same PR takes only
   their largest penalty.
 

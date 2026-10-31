@@ -1252,9 +1252,15 @@ def score(db):
             roles[it['author']].add('break_author')
         if it.get('merged_by'):
             roles[it['merged_by']].add('break_merger')
-        for login, state, commit_id in db.execute('SELECT login, state, commit_id FROM reviews WHERE pr=?', (b['pr'],)):
-            if state == 'APPROVED' and commit_id == it.get('head_sha') and login != it.get('author'):
-                roles[login].add('break_approver')
+        approvers = {login for login, state, commit_id in
+                     db.execute('SELECT login, state, commit_id FROM reviews WHERE pr=?', (b['pr'],))
+                     if state == 'APPROVED' and commit_id == it.get('head_sha') and login != it.get('author')}
+        for login in approvers:
+            roles[login].add('break_approver')
+        # An admin merge (no one else approved the commit that merged) is
+        # the merger approving it, their own PR included.
+        if not approvers and it.get('merged_by') and role_of(it['merged_by']) != 'bot':
+            roles[it['merged_by']].add('break_approver')
         for login, rs in roles.items():
             worst = min(rs, key=lambda r: RULES[r][0])    # one penalty per person, the largest
             add(login, worst, b['at'], ref, note)
