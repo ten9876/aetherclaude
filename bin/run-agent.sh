@@ -81,6 +81,9 @@ trap '
             >> "/Users/aetherclaude/logs/orchestrator.log" 2>/dev/null
     fi
     rm -f "$LOCKFILE" "$ACTIVE_TRACE_FILE"
+    for _f in /tmp/aetherclaude-implement-*.lock; do
+        [ "$(cat "$_f" 2>/dev/null)" = "$$" ] && rm -f "$_f"
+    done
 ' EXIT
 
 log() { echo "$(date "+%Y-%m-%dT%H:%M:%S") [${AETHER_TRACE_ID:0:8}] $1" >> "$LOGDIR/orchestrator.log"; }
@@ -194,6 +197,38 @@ except Exception as e:
     print("claim_acquire error: %s" % e, file=sys.stderr)
     sys.exit(0)
 PYEOF
+}
+
+# --- Implement lock ---------------------------------------------------
+# One run at a time may implement an issue: implement deletes and recreates
+# /tmp/aetherclaude/issue-N and its branch, and every run's closing cleanup
+# sweeps issue worktrees, so without this a second run wipes the first
+# one's work mid-edit. The lock holds this orchestrator's PID and is checked
+# with kill -0, so a run that dies releases it at once (re-applying the
+# label can retry straight away); the EXIT trap releases it otherwise.
+IMPLEMENT_LOCK_DIR="${IMPLEMENT_LOCK_DIR:-/tmp}"
+
+implement_lock_file() { echo "${IMPLEMENT_LOCK_DIR}/aetherclaude-implement-$1.lock"; }
+
+implement_lock_holder() {
+    # implement_lock_holder N -> prints the live PID holding issue N, else nothing
+    local pid
+    pid=$(cat "$(implement_lock_file "$1")" 2>/dev/null) || return 0
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "$pid"; fi
+}
+
+implement_lock_acquire() {
+    # implement_lock_acquire N -> rc 0 = this run holds issue N, rc 1 = another live run does
+    local f holder stale
+    f=$(implement_lock_file "$1")
+    ( set -o noclobber; echo "$$" > "$f" ) 2>/dev/null && return 0
+    holder=$(implement_lock_holder "$1")
+    [ "$holder" = "$$" ] && return 0
+    [ -n "$holder" ] && return 1
+    # The holder died: take the lock over, unless another run just did.
+    stale=$(cat "$f" 2>/dev/null || true)
+    [ "$(cat "$f" 2>/dev/null || true)" = "$stale" ] && rm -f "$f"
+    ( set -o noclobber; echo "$$" > "$f" ) 2>/dev/null
 }
 
 db_get_state() {
@@ -2381,6 +2416,10 @@ except Exception:
             # an issue could lose the label between cycles or be moved
             # into 'implement' state directly.
             # ---------------------------------------------------------
+            if ! implement_lock_acquire "$number"; then
+                log "Issue #${number} — another run (PID $(implement_lock_holder "$number")) is implementing it, skipping"
+                continue
+            fi
             local _impl_eligible
             _impl_eligible=$(echo "$issue_data" | jq '[.labels[].name] | any(. == "aetherclaude-eligible")')
             if [ "$_impl_eligible" != "true" ]; then
@@ -3251,8 +3290,15 @@ esac
 # Clean up workspace — prune orphaned worktrees, ensure main is clean
 cd "$WORKSPACE"
 git checkout main --quiet 2>/dev/null
+# Leave the worktrees of issues another live run is implementing; git also
+# refuses to delete the branches checked out in them.
+for _wt in /tmp/aetherclaude/issue-*; do
+    [ -e "$_wt" ] || continue
+    _holder=$(implement_lock_holder "${_wt##*/issue-}")
+    [ -n "$_holder" ] && [ "$_holder" != "$$" ] && continue
+    rm -rf "$_wt" 2>/dev/null
+done
 git worktree prune 2>/dev/null
-rm -rf /tmp/aetherclaude/issue-* 2>/dev/null
 git branch | grep -v '^\*' | grep -v main | xargs git branch -D 2>/dev/null || true
 git clean -fd 2>/dev/null
 
