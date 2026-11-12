@@ -194,7 +194,13 @@ fi
 # review_single_pr). It scans the files changed vs main in this worktree,
 # records findings to the events DB (tagged source=agent) + codeguard-
 # latest.json, and prints the aggregated findings JSON. This gate then blocks
-# on HIGH/CRITICAL.
+# on HIGH/CRITICAL findings from the CodeGuard rules (CG-*). DefenseClaw's
+# `scan code` can also emit its guardrail content patterns (CS-*), which are
+# written for prompts and tool output: on C++ they read `|`, `&&` and
+# backticks anywhere in a changed file as shell injection. Those are logged
+# as warnings and recorded, not blocking.
+CG_BLOCKING='.id // "" | startswith("CG-")'
+CG_HIGH='.severity == "HIGH" or .severity == "CRITICAL"'
 CODEGUARD_SCAN="${CODEGUARD_SCAN_BIN:-/Users/aetherclaude/bin/codeguard-scan.sh}"
 if [ -x "$CODEGUARD_SCAN" ]; then
     log "Running CodeGuard static analysis..."
@@ -205,15 +211,19 @@ if [ -x "$CODEGUARD_SCAN" ]; then
         log "WARNING: CodeGuard could not scan $CG_ERRS file(s): $(echo "$CG_RESULT" | jq -r '(.errors // [])[0].error // "unreadable scanner output"' 2>/dev/null | head -c 200)"
     fi
 
-    HIGH_COUNT=$(echo "$CG_RESULT" | jq '[.findings[] | select(.severity == "HIGH" or .severity == "CRITICAL")] | length' 2>/dev/null || echo 0)
+    HIGH_COUNT=$(echo "$CG_RESULT" | jq "[.findings[] | select(($CG_BLOCKING) and ($CG_HIGH))] | length" 2>/dev/null || echo 0)
+    OTHER_HIGH_COUNT=$(echo "$CG_RESULT" | jq "[.findings[] | select(($CG_BLOCKING | not) and ($CG_HIGH))] | length" 2>/dev/null || echo 0)
     MEDIUM_COUNT=$(echo "$CG_RESULT" | jq '[.findings[] | select(.severity == "MEDIUM")] | length' 2>/dev/null || echo 0)
 
     if [ "${HIGH_COUNT:-0}" -gt 0 ]; then
         log "BLOCKED: CodeGuard found $HIGH_COUNT HIGH/CRITICAL finding(s):"
-        echo "$CG_RESULT" | jq -r '.findings[] | select(.severity == "HIGH" or .severity == "CRITICAL") | "  \(.id) [\(.severity)]: \(.title) at \(.file) \(.location // "")"' 2>/dev/null | while read -r detail; do
+        echo "$CG_RESULT" | jq -r ".findings[] | select(($CG_BLOCKING) and ($CG_HIGH)) | \"  \\(.id) [\\(.severity)]: \\(.title) at \\(.file) \\(.location // \"\")\"" 2>/dev/null | while read -r detail; do
             log "  $detail"
         done
         ERRORS=$((ERRORS + 1))
+    fi
+    if [ "${OTHER_HIGH_COUNT:-0}" -gt 0 ]; then
+        log "WARNING: $OTHER_HIGH_COUNT HIGH/CRITICAL non-CodeGuard pattern finding(s) (not blocking): $(echo "$CG_RESULT" | jq -r "[.findings[] | select(($CG_BLOCKING | not) and ($CG_HIGH)) | .id] | group_by(.) | map(\"\\(.[0]) x\\(length)\") | join(\", \")" 2>/dev/null)"
     fi
     if [ "${MEDIUM_COUNT:-0}" -gt 0 ]; then
         log "WARNING: CodeGuard found $MEDIUM_COUNT MEDIUM finding(s) (review recommended)"
