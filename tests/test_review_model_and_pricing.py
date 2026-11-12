@@ -128,6 +128,29 @@ class ReviewModelTests(unittest.TestCase):
         self.assertEqual(args[args.index('--model') + 1], 'claude-opus-5-5')
         self.assertEqual(args[args.index('--allowedTools') + 1], 'Read,Glob')
 
+    def test_fourth_argument_goes_to_system_prompt_not_prompt(self):
+        # The guardrail scans the prompt for secrets; the CodeGuard rules'
+        # own example connection string tripped it and blocked every
+        # implement run, so trusted rule text must ride in the system prompt.
+        rules = 'CodeGuard rules: URLs with credentials like `mongodb://user:pass@host`'
+        args = self.run_wrapper(['', rules])
+        self.assertEqual(args[args.index('--append-system-prompt') + 1], rules)
+        self.assertEqual(args[args.index('-p') + 1], 'review prompt with spaces')
+        self.assertEqual(args[args.index('--allowedTools') + 1], 'Read,Glob,Grep')
+
+    def test_no_system_prompt_flag_without_text(self):
+        self.assertNotIn('--append-system-prompt', self.run_wrapper([]))
+
+    def test_implement_passes_codeguard_rules_to_system_prompt(self):
+        source = SCRIPT
+        call = re.search(r'^\s*run_claude "\$prompt" "\$issue_log"(.*?) \|\| \{', source, re.M)
+        self.assertIsNotNone(call)
+        self.assertEqual(call.group(1), ' "" "$codeguard_rules"')
+        render = re.search(r'prompt=\$\(render_skill "\$skill_template" "ISSUE_NUMBER".*', source)
+        self.assertNotIn('codeguard_rules', render.group())
+        template = (ROOT / 'skills' / 'implement-fix.md').read_text()
+        self.assertNotIn('CODEGUARD_RULES', template)
+
     def test_review_call_uses_shared_wrapper(self):
         invocation = next(line.strip().split(' || {')[0]
                           for line in shell_function('review_single_pr').splitlines()

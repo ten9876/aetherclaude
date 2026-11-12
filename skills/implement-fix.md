@@ -21,8 +21,6 @@ ${RETRY_CONTEXT}
 ${REPO_PACK}
 ${DETECTOR_CANDIDATES}
 
-${CODEGUARD_RULES}
-
 **Security audit:** do not launch the `security-audit` subagent in this pass. If your change touches security-sensitive code, the harness runs a separate audit pass on it after the validation gate.
 
 Your task for this pass (IMPLEMENT):

@@ -678,6 +678,11 @@ run_claude() {
     # full code-writing surface for backward compat with all existing
     # callers; the @Mention path passes CLAUDE_ALLOWED_TOOLS_MENTION.
     local allowed_tools="${3:-$CLAUDE_ALLOWED_TOOLS_DEFAULT}"
+    # Optional trusted text for the system prompt (e.g. the CodeGuard rules).
+    # It goes there rather than into the prompt because the guardrail's
+    # UserPromptSubmit hook scans the prompt for secrets, and the rules'
+    # own examples (`mongodb://user:pass@host`) trip it.
+    local system_append="${4:-}"
     local claude_pid watchdog_pid
     local exit_code=0
 
@@ -713,11 +718,14 @@ run_claude() {
     # file here reaches the live agent (bin/promote-operating-notes.sh). Inert
     # until that file exists, so shipping the loop never changes agent behavior
     # on its own.
-    local -a op_notes_args=()
+    local -a system_prompt_args=()
     local op_notes_file="/Users/aetherclaude/state/operating-notes.md"
     if [ -s "$op_notes_file" ]; then
-        op_notes_args=(--append-system-prompt "$(cat "$op_notes_file")")
+        system_append="$(cat "$op_notes_file")${system_append:+$'\n\n'$system_append}"
         log "operating-notes: injecting $(grep -c '^- ' "$op_notes_file" 2>/dev/null || echo 0) ratified note(s)"
+    fi
+    if [ -n "$system_append" ]; then
+        system_prompt_args=(--append-system-prompt "$system_append")
     fi
 
     while [ "$attempt" -le "$max_attempts" ]; do
@@ -764,7 +772,7 @@ run_claude() {
                 --permission-mode bypassPermissions \
                 --allowedTools "$allowed_tools" \
                 --disallowedTools "Bash(sudo *),Bash(curl *),Bash(wget *),Bash(rm -rf *),Bash(ssh *),Bash(scp *),Bash(nc *),Bash(ncat *),Bash(dd *),Bash(mount *),Bash(chmod *),Bash(chown *),Bash(chsh *),Bash(passwd *),Bash(brew *),Bash(npm *),Bash(pip *),Bash(nft *),Bash(systemctl *),Bash(cat /Users/aetherclaude/.env),Bash(cat /Users/aetherclaude/.git-credentials),Bash(cat /Users/aetherclaude/.github-app-key.pem),Bash(echo \$*),Bash(env),Bash(printenv),Bash(set),Bash(git diff --no-index *),Bash(git *--no-index*),Read(//Users/aetherclaude/.env),Read(//Users/aetherclaude/.env.*),Read(//Users/aetherclaude/.git-credentials),Read(//Users/aetherclaude/.github-app-key.pem),Read(//Users/aetherclaude/.claude/.credentials.json),Read(//Users/aetherclaude/.ssh/**),Edit(//Users/aetherclaude/.env),Edit(//Users/aetherclaude/.claude/settings.json),WebFetch,WebSearch" \
-                ${op_notes_args[@]+"${op_notes_args[@]}"} \
+                ${system_prompt_args[@]+"${system_prompt_args[@]}"} \
                 --mcp-config /Users/aetherclaude/.claude/mcp-servers.json \
             >> "$logfile" 2>&1 &
         claude_pid=$!
@@ -2474,7 +2482,8 @@ work that is already merged."
             # not opened those unprompted). The four injected rules are vendored
             # verbatim from cosai-oasis/project-codeguard 1.5.0 (CC BY 4.0; see
             # config/codeguard/NOTICE.md); the full set is the plugin checkout.
-            # Fail-open.
+            # They go in the system prompt (run_claude's 4th argument), not the
+            # prompt. Fail-open.
             local codeguard_rules=""
             local cg_dir="/Users/Shared/aetherclaude/config/codeguard/rules"
             local cg_full="/Users/aetherclaude/.claude/plugins/marketplaces/project-codeguard/sources/rules"
@@ -2482,12 +2491,12 @@ work that is already merged."
                 codeguard_rules=$(printf 'Cisco **CodeGuard** secure-by-default rules are ACTIVE — apply them while writing the fix; do not introduce patterns they forbid. These ALWAYS apply:\n\n%s\n\n%s\n\n%s\n\nFor the C/C++ you touch, this rule also applies:\n\n%s\n\nWhen the fix touches input parsing, authentication, authorization, file handling, logging or stored data, read and follow the matching rule under `%s/core/` before writing: codeguard-0-input-validation-injection.md, codeguard-0-authentication-mfa.md, codeguard-0-authorization-access-control.md, codeguard-0-file-handling-and-uploads.md, codeguard-0-logging.md, codeguard-0-data-storage.md. When you apply a rule, note it briefly in the PR body (e.g. "CodeGuard: snprintf per safe-c-functions").' "$(cat "$cg_dir/codeguard-1-hardcoded-credentials.md")" "$(cat "$cg_dir/codeguard-1-crypto-algorithms.md")" "$(cat "$cg_dir/codeguard-1-digital-certificates.md" 2>/dev/null)" "$(cat "$cg_dir/codeguard-0-safe-c-functions.md" 2>/dev/null)" "$cg_full")
             fi
             local prompt
-            prompt=$(render_skill "$skill_template" "ISSUE_NUMBER" "$number" "ISSUE_TITLE" "$title" "ISSUE_BODY" "$issue_body" "ISSUE_COMMENTS" "$issue_comments" "ATTACHMENTS" "$attachments_section" "RETRY_CONTEXT" "$retry_context" "REPO_PACK" "$repo_pack" "DETECTOR_CANDIDATES" "$detector_candidates" "CODEGUARD_RULES" "$codeguard_rules" "BRANCH" "$branch" "WORKSPACE" "$WORKTREE")
+            prompt=$(render_skill "$skill_template" "ISSUE_NUMBER" "$number" "ISSUE_TITLE" "$title" "ISSUE_BODY" "$issue_body" "ISSUE_COMMENTS" "$issue_comments" "ATTACHMENTS" "$attachments_section" "RETRY_CONTEXT" "$retry_context" "REPO_PACK" "$repo_pack" "DETECTOR_CANDIDATES" "$detector_candidates" "BRANCH" "$branch" "WORKSPACE" "$WORKTREE")
 
             record_action "$number" "implement" "implement" "started"
             log "Running Claude Code for issue #${number}"
             cd "$WORKTREE"
-            run_claude "$prompt" "$issue_log" || {
+            run_claude "$prompt" "$issue_log" "" "$codeguard_rules" || {
                 log "ERROR: Claude Code failed for issue #${number} (see ${issue_log})"
                 record_action "$number" "implement" "failed" "failure" "Claude Code exited non-zero"
                 set_state "issue_${number}_state" "failed"
