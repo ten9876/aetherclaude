@@ -720,6 +720,10 @@ run_claude() {
     local system_append="${4:-}"
     local claude_pid watchdog_pid
     local exit_code=0
+    # Set when the watchdog stopped Claude, so a caller can keep work Claude
+    # had already committed (it can go quiet after its last commit, e.g.
+    # while writing the closing summary).
+    CLAUDE_WATCHDOG_KILLED=0
 
     # Mint a deterministic session ID and pass it to `claude --session-id`
     # so the resulting JSONL lands at a path WE know in advance:
@@ -913,6 +917,7 @@ run_claude() {
         # CEILING: log line for the diagnosis.
         if [ "$exit_code" -eq 143 ] || [ "$exit_code" -eq 137 ]; then
             log "ERROR: Claude Code was killed by watchdog (exit $exit_code)"
+            CLAUDE_WATCHDOG_KILLED=1
             log_galileo_run "fail" "$logfile" "$session_dir"
             return 1
         fi
@@ -2535,7 +2540,18 @@ work that is already merged."
             record_action "$number" "implement" "implement" "started"
             log "Running Claude Code for issue #${number}"
             cd "$WORKTREE"
-            run_claude "$prompt" "$issue_log" "" "$codeguard_rules" || {
+            local claude_ok=1
+            run_claude "$prompt" "$issue_log" "" "$codeguard_rules" || claude_ok=0
+            # A watchdog stop after Claude committed keeps the commits: they
+            # go through the same validation gate as any other run.
+            if [ "$claude_ok" -eq 0 ] && [ "$CLAUDE_WATCHDOG_KILLED" -eq 1 ] \
+               && [ "$(git -C "$WORKTREE" log main..HEAD --oneline 2>/dev/null | wc -l)" -gt 0 ]; then
+                log "Issue #${number} — Claude Code was stopped by the watchdog after committing; validating its commit(s)"
+                git -C "$WORKTREE" reset --hard --quiet 2>/dev/null || true
+                git -C "$WORKTREE" clean -fdq 2>/dev/null || true
+                claude_ok=1
+            fi
+            [ "$claude_ok" -eq 1 ] || {
                 log "ERROR: Claude Code failed for issue #${number} (see ${issue_log})"
                 record_action "$number" "implement" "failed" "failure" "Claude Code exited non-zero"
                 set_state "issue_${number}_state" "failed"

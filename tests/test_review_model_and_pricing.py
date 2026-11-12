@@ -143,7 +143,7 @@ class ReviewModelTests(unittest.TestCase):
 
     def test_implement_passes_codeguard_rules_to_system_prompt(self):
         source = SCRIPT
-        call = re.search(r'^\s*run_claude "\$prompt" "\$issue_log"(.*?) \|\| \{', source, re.M)
+        call = re.search(r'^\s*run_claude "\$prompt" "\$issue_log"(.*?) \|\| ', source, re.M)
         self.assertIsNotNone(call)
         self.assertEqual(call.group(1), ' "" "$codeguard_rules"')
         render = re.search(r'prompt=\$\(render_skill "\$skill_template" "ISSUE_NUMBER".*', source)
