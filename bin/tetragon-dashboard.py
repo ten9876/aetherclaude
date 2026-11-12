@@ -2421,6 +2421,86 @@ def dc_gateway_watch():
             _log_exc('dc_gateway_watch', _e, every=600)
         time.sleep(DC_GATEWAY_CHECK_SECS)
 
+# ── Webhook intake watch ────────────────────────────────────────────────
+# GitHub webhooks reach /webhook through the Cloudflare tunnel, and they are
+# the agent's only trigger: GitHub does not retry a failed delivery, so the
+# issue, PR or mention it carried gets no run. cloudflared logs each request
+# it could not hand to this server. A burst of those means deliveries are
+# being lost, even while most page loads still succeed. A healthy day logs
+# 0-14 of them; WEBHOOK_INTAKE_MAX_ERRORS within WEBHOOK_INTAKE_WINDOW raises
+# a critical alert, repeated every WEBHOOK_INTAKE_REALERT_SECS until the
+# window is clear again.
+CLOUDFLARED_ERROR_LOG = '/Users/aetherclaude/logs/cloudflared-error.log'
+WEBHOOK_INTAKE_CHECK_SECS = 60
+WEBHOOK_INTAKE_WINDOW = 900
+WEBHOOK_INTAKE_MAX_ERRORS = 10
+WEBHOOK_INTAKE_REALERT_SECS = 6 * 3600
+# Each failed request logs two lines; only the first names the origin, so
+# matching it counts the request once and skips the other tunnel origins.
+_ORIGIN_ERROR = 'Unable to reach the origin service'
+_ORIGIN_SELF = 'originService=http://127.0.0.1:8080'
+
+class _LogTail:
+    """Complete lines appended to a log since the previous read. The first
+    read starts at the end of the file; a rotation (new inode, or the file
+    shrank) starts over from the top of the new file."""
+    def __init__(self, path):
+        self.path, self.ino, self.pos = path, None, None
+
+    def read(self):
+        try:
+            st = os.stat(self.path)
+        except FileNotFoundError:
+            return []
+        if self.pos is None:
+            self.ino, self.pos = st.st_ino, st.st_size
+            return []
+        if st.st_ino != self.ino or st.st_size < self.pos:
+            self.ino, self.pos = st.st_ino, 0
+        with open(self.path, 'rb') as f:
+            f.seek(self.pos)
+            data = f.read()
+        end = data.rfind(b'\n') + 1
+        self.pos += end
+        return data[:end].decode('utf-8', 'replace').splitlines()
+
+def _origin_errors(lines):
+    return sum(1 for l in lines if _ORIGIN_ERROR in l and _ORIGIN_SELF in l)
+
+def _webhook_intake_step(state, lines, now):
+    """Fold one check's new cloudflared lines into state; return the alert
+    message to raise, or None. state: {'window': deque, 'alerted_at': float or None}."""
+    window = state['window']
+    n = _origin_errors(lines)
+    if n:
+        window.append((now, n))
+    while window and now - window[0][0] > WEBHOOK_INTAKE_WINDOW:
+        window.popleft()
+    recent = sum(c for _, c in window)
+    failing = recent >= WEBHOOK_INTAKE_MAX_ERRORS
+    ring_stats['webhook_intake'] = {'status': 'failing' if failing else 'ok', 'origin_errors_15m': recent,
+                                    'checked_at': now_utc_iso()}
+    if not recent:
+        state['alerted_at'] = None
+    if failing and (state['alerted_at'] is None or now - state['alerted_at'] > WEBHOOK_INTAKE_REALERT_SECS):
+        state['alerted_at'] = now
+        return (f'WEBHOOK INTAKE: the tunnel could not reach the dashboard {recent} times in '
+                f'{WEBHOOK_INTAKE_WINDOW // 60} min — GitHub webhooks are being lost, so labeled '
+                f'issues, new PRs and mentions get no agent run. Restart the dashboard.')
+    return None
+
+def webhook_intake_watch():
+    tail = _LogTail(CLOUDFLARED_ERROR_LOG)
+    state = {'window': deque(), 'alerted_at': None}
+    while True:
+        try:
+            msg = _webhook_intake_step(state, tail.read(), time.time())
+            if msg:
+                stats['alerts'].append({'time': now_utc_iso(), 'severity': 'critical', 'msg': msg})
+        except Exception as _e:
+            _log_exc('webhook_intake_watch', _e, every=600)
+        time.sleep(WEBHOOK_INTAKE_CHECK_SECS)
+
 def _store_webhook(delivery, event, body):
     """Store a verified webhook in the contributor database and apply it.
     Failures are logged; the hourly collector applies anything stored but
@@ -12469,6 +12549,7 @@ def main():
     threading.Thread(target=main_ci_poller,daemon=True).start()
     threading.Thread(target=mirror_watch,daemon=True).start()
     threading.Thread(target=dc_gateway_watch,daemon=True).start()
+    threading.Thread(target=webhook_intake_watch,daemon=True).start()
     threading.Thread(target=_operating_notes_loop,daemon=True).start()
     threading.Thread(target=db_batch_writer,daemon=True).start()
     threading.Thread(target=db_pruner,daemon=True).start()
