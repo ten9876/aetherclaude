@@ -1887,6 +1887,95 @@ def _main_ci_get(opener, hdrs, path):
         _main_ci_note_rate(r.headers)
         return json.loads(r.read().decode())
 
+
+# ── CI completion → PR number ───────────────────────────────────────────
+# check_run / workflow_run payloads list their PRs in pull_requests[], but
+# GitHub leaves that list empty when the PR's head lives in a fork. Those
+# completions are resolved by head commit against the open PRs, so a fork
+# PR's CI result reaches the orchestrator keyed pr-N like any other.
+_webhook_gh_token = {'value': '', 'at': 0.0}
+_ci_head_pr_cache = {}          # head sha -> (PR number or None, when), bounded
+_CI_HEAD_PR_CACHE_MAX = 512
+
+
+def _webhook_gh_get(path):
+    """GET api.github.com/repos/<MAIN_CI_REPO>/<path> with an App token
+    cached for 45 min (installation tokens live 60)."""
+    import urllib.request
+    now = time.time()
+    if not _webhook_gh_token['value'] or now - _webhook_gh_token['at'] > 45 * 60:
+        tok = sh('HTTPS_PROXY=http://127.0.0.1:8888 /Users/aetherclaude/bin/github-app-token.sh')
+        if not tok:
+            raise RuntimeError('github-app-token.sh returned no token')
+        _webhook_gh_token.update(value=tok, at=now)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({'https': 'http://127.0.0.1:8888'}))
+    hdrs = {'Authorization': f'token {_webhook_gh_token["value"]}',
+            'Accept': 'application/vnd.github+json', 'User-Agent': 'AetherClaude-Dashboard'}
+    url = f'https://api.github.com/repos/{MAIN_CI_REPO}/{path}'
+    with opener.open(urllib.request.Request(url, headers=hdrs), timeout=8) as r:
+        _main_ci_note_rate(r.headers)
+        return json.loads(r.read().decode())
+
+
+def _pr_for_head(sha, owner='', branch='', get=None):
+    """Open PR number whose head commit is `sha`, or None. Asks for the
+    owner:branch head when the payload names it (one request), otherwise
+    scans the open PRs."""
+    if not sha:
+        return None
+    hit = _ci_head_pr_cache.get(sha)
+    if hit and (hit[0] is not None or time.time() - hit[1] < 600):
+        return hit[0]
+    import urllib.parse
+    get = get or _webhook_gh_get
+    found = None
+    if owner and branch:
+        q = urllib.parse.urlencode({'state': 'open', 'head': f'{owner}:{branch}', 'per_page': 10})
+        for p in get(f'pulls?{q}') or []:
+            if (p.get('head') or {}).get('sha') == sha:
+                found = p.get('number')
+                break
+    if found is None:
+        for page in (1, 2, 3):
+            prs = get(f'pulls?state=open&per_page=100&page={page}') or []
+            for p in prs:
+                if (p.get('head') or {}).get('sha') == sha:
+                    found = p.get('number')
+                    break
+            if found is not None or len(prs) < 100:
+                break
+    if len(_ci_head_pr_cache) >= _CI_HEAD_PR_CACHE_MAX:
+        _ci_head_pr_cache.clear()
+    # A miss is kept for 10 min only: the PR may be opened after its CI ran.
+    _ci_head_pr_cache[sha] = (found, time.time())
+    return found
+
+
+def _ci_event_pr_number(event_type, payload, lookup=None):
+    """PR number a completed check_run / workflow_run belongs to, or None.
+    Uses pull_requests[] when GitHub filled it in, else the head commit."""
+    root = payload.get(event_type) or {}
+    prs = root.get('pull_requests') or []
+    if prs and isinstance(prs, list) and prs[0].get('number'):
+        return prs[0]['number']
+    if payload.get('action') != 'completed' or root.get('conclusion') not in ('failure', 'success'):
+        return None
+    if event_type == 'workflow_run':
+        sha = root.get('head_sha') or ''
+        owner = ((root.get('head_repository') or {}).get('owner') or {}).get('login') or ''
+        branch = root.get('head_branch') or ''
+    else:
+        sha = root.get('head_sha') or (root.get('check_suite') or {}).get('head_sha') or ''
+        owner, branch = '', ''
+    # A push-triggered run (main, or a branch in this repo) has no PR to find.
+    if event_type == 'workflow_run' and root.get('event') == 'push':
+        return None
+    try:
+        return (lookup or _pr_for_head)(sha, owner, branch)
+    except Exception as _e:
+        _log_exc('ci_event_pr_number', _e)
+        return None
+
 # Failure diagnosis: job_id -> {'kind', 'summary', 'detail', 'file'} parsed
 # from the failed job's log; cached, bounded like the other per-job caches.
 _main_ci_diag = {}
@@ -12284,17 +12373,13 @@ a{{color:#0a6aba}}
                 num = (payload.get('discussion') or {}).get('number')
                 if num: lock_key = f'disc-{num}'
             elif event_type in ('check_run', 'workflow_run'):
-                # Both payloads carry a pull_requests[] array of PR refs
-                # for runs triggered by PR pushes. First entry is the
-                # triggering PR. Scoping the lock_key to that PR means
-                # CI completions on different PRs don't debounce each
-                # other through the 60s global window. Runs not tied
-                # to a PR (e.g., main-branch push) fall through to
-                # lock_key='global', same as before.
-                root = payload.get(event_type, {}) or {}
-                prs = root.get('pull_requests') or []
-                if prs and isinstance(prs, list) and prs[0].get('number'):
-                    lock_key = f'pr-{prs[0]["number"]}'
+                # Key the run to the PR the CI ran for, so completions on
+                # different PRs don't debounce each other through the 60s
+                # global window and review-pr scopes to that PR. Fork PRs
+                # are found by head commit (_ci_event_pr_number). Runs not
+                # tied to a PR (e.g., main-branch push) stay 'global'.
+                num = _ci_event_pr_number(event_type, payload)
+                if num: lock_key = f'pr-{num}'
             # Burst-adopt: if an orchestrator is already running for THIS
             # lock_key, reuse its trace_id rather than minting fresh.
             # Different-key webhooks proceed normally and spawn their own
