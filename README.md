@@ -6,8 +6,9 @@ community PRs, detects duplicates, explains CI failures, and compiles release no
 
 ## What it does
 
-Runs on a local machine triggered by GitHub webhooks in real time (with an
-hourly fallback timer). Each cycle:
+Runs on a local machine, triggered by GitHub webhooks in real time; there is
+no timer, so every run starts from a webhook. The dashboard raises an alert
+when the tunnel stops delivering webhooks. Each cycle:
 
 1. Detects issue state from a SQLite action log
 2. Triages new issues (Claude Code with the AetherSDR CLAUDE.md in context)
