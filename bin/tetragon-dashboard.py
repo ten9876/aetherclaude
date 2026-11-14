@@ -5880,7 +5880,7 @@ function ajChart(a,kind){
   // on its own scale (0 to the 24 h maximum).
   let wline='',wtop=0;const ow=kind==='q'&&a.oldest_wait;
   if(ow&&ow.v.some(v=>v)){
-    wtop=Math.max(60,...ow.v.filter(v=>v!=null));const segs=[];let cur=[];
+    wtop=Math.ceil(Math.max(60,...ow.v.filter(v=>v!=null))/60)*60;const segs=[];let cur=[];
     ow.v.forEach((v,i)=>{const t=ow.t0+i*ow.step;
       if(v==null||t<t0){if(cur.length)segs.push(cur);cur=[];return;}
       cur.push(`${x(t)},${(H-v/wtop*(H-2)).toFixed(1)}`);});
@@ -5888,7 +5888,7 @@ function ajChart(a,kind){
     wline=segs.filter(sg=>sg.length>1).map(sg=>`<polyline points="${sg.join(' ')}" fill="none" stroke="var(--crit)" stroke-width="1.2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`).join('');
   }
   const limLine=kind==='q'?'':`<line x1="0" x2="${W}" y1="${y(lim)}" y2="${y(lim)}" stroke="var(--crit)" stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>`;
-  return `<div class="aj-ch"><div class="aj-chl">${kind==='q'?'Queue depth':'Active jobs'} <span class="aj-dim">peak (light) and average (solid) per 5 min${kind==='q'?(wline?` &middot; <span style="color:var(--crit)">line: oldest job's wait, per minute</span>`:''):` &middot; dashed line: ${lim}-job limit`}</span><span class="aj-dim" style="margin-left:auto">scale 0&ndash;${top}${wline?` &middot; <span style="color:var(--crit)">wait 0&ndash;${mciDur(wtop)}</span>`:''}</span></div>`+
+  return `<div class="aj-ch"><div class="aj-chl">${kind==='q'?'Queue depth':'Active jobs'} <span class="aj-dim">peak (light) and average (solid) per 5 min${kind==='q'?(wline?` &middot; <span style="color:var(--crit)">line: oldest job's wait, per minute</span>`:''):` &middot; dashed line: ${lim}-job limit`}</span><span class="aj-dim" style="margin-left:auto">scale 0&ndash;${top}${wline?` &middot; <span style="color:var(--crit)">wait 0&ndash;${wtop/60}m</span>`:''}</span></div>`+
     `<svg class="aj-chart" style="height:${H}px" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${kind==='q'?'Queued jobs':'Active jobs'}, last 24 hours">`+
     `<rect x="0" y="0" width="${W}" height="${H}" fill="var(--bg-1)"/>${bars}${limLine}${wline}</svg>`+
     `<div class="aj-axis"><span>24 h ago</span><span>12 h</span><span>now</span></div></div>`;
