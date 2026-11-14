@@ -5271,6 +5271,8 @@ body.view-ops #view-exec{display:none}
 .aj-leg i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:baseline}
 .aj-chart{width:100%;display:block}
 .aj-ch{margin-top:12px}
+#x-ajobs-stats .aj-ch{margin-top:2px}
+#x-ajobs-stats .aj-key{margin-top:8px}
 .aj-key{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:2px}
 .aj-sw{display:inline-block;width:12px;height:8px;border-radius:2px;margin-right:5px;vertical-align:middle}
 .aj-dash{height:0;border-top:1px dashed var(--crit);border-radius:0}
@@ -5449,7 +5451,6 @@ body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
   <div class="aj-ch">
     <div class="aj-chl"><span id="x-act-label">Active jobs &amp; agent activity &middot; last 24 hours</span><button id="x-zoom-back" onclick="drawActivity(null,null)" style="display:none;margin-left:10px;background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:6px;padding:1px 8px;font-size:10px;cursor:pointer;vertical-align:middle">&#8592; back to 24h</button><span id="x-trend-total" class="aj-dim" style="margin-left:auto"></span></div>
     <div id="x-trend" title="Drag to zoom in" style="cursor:crosshair"></div>
-    <div class="aj-key"><span><i class="aj-sw" style="background:var(--cat-blue);opacity:.85"></i>active jobs, average per 5 min</span><span><i class="aj-sw" style="background:var(--cat-blue);opacity:.35"></i>peak</span><span><i class="aj-sw aj-dash"></i>job limit</span><span><i class="aj-sw" style="background:#f2c14e;height:2px"></i>agent events</span><span><span style="color:#a878e0">&#9679;</span> agent runs</span></div>
   </div>
   <div id="x-ajobs-stats"></div>
 </div>
@@ -5818,6 +5819,7 @@ let lastKpisHtml='';
 // colored by OS, queued jobs beside it, and the last 24 h as active (peak
 // per 5 min) with queued stacked on top against the limit line.
 const AJ_OS=[['linux','Linux','var(--cat-blue)'],['windows','Windows','var(--cat-teal)'],['macos','macOS','var(--cat-violet)']];
+const AJ_KEY='<div class="aj-key"><span><i class="aj-sw" style="background:var(--cat-blue);opacity:.85"></i>active jobs, average per 5 min</span><span><i class="aj-sw" style="background:var(--cat-blue);opacity:.35"></i>peak</span><span><i class="aj-sw aj-dash"></i>job limit</span><span><i class="aj-sw" style="background:#f2c14e;height:2px"></i>agent events</span><span><i class="aj-sw" style="background:var(--warn);opacity:.85"></i>queue depth</span><span><span style="color:#a878e0">&#9679;</span> agent runs</span></div>';
 let lastAjHtml='',lastAjStats='',_ajLast=null,_ajHistKey='';
 // Grey job bars for the activity chart, in its own 0..limit+ scale, mapped
 // onto the chart's time axis (t0..t1 ms across padL..padL+iw).
@@ -5871,11 +5873,11 @@ function renderActiveJobs(a){
   h+=`<div class="aj-slots" title="${act} of ${lim} concurrent job slots in use">${slots}</div>`;
   h+=`<div class="aj-leg">`+AJ_OS.map(([k,n,c])=>{const o=by[k]||{active:0,queued:0};
     return `<span><i style="background:${c}"></i>${n} <b>${o.active}</b>${k==='macos'?` / ${a.macos_limit}`:''} active${o.queued?` &middot; <span style="color:var(--warn)">${o.queued} queued</span>`:''}</span>`}).join('')+`</div>`;
-  let st='';
+  // Below the queue chart: the key for both charts, then the 24 h stats.
+  let st=ajChart(a,'q')+AJ_KEY;
   if(a.samples)st+=`<div class="aj-stats"><span>At the ${lim}-job limit ${ajPct(a.at_limit_pct,'var(--crit)')} of the last 24 h</span>`+
       `<span>macOS at its ${a.macos_limit}-job limit ${ajPct(a.macos_at_limit_pct,'var(--warn)')}</span>`+
       `<span>Peak <b>${a.peak}</b> active</span></div>`;
-  st+=ajChart(a,'q');
   if(a.samples){const w=a.waits,mw=a.macos_waits;
     st+=`<div class="aj-stats"><span>Jobs queued ${ajPct(a.waiting_pct,'var(--warn)')} of the time</span>`+
       `<span>Depth <b>${a.queue_mean}</b> average, <b>${a.peak_queued}</b> peak</span>`+
