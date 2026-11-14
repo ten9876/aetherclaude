@@ -5436,16 +5436,16 @@ body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
   <div class="x-tile x-mci-ph"><div class="lbl">Sanitizers</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
 </div>
 
+<div class="x-panel">
+  <div class="x-ph"><span><span id="x-act-label">Activity &middot; last 24 hours</span><button id="x-zoom-back" onclick="drawActivity(null,null)" style="display:none;margin-left:10px;background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:6px;padding:1px 8px;font-size:10px;cursor:pointer;vertical-align:middle">&#8592; back to 24h</button></span><span id="x-trend-total" style="text-transform:none;letter-spacing:0"></span></div>
+  <div id="x-trend" title="Drag to zoom in" style="cursor:crosshair"></div>
+</div>
+
 <!-- Active CI jobs against the org's concurrency limit (ring_stats.active_jobs:
      workflow_job webhooks, reconciled by a 5-minute poll; 24 h history). -->
 <div class="x-panel" id="x-ajobs">
   <div class="x-ph"><span>Active CI jobs</span><span id="x-ajobs-src" style="text-transform:none;letter-spacing:0;font-weight:400"></span></div>
   <div id="x-ajobs-body"><div class="aj-dim">fetching&hellip;</div></div>
-</div>
-
-<div class="x-panel">
-  <div class="x-ph"><span><span id="x-act-label">Activity &middot; last 24 hours</span><button id="x-zoom-back" onclick="drawActivity(null,null)" style="display:none;margin-left:10px;background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:6px;padding:1px 8px;font-size:10px;cursor:pointer;vertical-align:middle">&#8592; back to 24h</button></span><span id="x-trend-total" style="text-transform:none;letter-spacing:0"></span></div>
-  <div id="x-trend" title="Drag to zoom in" style="cursor:crosshair"></div>
 </div>
 
 <!-- Alerts + activity share a row — each holds narrow rows, so stacking
