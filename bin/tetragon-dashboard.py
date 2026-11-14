@@ -5273,6 +5273,7 @@ body.view-ops #view-exec{display:none}
 .aj-ch{margin-top:12px}
 #x-ajobs-stats .aj-ch{margin-top:2px}
 .aj-key-in{margin:0 0 0 14px}
+#x-ajobs>.aj-ch{border-top:1px solid var(--line-hi);margin-top:4px;padding-top:14px}
 .aj-chl{flex-wrap:wrap}
 .aj-key{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:2px}
 .aj-sw{display:inline-block;width:12px;height:8px;border-radius:2px;margin-right:5px;vertical-align:middle}
