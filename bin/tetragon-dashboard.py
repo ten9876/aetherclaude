@@ -2324,6 +2324,234 @@ def main_ci_poller():
             _log_exc('main_ci_poller', _e)
         time.sleep(MAIN_CI_POLL_SECS)
 
+# ── Active CI jobs (exec view, under the State of main tiles) ──────────
+# How many jobs are running against the org's concurrency limit. The Free
+# plan runs at most ACTIVE_JOBS_LIMIT GitHub-hosted jobs at once across the
+# org, at most ACTIVE_JOBS_MACOS_LIMIT of them on macOS; the rest wait as
+# `queued`.
+# workflow_job webhooks keep the job table live; every ACTIVE_JOBS_RECONCILE_SECS
+# a poll of the repo's active runs replaces it, so a missed webhook costs
+# at most one interval. One sample a minute feeds the 24-hour history.
+# Rides /api/events as ring_stats['active_jobs'].
+ACTIVE_JOBS_LIMIT = 20
+ACTIVE_JOBS_MACOS_LIMIT = 5
+ACTIVE_JOBS_RECONCILE_SECS = 300
+ACTIVE_JOBS_SAMPLE_SECS = 60
+ACTIVE_JOBS_HISTORY_SECS = 24 * 3600
+ACTIVE_JOBS_BUCKET_SECS = 300
+ACTIVE_JOBS_SNAPSHOT = '/Users/aetherclaude/state/active-jobs.json'
+ACTIVE_JOBS_OS = ('linux', 'windows', 'macos')
+_active_jobs_lock = threading.Lock()
+_active_jobs_jobs = {}     # job id -> {'status','os','name','run_id','created_at','started_at','seen'}
+_active_jobs_done = {}     # job id -> when its completed event/poll arrived (out-of-order guard)
+_active_jobs_meta = {'last_event_at': 0.0, 'events_24h': deque(), 'last_poll_at': 0.0,
+                'poll_error': None, 'polled_runs': 0}
+_active_jobs_history = deque()   # (ts, active, queued, macos_active, macos_queued)
+_active_jobs_waits = deque()     # (ts started, seconds queued, os) per job, last 24 h
+
+
+def _active_jobs_os(labels):
+    """'linux' / 'windows' / 'macos' for a GitHub-hosted job, None for a
+    self-hosted one (it doesn't count against the hosted concurrency limit)."""
+    ls = [str(x).lower() for x in (labels or [])]
+    if 'self-hosted' in ls:
+        return None
+    if any(x.startswith('macos') for x in ls):
+        return 'macos'
+    if any(x.startswith('windows') for x in ls):
+        return 'windows'
+    return 'linux'
+
+
+def _active_jobs_status(s):
+    """A job counts against the limit while in_progress and waits while queued.
+    'waiting' (environment approval) and 'pending' (concurrency group) wait
+    on something else and are not counted."""
+    return s if s in ('queued', 'in_progress', 'waiting', 'pending') else None
+
+
+def active_jobs_webhook(payload, now=None):
+    """Apply one workflow_job webhook to the job table."""
+    now = now or time.time()
+    job = payload.get('workflow_job') or {}
+    jid, action = job.get('id'), payload.get('action')
+    if not jid:
+        return
+    with _active_jobs_lock:
+        _active_jobs_meta['last_event_at'] = now
+        _active_jobs_meta['events_24h'].append(now)
+        osn = _active_jobs_os(job.get('labels'))
+        if osn is None:
+            return
+        if action == 'completed':
+            _active_jobs_jobs.pop(jid, None)
+            _active_jobs_done[jid] = now
+            return
+        st = _active_jobs_status(action)
+        if st is None or jid in _active_jobs_done:
+            return   # unknown action, or a late delivery for a finished job
+        cur = _active_jobs_jobs.get(jid)
+        if cur and cur['status'] == 'in_progress' and st != 'in_progress':
+            return   # a queued delivery that arrived after in_progress
+        if st == 'in_progress' and not (cur and cur['status'] == 'in_progress'):
+            w = _iso_secs(job.get('created_at') or '', job.get('started_at') or '')
+            if w is not None:
+                _active_jobs_waits.append((now, w, osn))
+        _active_jobs_jobs[jid] = {'status': st, 'os': osn, 'name': job.get('name', ''),
+                             'run_id': job.get('run_id'), 'created_at': job.get('created_at'),
+                             'started_at': job.get('started_at') if st == 'in_progress' else None,
+                             'seen': now}
+
+
+def active_jobs_reconcile(get, now=None):
+    """Replace the job table with the active jobs GitHub reports. Entries a
+    webhook touched after the poll began are newer than the poll and kept."""
+    t0 = now or time.time()
+    fresh, nruns = {}, 0
+    for status in ('in_progress', 'queued'):
+        for page in (1, 2, 3):
+            runs = (get(f'actions/runs?status={status}&per_page=100&page={page}') or {}).get('workflow_runs') or []
+            for r in runs:
+                nruns += 1
+                jobs = (get(f"actions/runs/{r['id']}/jobs?filter=latest&per_page=100") or {}).get('jobs') or []
+                for j in jobs:
+                    osn, st = _active_jobs_os(j.get('labels')), _active_jobs_status(j.get('status'))
+                    if osn is None or st is None:
+                        continue
+                    fresh[j['id']] = {'status': st, 'os': osn, 'name': j.get('name', ''),
+                                      'run_id': j.get('run_id'), 'created_at': j.get('created_at'),
+                                      'started_at': j.get('started_at') if st == 'in_progress' else None,
+                                      'seen': t0}
+            if len(runs) < 100:
+                break
+    with _active_jobs_lock:
+        merged = {jid: j for jid, j in fresh.items()
+                  if not (_active_jobs_done.get(jid, 0) >= t0)}
+        for jid, j in _active_jobs_jobs.items():
+            if j['seen'] > t0:
+                merged[jid] = j
+        _active_jobs_jobs.clear()
+        _active_jobs_jobs.update(merged)
+        for jid in [k for k, v in _active_jobs_done.items() if v < t0 - 3600]:
+            _active_jobs_done.pop(jid, None)
+        _active_jobs_meta['last_poll_at'] = time.time()
+        _active_jobs_meta['poll_error'] = None
+        _active_jobs_meta['polled_runs'] = nruns
+
+
+def _active_jobs_counts():
+    c = {o: {'active': 0, 'queued': 0} for o in ACTIVE_JOBS_OS}
+    oldest = None
+    for j in _active_jobs_jobs.values():
+        if j['status'] == 'in_progress':
+            c[j['os']]['active'] += 1
+        elif j['status'] == 'queued':
+            c[j['os']]['queued'] += 1
+            if j.get('created_at') and (oldest is None or j['created_at'] < oldest):
+                oldest = j['created_at']
+    return c, oldest
+
+
+def active_jobs_sample(now=None):
+    now = now or time.time()
+    with _active_jobs_lock:
+        c, _ = _active_jobs_counts()
+    _active_jobs_history.append((int(now), sum(v['active'] for v in c.values()),
+                            sum(v['queued'] for v in c.values()),
+                            c['macos']['active'], c['macos']['queued']))
+    while _active_jobs_history and _active_jobs_history[0][0] < now - ACTIVE_JOBS_HISTORY_SECS:
+        _active_jobs_history.popleft()
+
+
+def active_jobs_summary(now=None):
+    """The ring_stats['active_jobs'] payload: live counts plus the 24 h history
+    in ACTIVE_JOBS_BUCKET_SECS buckets (peak and mean in use, peak queued)."""
+    now = now or time.time()
+    with _active_jobs_lock:
+        c, oldest = _active_jobs_counts()
+        ev = _active_jobs_meta['events_24h']
+        while ev and ev[0] < now - 86400:
+            ev.popleft()
+        meta = {'last_event_at': _active_jobs_meta['last_event_at'] or None,
+                'events_24h': len(ev), 'last_poll_at': _active_jobs_meta['last_poll_at'] or None,
+                'poll_error': _active_jobs_meta['poll_error'], 'polled_runs': _active_jobs_meta['polled_runs']}
+    hist = list(_active_jobs_history)
+    buckets = {}
+    for ts, u, q, mu, mq in hist:
+        b = buckets.setdefault(ts - ts % ACTIVE_JOBS_BUCKET_SECS, [0, 0, 0, 0, 0, 0])
+        b[0] = max(b[0], u); b[1] += u; b[2] = max(b[2], q); b[3] += 1; b[4] = max(b[4], mu); b[5] += q
+    n = len(hist)
+    with _active_jobs_lock:
+        while _active_jobs_waits and _active_jobs_waits[0][0] < now - ACTIVE_JOBS_HISTORY_SECS:
+            _active_jobs_waits.popleft()
+        waits = sorted(w for _, w, _ in _active_jobs_waits)
+        mac_waits = sorted(w for _, w, o in _active_jobs_waits if o == 'macos')
+    def _wsum(ws):
+        if not ws:
+            return None
+        return {'jobs': len(ws), 'avg_s': round(sum(ws) / len(ws)),
+                'p90_s': round(ws[min(len(ws) - 1, int(len(ws) * 0.9))]), 'max_s': round(ws[-1])}
+    return {
+        'limit': ACTIVE_JOBS_LIMIT, 'macos_limit': ACTIVE_JOBS_MACOS_LIMIT,
+        'active': sum(v['active'] for v in c.values()),
+        'queued': sum(v['queued'] for v in c.values()),
+        'by_os': c, 'oldest_queued_at': oldest, **meta,
+        'sample_secs': ACTIVE_JOBS_SAMPLE_SECS, 'bucket_secs': ACTIVE_JOBS_BUCKET_SECS,
+        # [bucket start, peak active, mean active, peak queued, peak macOS active, mean queued]
+        'history': [[t, b[0], round(b[1] / b[3], 1), b[2], b[4], round(b[5] / b[3], 1)]
+                    for t, b in sorted(buckets.items())],
+        'queue_mean': round(sum(h[2] for h in hist) / n, 1) if n else None,
+        'waits': _wsum(waits), 'macos_waits': _wsum(mac_waits),
+        'samples': n,
+        'at_limit_pct': round(100 * sum(1 for h in hist if h[1] >= ACTIVE_JOBS_LIMIT) / n) if n else None,
+        'waiting_pct': round(100 * sum(1 for h in hist if h[2] > 0) / n) if n else None,
+        'macos_at_limit_pct': round(100 * sum(1 for h in hist if h[3] >= ACTIVE_JOBS_MACOS_LIMIT) / n) if n else None,
+        'peak': max((h[1] for h in hist), default=None),
+        'peak_queued': max((h[2] for h in hist), default=None),
+    }
+
+
+def _active_jobs_save():
+    try:
+        tmp = ACTIVE_JOBS_SNAPSHOT + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump({'history': list(_active_jobs_history), 'waits': list(_active_jobs_waits)}, f)
+        os.replace(tmp, ACTIVE_JOBS_SNAPSHOT)
+    except Exception as _e:
+        _log_exc('active_jobs_save', _e)
+
+
+def active_jobs_poller():
+    try:
+        with open(ACTIVE_JOBS_SNAPSHOT) as f:
+            cut = time.time() - ACTIVE_JOBS_HISTORY_SECS
+            snap = json.load(f)
+            _active_jobs_history.extend(tuple(h) for h in snap.get('history', []) if h[0] >= cut)
+            _active_jobs_waits.extend(tuple(w) for w in snap.get('waits', []) if w[0] >= cut)
+    except Exception:
+        pass
+    last_poll = last_sample = 0.0
+    while True:
+        now = time.time()
+        if now - last_poll >= ACTIVE_JOBS_RECONCILE_SECS:
+            last_poll = now
+            try:
+                active_jobs_reconcile(_webhook_gh_get)
+            except Exception as _e:
+                with _active_jobs_lock:
+                    _active_jobs_meta['poll_error'] = str(_e)[:120]
+                _log_exc('active_jobs_reconcile', _e)
+        if now - last_sample >= ACTIVE_JOBS_SAMPLE_SECS:
+            last_sample = now
+            active_jobs_sample(now)
+            if int(now) % ACTIVE_JOBS_RECONCILE_SECS < ACTIVE_JOBS_SAMPLE_SECS:
+                _active_jobs_save()
+        try:
+            ring_stats['active_jobs'] = active_jobs_summary(now)
+        except Exception as _e:
+            _log_exc('active_jobs_summary', _e)
+        time.sleep(10)
+
 # ── Contributor leaderboard (/leaderboard) ───────────────────────────────
 # Standings are scored from the facts bin/contributor-points.py collects
 # (hourly, com.aetherclaude.contributors) into CONTRIBUTOR_DB. Scoring is a
@@ -5032,6 +5260,22 @@ body.view-ops #view-exec{display:none}
 .x-tile .sub{font-size:11px;color:var(--muted-dim);margin-top:4px;display:flex;align-items:center;gap:8px}
 .x-tile .spark{margin-top:8px;height:30px}
 .x-delta{font-weight:600}
+.aj-top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:8px}
+.aj-num{font-size:26px;font-weight:700;font-family:var(--mono);color:var(--ink)}
+.aj-num .of{font-size:15px;color:var(--muted);font-weight:500}
+.aj-dim{color:var(--muted);font-size:12px}
+.aj-q{font-size:13px;font-weight:600;color:var(--warn)}
+.aj-slots{display:flex;gap:3px;margin:6px 0 8px}
+.aj-slot{flex:1;height:18px;border-radius:3px;background:var(--bg-2);border:1px solid var(--line)}
+.aj-leg{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--ink-soft);margin-bottom:12px}
+.aj-leg i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:baseline}
+.aj-chart{width:100%;display:block}
+.aj-ch{margin-top:12px}
+.aj-axis{display:flex;justify-content:space-between;font-size:10px;color:var(--muted-dim);margin-top:2px}
+.aj-chl{display:flex;gap:8px;align-items:baseline;font-size:12px;color:var(--ink-soft);margin-bottom:4px}
+.aj-stats{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--ink-soft);margin-top:8px}
+.aj-stats b{font-family:var(--mono)}
+.aj-note{font-size:11px;color:var(--warn);margin-top:8px}
 .x-panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 20px;margin-bottom:14px}
 .x-duo{display:flex;gap:14px;align-items:flex-start;margin-bottom:14px}
 .x-duo .x-panel{flex:1;min-width:0;margin-bottom:0}
@@ -5190,6 +5434,13 @@ body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
   <div class="x-tile x-mci-ph"><div class="lbl">CodeQL &middot; Quality</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
   <div class="x-tile x-mci-ph"><div class="lbl">System Libraries Canary</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
   <div class="x-tile x-mci-ph"><div class="lbl">Sanitizers</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
+</div>
+
+<!-- Active CI jobs against the org's concurrency limit (ring_stats.active_jobs:
+     workflow_job webhooks, reconciled by a 5-minute poll; 24 h history). -->
+<div class="x-panel" id="x-ajobs">
+  <div class="x-ph"><span>Active CI jobs</span><span id="x-ajobs-src" style="text-transform:none;letter-spacing:0;font-weight:400"></span></div>
+  <div id="x-ajobs-body"><div class="aj-dim">fetching&hellip;</div></div>
 </div>
 
 <div class="x-panel">
@@ -5552,6 +5803,59 @@ let lastKpisHtml='';
 // on main (a run still in progress shows under it as "running"), so a tile
 // never reads as unknown for the ~10-60 min after each push. The strip is the
 // last ten runs on main, oldest left, in place of the KPI sparkline.
+// Active CI jobs: N of the plan's concurrent-job limit, one cell per slot
+// colored by OS, queued jobs beside it, and the last 24 h as active (peak
+// per 5 min) with queued stacked on top against the limit line.
+const AJ_OS=[['linux','Linux','var(--cat-blue)'],['windows','Windows','var(--cat-teal)'],['macos','macOS','var(--cat-violet)']];
+let lastAjHtml='';
+function ajPct(v,c){return `<b style="color:${v>=25?c:'inherit'}">${v}%</b>`}
+function ajChart(a,kind){
+  const hs=(a.history||[]).filter(h=>h[0]>=Date.now()/1000-86400);
+  if(hs.length<2)return '<div class="aj-dim">History builds up over the next hour (one sample a minute).</div>';
+  const W=288,H=kind==='q'?56:72,t0=Date.now()/1000-86400,lim=a.limit,bw=Math.max(W*a.bucket_secs/86400,1).toFixed(2);
+  const pk=h=>kind==='q'?h[3]:h[1],mn=h=>kind==='q'?(h[5]||0):h[2];
+  const top=kind==='q'?Math.max(4,...hs.map(pk)):Math.max(lim+2,...hs.map(pk));
+  const x=t=>((t-t0)/86400*W).toFixed(1),y=v=>(H-v/top*H).toFixed(1),hh=v=>(v/top*H).toFixed(1);
+  const col=kind==='q'?'var(--warn)':'var(--cat-blue)';
+  let bars='';
+  for(const h of hs){
+    bars+=`<rect x="${x(h[0])}" y="${y(pk(h))}" width="${bw}" height="${hh(pk(h))}" fill="${col}" opacity=".35"/>`+
+          `<rect x="${x(h[0])}" y="${y(mn(h))}" width="${bw}" height="${hh(mn(h))}" fill="${col}" opacity=".85"/>`;}
+  const limLine=kind==='q'?'':`<line x1="0" x2="${W}" y1="${y(lim)}" y2="${y(lim)}" stroke="var(--crit)" stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>`;
+  return `<div class="aj-ch"><div class="aj-chl">${kind==='q'?'Queue depth':'Active jobs'} <span class="aj-dim">peak (light) and average (solid) per 5 min${kind==='q'?'':` &middot; dashed line: ${lim}-job limit`}</span><span class="aj-dim" style="margin-left:auto">scale 0&ndash;${top}</span></div>`+
+    `<svg class="aj-chart" style="height:${H}px" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${kind==='q'?'Queued jobs':'Active jobs'}, last 24 hours">`+
+    `<rect x="0" y="0" width="${W}" height="${H}" fill="var(--bg-1)"/>${bars}${limLine}</svg>`+
+    `<div class="aj-axis"><span>24 h ago</span><span>12 h</span><span>now</span></div></div>`;
+}
+function renderActiveJobs(a){
+  const el=document.getElementById('x-ajobs-body'),src=document.getElementById('x-ajobs-src');if(!el||!a)return;
+  const by=a.by_os||{},lim=a.limit,act=a.active,q=a.queued;
+  const cells=[];for(const [k,,c] of AJ_OS)for(let i=0;i<(by[k]||{}).active||0;i++)cells.push(c);
+  let slots='';for(let i=0;i<lim;i++)slots+=`<div class="aj-slot"${i<cells.length?` style="background:${cells[i]};border-color:transparent"`:''}></div>`;
+  const numC=act>=lim?'var(--crit)':act>=lim*0.8?'var(--warn)':'var(--ink)';
+  const wait=a.oldest_queued_at?mciDur((Date.now()-new Date(a.oldest_queued_at))/1000):null;
+  let h=`<div class="aj-top"><span class="aj-num" style="color:${numC}">${act}<span class="of"> / ${lim} active</span></span>`+
+    (q?`<span class="aj-q">queue depth ${q}</span>${wait?`<span class="aj-dim">oldest waiting ${wait}</span>`:''}`:`<span class="aj-dim">queue empty</span>`)+`</div>`;
+  h+=`<div class="aj-slots" title="${act} of ${lim} concurrent job slots in use">${slots}</div>`;
+  h+=`<div class="aj-leg">`+AJ_OS.map(([k,n,c])=>{const o=by[k]||{active:0,queued:0};
+    return `<span><i style="background:${c}"></i>${n} <b>${o.active}</b>${k==='macos'?` / ${a.macos_limit}`:''} active${o.queued?` &middot; <span style="color:var(--warn)">${o.queued} queued</span>`:''}</span>`}).join('')+`</div>`;
+  h+=ajChart(a,'a');
+  if(a.samples)h+=`<div class="aj-stats"><span>At the ${lim}-job limit ${ajPct(a.at_limit_pct,'var(--crit)')} of the last 24 h</span>`+
+      `<span>macOS at its ${a.macos_limit}-job limit ${ajPct(a.macos_at_limit_pct,'var(--warn)')}</span>`+
+      `<span>Peak <b>${a.peak}</b> active</span></div>`;
+  h+=ajChart(a,'q');
+  if(a.samples){const w=a.waits,mw=a.macos_waits;
+    h+=`<div class="aj-stats"><span>Jobs queued ${ajPct(a.waiting_pct,'var(--warn)')} of the time</span>`+
+      `<span>Depth <b>${a.queue_mean}</b> average, <b>${a.peak_queued}</b> peak</span>`+
+      (w?`<span title="${w.jobs} jobs started in the last 24 h">Wait before starting <b>${mciDur(w.avg_s)}</b> average, <b>${mciDur(w.p90_s)}</b> p90, <b>${mciDur(w.max_s)}</b> max</span>`:'<span class="aj-dim">Wait times appear once job webhooks arrive</span>')+
+      (mw?`<span>macOS wait <b>${mciDur(mw.avg_s)}</b> average, <b>${mciDur(mw.p90_s)}</b> p90</span>`:'')+`</div>`;}
+  if(!a.events_24h)h+=`<div class="aj-note">No workflow_job webhooks in the last 24 h: subscribe the GitHub App to <b>Workflow job</b> events. Until then counts refresh from a poll every 5 minutes.</div>`;
+  if(a.poll_error)h+=`<div class="aj-note">Last poll failed: ${esc(a.poll_error)}</div>`;
+  const ago=t=>t?mciDur(Date.now()/1000-t)+' ago':'never';
+  const s=a.events_24h?`live from webhooks &middot; last event ${ago(a.last_event_at)}`:`polled ${ago(a.last_poll_at)}`;
+  const key=h+s+Math.floor(Date.now()/30000);
+  if(key!==lastAjHtml){lastAjHtml=key;el.innerHTML=h;src.innerHTML=`GitHub Free plan &middot; ${s}`}
+}
 let lastMci=null,lastMciHtml='';
 function mciAgo(s){const t=new Date(s).getTime();if(!s||isNaN(t))return '';const m=Math.round((Date.now()-t)/60000);
   return m<1?'just now':m<60?m+'m ago':m<2880?Math.round(m/60)+'h ago':Math.round(m/1440)+'d ago'}
@@ -5774,6 +6078,7 @@ function showMainCiCheck(i){
 function renderExec(d){
   const s=d.stats||{},r=d.rings||{},t=(s.tokens)||{},p=r.posture;
   renderMainCi(r.main_ci);
+  renderActiveJobs(r.active_jobs);
   // Hero — score, delta, status chip, reasons from non-green controls
   if(p){
     document.getElementById('x-gauge').innerHTML=svgRingGauge(p.score);
@@ -12352,6 +12657,11 @@ a{{color:#0a6aba}}
             except:
                 self.send_response(400); self.end_headers(); self.wfile.write(b'Bad JSON'); return
             action = payload.get('action', '')
+            # Job lifecycle events only feed the active-jobs table:
+            # they are high volume, start no agent run, and are not kept.
+            if event_type == 'workflow_job':
+                active_jobs_webhook(payload)
+                self.send_response(200); self.end_headers(); self.wfile.write(b'Recorded (active jobs)'); return
             # Keep the verified raw payload and apply it to the contributor
             # data, off the request thread so the reply isn't delayed.
             threading.Thread(target=_store_webhook, daemon=True,
@@ -12632,6 +12942,7 @@ def main():
     threading.Thread(target=scan_tokens,daemon=True).start()
     threading.Thread(target=scan_rings,daemon=True).start()
     threading.Thread(target=main_ci_poller,daemon=True).start()
+    threading.Thread(target=active_jobs_poller,daemon=True).start()
     threading.Thread(target=mirror_watch,daemon=True).start()
     threading.Thread(target=dc_gateway_watch,daemon=True).start()
     threading.Thread(target=webhook_intake_watch,daemon=True).start()

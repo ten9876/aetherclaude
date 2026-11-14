@@ -1,0 +1,151 @@
+"""Unit tests for tetragon-dashboard.py's active-CI-jobs tracker.
+
+Run: python3 tests/test_active_jobs.py
+Exits non-zero on any failure with a one-line summary per case.
+
+The invariant under test: the live counts are the GitHub-hosted jobs that
+are in_progress (against the concurrency limit) and queued (queue depth),
+whatever order the workflow_job webhooks arrive in, and a reconcile poll
+corrects the table without undoing a webhook that is newer than the poll.
+
+Covers:
+  - queued → in_progress → completed moves a job between the counts
+  - OS from labels; self-hosted jobs, 'waiting' and 'pending' are not counted
+  - a late queued delivery doesn't demote an in_progress job; a late
+    in_progress after completed doesn't resurrect it
+  - reconcile drops jobs a webhook never closed, keeps newer webhook state,
+    and doesn't resurrect a job completed after the poll began
+  - 24 h stats: at-limit / queued shares, queue depth mean/peak, buckets,
+    wait-before-start from created_at → started_at
+"""
+import importlib.util
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_DASH_PATH = os.path.join(_HERE, '..', 'bin', 'tetragon-dashboard.py')
+
+spec = importlib.util.spec_from_file_location('tetragon_dashboard', _DASH_PATH)
+td = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(td)
+
+_FAILED = []
+
+
+def check(name, cond, detail=''):
+    if cond:
+        print(f"  ok   {name}")
+    else:
+        print(f"  FAIL {name}{(' — ' + detail) if detail else ''}")
+        _FAILED.append(name)
+
+
+def reset():
+    td._active_jobs_jobs.clear()
+    td._active_jobs_done.clear()
+    td._active_jobs_history.clear()
+    td._active_jobs_waits.clear()
+    td._active_jobs_meta.update(last_event_at=0.0, last_poll_at=0.0, poll_error=None, polled_runs=0)
+    td._active_jobs_meta['events_24h'].clear()
+
+
+def ev(action, jid, labels=('ubuntu-latest',), created='2026-11-14T06:00:00Z',
+       started='2026-11-14T06:03:00Z', run=1):
+    return {'action': action, 'workflow_job': {
+        'id': jid, 'run_id': run, 'name': f'job{jid}', 'labels': list(labels),
+        'status': action, 'created_at': created,
+        'started_at': started if action != 'queued' else None}}
+
+
+def counts():
+    c, _ = td._active_jobs_counts()
+    return sum(v['active'] for v in c.values()), sum(v['queued'] for v in c.values()), c
+
+
+def main():
+    T = 1_800_000_000.0
+    print("webhook state")
+    reset()
+    td.active_jobs_webhook(ev('queued', 1), now=T)
+    td.active_jobs_webhook(ev('queued', 2, labels=['macos-15']), now=T)
+    a, q, c = counts()
+    check("queued jobs are queue depth", (a, q) == (0, 2) and c['macos']['queued'] == 1, f"{a} {q}")
+    td.active_jobs_webhook(ev('in_progress', 1), now=T + 1)
+    a, q, _ = counts()
+    check("in_progress counts as active", (a, q) == (1, 1), f"{a} {q}")
+    check("wait recorded on start", [w[1] for w in td._active_jobs_waits] == [180.0], str(list(td._active_jobs_waits)))
+    td.active_jobs_webhook(ev('queued', 1), now=T + 2)
+    a, q, _ = counts()
+    check("late queued doesn't demote", (a, q) == (1, 1), f"{a} {q}")
+    td.active_jobs_webhook(ev('completed', 1), now=T + 3)
+    td.active_jobs_webhook(ev('in_progress', 1), now=T + 4)
+    a, q, _ = counts()
+    check("completed job not resurrected", (a, q) == (0, 1), f"{a} {q}")
+    td.active_jobs_webhook(ev('in_progress', 3, labels=['self-hosted', 'linux']), now=T)
+    td.active_jobs_webhook(ev('waiting', 4), now=T)
+    a, q, _ = counts()
+    check("self-hosted and waiting not counted", (a, q) == (0, 1), f"{a} {q}")
+    check("os from labels", td._active_jobs_os(['windows-latest']) == 'windows'
+          and td._active_jobs_os(['macos-15']) == 'macos' and td._active_jobs_os(['ubuntu-24.04']) == 'linux')
+
+    print("reconcile")
+    reset()
+    td.active_jobs_webhook(ev('in_progress', 10), now=T)        # its completed webhook was lost
+    td.active_jobs_webhook(ev('in_progress', 11), now=T)
+
+    def fake_get(path):
+        if path.startswith('actions/runs?status=in_progress') and 'page=1' in path:
+            return {'workflow_runs': [{'id': 7}]}
+        if path.startswith('actions/runs/7/jobs'):
+            # During the poll: job 12 completes and job 13 starts by webhook.
+            td.active_jobs_webhook(ev('completed', 12, run=7), now=T + 105)
+            td.active_jobs_webhook(ev('in_progress', 13, run=7), now=T + 106)
+            return {'jobs': [
+                {'id': 11, 'run_id': 7, 'status': 'in_progress', 'labels': ['ubuntu-latest'],
+                 'created_at': 'x', 'started_at': 'y'},
+                {'id': 12, 'run_id': 7, 'status': 'in_progress', 'labels': ['ubuntu-latest']},
+                {'id': 14, 'run_id': 7, 'status': 'queued', 'labels': ['macos-15']},
+                {'id': 15, 'run_id': 7, 'status': 'completed', 'labels': ['ubuntu-latest']}]}
+        return {'workflow_runs': []}
+    td.active_jobs_reconcile(fake_get, now=T + 100)
+    ids = sorted(td._active_jobs_jobs)
+    check("reconcile: stale dropped, newer webhook kept, completed not resurrected",
+          ids == [11, 13, 14], str(ids))
+    check("reconcile records poll", td._active_jobs_meta['polled_runs'] == 1
+          and td._active_jobs_meta['last_poll_at'] > 0)
+
+    print("summary")
+    reset()
+    for i in range(20):
+        td.active_jobs_webhook(ev('in_progress', 100 + i), now=T)
+    for i in range(4):
+        td.active_jobs_webhook(ev('queued', 200 + i), now=T)
+    td.active_jobs_sample(now=T)
+    for i in range(4):
+        td.active_jobs_webhook(ev('completed', 200 + i), now=T + 30)
+    for i in range(10):
+        td.active_jobs_webhook(ev('completed', 100 + i), now=T + 30)
+    td.active_jobs_sample(now=T + 60)
+    s = td.active_jobs_summary(now=T + 60)
+    check("live counts", (s['active'], s['queued']) == (10, 0), f"{s['active']} {s['queued']}")
+    check("at-limit and queued shares", (s['at_limit_pct'], s['waiting_pct']) == (50, 50),
+          f"{s['at_limit_pct']} {s['waiting_pct']}")
+    check("queue depth mean and peak", (s['queue_mean'], s['peak_queued'], s['peak']) == (2.0, 4, 20),
+          f"{s['queue_mean']} {s['peak_queued']} {s['peak']}")
+    h = s['history']
+    check("one 5-min bucket: peak/mean active, peak/mean queued",
+          len(h) == 1 and h[0][1] == 20 and h[0][2] == 15.0 and h[0][3] == 4 and h[0][5] == 2.0, str(h))
+    check("wait stats", s['waits'] and s['waits']['jobs'] == 20 and s['waits']['avg_s'] == 180, str(s['waits']))
+    td.active_jobs_sample(now=T + 86400 + 61)
+    s = td.active_jobs_summary(now=T + 86400 + 61)
+    check("history and waits age out after 24 h", s['samples'] == 1 and s['waits'] is None,
+          f"{s['samples']} {s['waits']}")
+
+    if _FAILED:
+        print(f"\n{len(_FAILED)} failure(s): {', '.join(_FAILED)}")
+        sys.exit(1)
+    print("\nall passed")
+
+
+if __name__ == '__main__':
+    main()
