@@ -5271,6 +5271,9 @@ body.view-ops #view-exec{display:none}
 .aj-leg i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:baseline}
 .aj-chart{width:100%;display:block}
 .aj-ch{margin-top:12px}
+.aj-key{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:2px}
+.aj-sw{display:inline-block;width:12px;height:8px;border-radius:2px;margin-right:5px;vertical-align:middle}
+.aj-dash{height:0;border-top:1px dashed var(--crit);border-radius:0}
 .aj-axis{display:flex;justify-content:space-between;font-size:10px;color:var(--muted-dim);margin-top:2px}
 .aj-chl{display:flex;gap:8px;align-items:baseline;font-size:12px;color:var(--ink-soft);margin-bottom:4px}
 .aj-stats{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--ink-soft);margin-top:8px}
@@ -5436,16 +5439,19 @@ body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
   <div class="x-tile x-mci-ph"><div class="lbl">Sanitizers</div><div class="val">&hellip;</div><div class="sub">fetching status</div><div class="spark"></div></div>
 </div>
 
-<div class="x-panel">
-  <div class="x-ph"><span><span id="x-act-label">Activity &middot; last 24 hours</span><button id="x-zoom-back" onclick="drawActivity(null,null)" style="display:none;margin-left:10px;background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:6px;padding:1px 8px;font-size:10px;cursor:pointer;vertical-align:middle">&#8592; back to 24h</button></span><span id="x-trend-total" style="text-transform:none;letter-spacing:0"></span></div>
-  <div id="x-trend" title="Drag to zoom in" style="cursor:crosshair"></div>
-</div>
-
 <!-- Active CI jobs against the org's concurrency limit (ring_stats.active_jobs:
      workflow_job webhooks, reconciled by a 5-minute poll; 24 h history). -->
 <div class="x-panel" id="x-ajobs">
   <div class="x-ph"><span>Active CI jobs</span><span id="x-ajobs-src" style="text-transform:none;letter-spacing:0;font-weight:400"></span></div>
   <div id="x-ajobs-body"><div class="aj-dim">fetching&hellip;</div></div>
+  <!-- Active jobs (grey bars, dashed limit) under the agent activity line and
+       run dots; drawActivity() renders it, with hover cards and drag-to-zoom. -->
+  <div class="aj-ch">
+    <div class="aj-chl"><span id="x-act-label">Active jobs &amp; agent activity &middot; last 24 hours</span><button id="x-zoom-back" onclick="drawActivity(null,null)" style="display:none;margin-left:10px;background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:6px;padding:1px 8px;font-size:10px;cursor:pointer;vertical-align:middle">&#8592; back to 24h</button><span id="x-trend-total" class="aj-dim" style="margin-left:auto"></span></div>
+    <div id="x-trend" title="Drag to zoom in" style="cursor:crosshair"></div>
+    <div class="aj-key"><span><i class="aj-sw" style="background:rgba(133,152,180,.55)"></i>active jobs, average per 5 min</span><span><i class="aj-sw" style="background:rgba(133,152,180,.22)"></i>peak</span><span><i class="aj-sw aj-dash"></i>job limit</span><span><i class="aj-sw" style="background:#2f96ea;height:2px"></i>agent events</span><span><span style="color:#a878e0">&#9679;</span> agent runs</span></div>
+  </div>
+  <div id="x-ajobs-stats"></div>
 </div>
 
 <!-- Alerts + activity share a row — each holds narrow rows, so stacking
@@ -5667,7 +5673,8 @@ function svgAreaChart(buckets,w,h,opts){
   }
   return `<svg id="${cid}" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`+
     `<defs><linearGradient id="${cid}-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f96ea" stop-opacity=".18"/><stop offset="1" stop-color="#2f96ea" stop-opacity="0"/></linearGradient></defs>`+
-    grid+`<polygon points="${area}" fill="url(#${cid}-grad)"/>`+
+    grid+(opts.underlay&&buckets.length>1?opts.underlay(new Date(buckets[0].t).getTime(),new Date(buckets[buckets.length-1].t).getTime(),padL,iw,padT,ih):'')+
+    `<polygon points="${area}" fill="url(#${cid}-grad)"/>`+
     `<polyline points="${line}" fill="none" stroke="#2f96ea" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`+
     adot+
     `<line id="${cid}-cross" y1="${padT}" y2="${(padT+ih).toFixed(1)}" x1="0" x2="0" stroke="rgba(120,190,230,.28)" stroke-width="1" visibility="hidden"/>`+
@@ -5759,13 +5766,15 @@ function drawActivity(i0,i1){
   _actZoomT=zoomed?{t0:buckets[0].t,t1:buckets[buckets.length-1].t}:null;
   const t0=new Date(buckets[0].t).getTime(),t1=new Date(buckets[buckets.length-1].t).getTime();
   const marks=(_act.marks||[]).filter(m=>{const t=new Date(m.t).getTime();return !isNaN(t)&&t>=t0&&t<=t1;});
-  tw.innerHTML=svgAreaChart(buckets,_act.w,160,{dur:10.7,markers:marks,mtip:_act.card,brush:true});
-  wireTrendHover(buckets,{markers:marks,mtip:_act.card});
+  const tip=b=>`<b>${b.events}</b> events · ${b.blocked} blocked`+ajJobsAt(b.t);
+  tw.innerHTML=svgAreaChart(buckets,_act.w,160,{dur:10.7,markers:marks,mtip:_act.card,brush:true,
+    underlay:_ajLast?ajUnderlay(_ajLast):null});
+  wireTrendHover(buckets,{markers:marks,mtip:_act.card,tip});
   wireBrush(buckets,i0);
   const bb=document.getElementById('x-zoom-back');if(bb)bb.style.display=zoomed?'inline-block':'none';
   const fT=s=>{const d=new Date(s);return isNaN(d)?'':d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})};
   const lbl=document.getElementById('x-act-label');
-  if(lbl)lbl.innerHTML=zoomed?('Activity &middot; '+fT(buckets[0].t)+'&ndash;'+fT(buckets[buckets.length-1].t)):'Activity &middot; last 24 hours';
+  if(lbl)lbl.innerHTML='Active jobs &amp; agent activity &middot; '+(zoomed?fT(buckets[0].t)+'&ndash;'+fT(buckets[buckets.length-1].t):'last 24 hours');
   const WF=_act.WF||{},kc={};
   marks.forEach(m=>{if(m.kind&&m.kind!=='codeguard')kc[m.kind]=(kc[m.kind]||0)+1;});
   const cgn=marks.filter(m=>m.kind==='codeguard').length;
@@ -5807,7 +5816,28 @@ let lastKpisHtml='';
 // colored by OS, queued jobs beside it, and the last 24 h as active (peak
 // per 5 min) with queued stacked on top against the limit line.
 const AJ_OS=[['linux','Linux','var(--cat-blue)'],['windows','Windows','var(--cat-teal)'],['macos','macOS','var(--cat-violet)']];
-let lastAjHtml='';
+let lastAjHtml='',lastAjStats='',_ajLast=null,_ajHistKey='';
+// Grey job bars for the activity chart, in its own 0..limit+ scale, mapped
+// onto the chart's time axis (t0..t1 ms across padL..padL+iw).
+function ajUnderlay(a){return (t0,t1,padL,iw,padT,ih)=>{
+  const span=(t1-t0)||1,bs=a.bucket_secs*1000,lim=a.limit;
+  const hs=(a.history||[]).filter(h=>h[0]*1000+bs>t0&&h[0]*1000<t1);
+  const top=Math.max(lim+2,...hs.map(h=>h[1]));
+  const X=t=>padL+Math.max(0,Math.min(1,(t-t0)/span))*iw,Y=v=>padT+ih-v/top*ih;
+  let g='';
+  for(const h of hs){const x0=X(h[0]*1000),x1=X(h[0]*1000+bs),w=Math.max(x1-x0-0.5,0.6).toFixed(1);
+    g+=`<rect x="${x0.toFixed(1)}" y="${Y(h[1]).toFixed(1)}" width="${w}" height="${(h[1]/top*ih).toFixed(1)}" fill="rgba(133,152,180,.22)"/>`+
+       `<rect x="${x0.toFixed(1)}" y="${Y(h[2]).toFixed(1)}" width="${w}" height="${(h[2]/top*ih).toFixed(1)}" fill="rgba(133,152,180,.55)"/>`;}
+  const ly=Y(lim).toFixed(1);
+  return g+`<line x1="${padL}" x2="${(padL+iw).toFixed(1)}" y1="${ly}" y2="${ly}" stroke="var(--crit)" stroke-width="1" stroke-dasharray="3 3" opacity=".8"/>`+
+    `<text x="${(padL+iw-2).toFixed(1)}" y="${(+ly-3).toFixed(1)}" font-size="9" fill="var(--crit)" text-anchor="end" font-family="inherit">${lim}-job limit</text>`;
+}}
+// Jobs during the 5-minute bucket around t, for the activity hover card.
+function ajJobsAt(t){
+  if(!_ajLast)return '';const ts=new Date(t).getTime()/1000,bs=_ajLast.bucket_secs;
+  const h=(_ajLast.history||[]).find(x=>ts>=x[0]&&ts<x[0]+bs);
+  return h?` &middot; jobs <b>${h[2]}</b> avg, ${h[1]} peak${h[3]?`, <span style="color:var(--warn)">${h[3]} queued</span>`:''}`:'';
+}
 function ajPct(v,c){return `<b style="color:${v>=25?c:'inherit'}">${v}%</b>`}
 function ajChart(a,kind){
   const hs=(a.history||[]).filter(h=>h[0]>=Date.now()/1000-86400);
@@ -5839,22 +5869,30 @@ function renderActiveJobs(a){
   h+=`<div class="aj-slots" title="${act} of ${lim} concurrent job slots in use">${slots}</div>`;
   h+=`<div class="aj-leg">`+AJ_OS.map(([k,n,c])=>{const o=by[k]||{active:0,queued:0};
     return `<span><i style="background:${c}"></i>${n} <b>${o.active}</b>${k==='macos'?` / ${a.macos_limit}`:''} active${o.queued?` &middot; <span style="color:var(--warn)">${o.queued} queued</span>`:''}</span>`}).join('')+`</div>`;
-  h+=ajChart(a,'a');
-  if(a.samples)h+=`<div class="aj-stats"><span>At the ${lim}-job limit ${ajPct(a.at_limit_pct,'var(--crit)')} of the last 24 h</span>`+
+  let st='';
+  if(a.samples)st+=`<div class="aj-stats"><span>At the ${lim}-job limit ${ajPct(a.at_limit_pct,'var(--crit)')} of the last 24 h</span>`+
       `<span>macOS at its ${a.macos_limit}-job limit ${ajPct(a.macos_at_limit_pct,'var(--warn)')}</span>`+
       `<span>Peak <b>${a.peak}</b> active</span></div>`;
-  h+=ajChart(a,'q');
+  st+=ajChart(a,'q');
   if(a.samples){const w=a.waits,mw=a.macos_waits;
-    h+=`<div class="aj-stats"><span>Jobs queued ${ajPct(a.waiting_pct,'var(--warn)')} of the time</span>`+
+    st+=`<div class="aj-stats"><span>Jobs queued ${ajPct(a.waiting_pct,'var(--warn)')} of the time</span>`+
       `<span>Depth <b>${a.queue_mean}</b> average, <b>${a.peak_queued}</b> peak</span>`+
       (w?`<span title="${w.jobs} jobs started in the last 24 h">Wait before starting <b>${mciDur(w.avg_s)}</b> average, <b>${mciDur(w.p90_s)}</b> p90, <b>${mciDur(w.max_s)}</b> max</span>`:'<span class="aj-dim">Wait times appear once job webhooks arrive</span>')+
       (mw?`<span>macOS wait <b>${mciDur(mw.avg_s)}</b> average, <b>${mciDur(mw.p90_s)}</b> p90</span>`:'')+`</div>`;}
-  if(!a.events_24h)h+=`<div class="aj-note">No workflow_job webhooks in the last 24 h: subscribe the GitHub App to <b>Workflow job</b> events. Until then counts refresh from a poll every 5 minutes.</div>`;
-  if(a.poll_error)h+=`<div class="aj-note">Last poll failed: ${esc(a.poll_error)}</div>`;
+  if(!a.events_24h)st+=`<div class="aj-note">No workflow_job webhooks in the last 24 h: subscribe the GitHub App to <b>Workflow job</b> events. Until then counts refresh from a poll every 5 minutes.</div>`;
+  if(a.poll_error)st+=`<div class="aj-note">Last poll failed: ${esc(a.poll_error)}</div>`;
   const ago=t=>t?mciDur(Date.now()/1000-t)+' ago':'never';
   const s=a.events_24h?`live from webhooks &middot; last event ${ago(a.last_event_at)}`:`polled ${ago(a.last_poll_at)}`;
   const key=h+s+Math.floor(Date.now()/30000);
   if(key!==lastAjHtml){lastAjHtml=key;el.innerHTML=h;src.innerHTML=`GitHub Free plan &middot; ${s}`}
+  const se=document.getElementById('x-ajobs-stats');
+  if(se&&st!==lastAjStats){lastAjStats=st;se.innerHTML=st}
+  // New history (a sample a minute) redraws the shared chart, keeping any
+  // zoom; never mid-drag.
+  _ajLast=a;
+  const hk=JSON.stringify((a.history||[]).slice(-1))+(a.history||[]).length;
+  if(hk!==_ajHistKey&&!_brushing&&typeof _act!=='undefined'&&_act){_ajHistKey=hk;
+    if(_actZoomT)zoomActToTime(_actZoomT);else drawActivity(null,null);}
 }
 let lastMci=null,lastMciHtml='';
 function mciAgo(s){const t=new Date(s).getTime();if(!s||isNaN(t))return '';const m=Math.round((Date.now()-t)/60000);
