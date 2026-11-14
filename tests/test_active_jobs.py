@@ -16,7 +16,8 @@ Covers:
   - reconcile drops jobs a webhook never closed, keeps newer webhook state,
     and doesn't resurrect a job completed after the poll began
   - 24 h stats: at-limit / queued shares, queue depth mean/peak, buckets,
-    wait-before-start from created_at → started_at
+    wait-before-start from created_at → started_at, and the oldest queued
+    job's wait sampled each minute
 """
 import importlib.util
 import os
@@ -135,6 +136,10 @@ def main():
     h = s['history']
     check("one 5-min bucket: peak/mean active, peak/mean queued",
           len(h) == 1 and h[0][1] == 20 and h[0][2] == 15.0 and h[0][3] == 4 and h[0][5] == 2.0, str(h))
+    ow = s['oldest_wait']
+    exp = round(T - td.datetime(2026, 11, 14, 6, 0, tzinfo=td.timezone.utc).timestamp())
+    check("oldest wait per minute: age of the oldest queued job, 0 once the queue empties",
+          ow and ow['step'] == 60 and ow['v'][0] == exp and ow['v'][-1] == 0 and len(ow['v']) == 2, str(ow and ow['v']))
     check("wait stats", s['waits'] and s['waits']['jobs'] == 20 and s['waits']['avg_s'] == 180, str(s['waits']))
     td.active_jobs_sample(now=T + 86400 + 61)
     s = td.active_jobs_summary(now=T + 86400 + 61)

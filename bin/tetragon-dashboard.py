@@ -2346,7 +2346,7 @@ _active_jobs_jobs = {}     # job id -> {'status','os','name','run_id','created_a
 _active_jobs_done = {}     # job id -> when its completed event/poll arrived (out-of-order guard)
 _active_jobs_meta = {'last_event_at': 0.0, 'events_24h': deque(), 'last_poll_at': 0.0,
                 'poll_error': None, 'polled_runs': 0}
-_active_jobs_history = deque()   # (ts, active, queued, macos_active, macos_queued)
+_active_jobs_history = deque()   # (ts, active, queued, macos_active, macos_queued, oldest wait s or None)
 _active_jobs_waits = deque()     # (ts started, seconds queued, os) per job, last 24 h
 
 
@@ -2455,12 +2455,28 @@ def _active_jobs_counts():
 def active_jobs_sample(now=None):
     now = now or time.time()
     with _active_jobs_lock:
-        c, _ = _active_jobs_counts()
+        c, oldest = _active_jobs_counts()
+    # How long the longest-waiting queued job has waited (None: nothing queued).
+    wait = None
+    if oldest:
+        wait = _iso_secs(oldest, datetime.fromtimestamp(now, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
+        wait = round(wait) if wait is not None else None
     _active_jobs_history.append((int(now), sum(v['active'] for v in c.values()),
                             sum(v['queued'] for v in c.values()),
-                            c['macos']['active'], c['macos']['queued']))
+                            c['macos']['active'], c['macos']['queued'], wait))
     while _active_jobs_history and _active_jobs_history[0][0] < now - ACTIVE_JOBS_HISTORY_SECS:
         _active_jobs_history.popleft()
+
+
+def _active_jobs_wait_series(hist):
+    pts = [(h[0] // 60, h[5] or 0) for h in hist if len(h) > 5]
+    if not pts:
+        return None
+    m0 = pts[0][0]
+    v = [None] * (pts[-1][0] - m0 + 1)
+    for m, w in pts:
+        v[m - m0] = w if v[m - m0] is None else max(v[m - m0], w)
+    return {'t0': m0 * 60, 'step': 60, 'v': v}
 
 
 def active_jobs_summary(now=None):
@@ -2477,7 +2493,8 @@ def active_jobs_summary(now=None):
                 'poll_error': _active_jobs_meta['poll_error'], 'polled_runs': _active_jobs_meta['polled_runs']}
     hist = list(_active_jobs_history)
     buckets = {}
-    for ts, u, q, mu, mq in hist:
+    for h in hist:
+        ts, u, q, mu = h[0], h[1], h[2], h[3]
         b = buckets.setdefault(ts - ts % ACTIVE_JOBS_BUCKET_SECS, [0, 0, 0, 0, 0, 0])
         b[0] = max(b[0], u); b[1] += u; b[2] = max(b[2], q); b[3] += 1; b[4] = max(b[4], mu); b[5] += q
     n = len(hist)
@@ -2501,6 +2518,9 @@ def active_jobs_summary(now=None):
         'history': [[t, b[0], round(b[1] / b[3], 1), b[2], b[4], round(b[5] / b[3], 1)]
                     for t, b in sorted(buckets.items())],
         'queue_mean': round(sum(h[2] for h in hist) / n, 1) if n else None,
+        # The oldest queued job's wait, per minute: v[i] is the minute
+        # t0 + 60*i (0: nothing queued, null: no sample that minute).
+        'oldest_wait': _active_jobs_wait_series(hist),
         'waits': _wsum(waits), 'macos_waits': _wsum(mac_waits),
         'samples': n,
         'at_limit_pct': round(100 * sum(1 for h in hist if h[1] >= ACTIVE_JOBS_LIMIT) / n) if n else None,
@@ -5856,10 +5876,21 @@ function ajChart(a,kind){
   for(const h of hs){
     bars+=`<rect x="${x(h[0])}" y="${y(pk(h))}" width="${bw}" height="${hh(pk(h))}" fill="${col}" opacity=".35"/>`+
           `<rect x="${x(h[0])}" y="${y(mn(h))}" width="${bw}" height="${hh(mn(h))}" fill="${col}" opacity=".85"/>`;}
+  // Queue chart: the oldest queued job's wait per minute, a thin red line
+  // on its own scale (0 to the 24 h maximum).
+  let wline='',wtop=0;const ow=kind==='q'&&a.oldest_wait;
+  if(ow&&ow.v.some(v=>v)){
+    wtop=Math.max(60,...ow.v.filter(v=>v!=null));const segs=[];let cur=[];
+    ow.v.forEach((v,i)=>{const t=ow.t0+i*ow.step;
+      if(v==null||t<t0){if(cur.length)segs.push(cur);cur=[];return;}
+      cur.push(`${x(t)},${(H-v/wtop*(H-2)).toFixed(1)}`);});
+    if(cur.length)segs.push(cur);
+    wline=segs.filter(sg=>sg.length>1).map(sg=>`<polyline points="${sg.join(' ')}" fill="none" stroke="var(--crit)" stroke-width="1.2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`).join('');
+  }
   const limLine=kind==='q'?'':`<line x1="0" x2="${W}" y1="${y(lim)}" y2="${y(lim)}" stroke="var(--crit)" stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>`;
-  return `<div class="aj-ch"><div class="aj-chl">${kind==='q'?'Queue depth':'Active jobs'} <span class="aj-dim">peak (light) and average (solid) per 5 min${kind==='q'?'':` &middot; dashed line: ${lim}-job limit`}</span><span class="aj-dim" style="margin-left:auto">scale 0&ndash;${top}</span></div>`+
+  return `<div class="aj-ch"><div class="aj-chl">${kind==='q'?'Queue depth':'Active jobs'} <span class="aj-dim">peak (light) and average (solid) per 5 min${kind==='q'?(wline?` &middot; <span style="color:var(--crit)">line: oldest job's wait, per minute</span>`:''):` &middot; dashed line: ${lim}-job limit`}</span><span class="aj-dim" style="margin-left:auto">scale 0&ndash;${top}${wline?` &middot; <span style="color:var(--crit)">wait 0&ndash;${mciDur(wtop)}</span>`:''}</span></div>`+
     `<svg class="aj-chart" style="height:${H}px" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${kind==='q'?'Queued jobs':'Active jobs'}, last 24 hours">`+
-    `<rect x="0" y="0" width="${W}" height="${H}" fill="var(--bg-1)"/>${bars}${limLine}</svg>`+
+    `<rect x="0" y="0" width="${W}" height="${H}" fill="var(--bg-1)"/>${bars}${limLine}${wline}</svg>`+
     `<div class="aj-axis"><span>24 h ago</span><span>12 h</span><span>now</span></div></div>`;
 }
 function renderActiveJobs(a){
