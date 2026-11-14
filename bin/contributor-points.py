@@ -1659,6 +1659,14 @@ def standings(db, led, start=None, end=None):
             role = role_of(login, kind)   # current rules, not the role stored when first seen
         steward = sum(e['points'] for e in r['events'] if e['rule'] in STEWARD_RULES)
         backer = sum(e['points'] for e in r['events'] if e['rule'] in BACKER_RULES)
+        # Penalty points per board, as positive amounts. They count against
+        # the person; window and release totals add them back.
+        deducted = {'contributor': 0, 'steward': 0, 'backer': 0}
+        for e in r['events']:
+            if e['points'] < 0:
+                b = ('steward' if e['rule'] in STEWARD_RULES else
+                     'backer' if e['rule'] in BACKER_RULES else 'contributor')
+                deducted[b] -= e['points']
         out.append({'login': login, 'name': name, 'role': role, 'eligible': role == 'contributor', 'avatar': avatar,
                     'core': login.lower() in CORE_TEAM,
                     # Firsts that happened in this window (none for all-time).
@@ -1668,6 +1676,7 @@ def standings(db, led, start=None, end=None):
                                and (not end or earliest[(login, kind)] < end)],
                     'points': r['points'] - steward - backer,   # contributor points
                     'steward': steward, 'backer': backer, 'total': r['points'], 'cats': dict(r['cats']),
+                    'deducted': deducted,
                     'events': sorted(r['events'], key=lambda e: e['at'] or '', reverse=True)})
     def key(kind):
         return lambda r: AWARD_KEYS[kind]({'contributor': r['points'], 'steward': r['steward'],

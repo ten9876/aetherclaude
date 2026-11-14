@@ -317,10 +317,13 @@ function start(data){
   renderRules();
   render();
 }
-// Points logged in a window: everyone's total, whether or not they rank.
+// Points logged in a window: everyone's points, whether or not they rank.
+// Penalties count against the person who earned them, not the window, so
+// they are added back here (t.penalties is shown separately).
 function logged(st){
-  const t={total:0,contributor:0,steward:0,backer:0,people:st.length};
-  for(const r of st){t.total+=r.total;t.contributor+=r.points;t.steward+=r.steward||0;t.backer+=r.backer||0}
+  const t={total:0,contributor:0,steward:0,backer:0,penalties:0,people:st.length};
+  for(const r of st){const d=r.deducted||{},dc=d.contributor||0,ds=d.steward||0,db=d.backer||0;
+    t.total+=r.total+dc+ds+db;t.contributor+=r.points+dc;t.steward+=(r.steward||0)+ds;t.backer+=(r.backer||0)+db;t.penalties+=dc+ds+db}
   return t;
 }
 function tally(v){
@@ -351,7 +354,8 @@ function tally(v){
     `onclick="cur='${x.key}';picked=true;linkView();render()"><span class="v">${n(tots[j])}</span>`+
     `<span class="col" style="height:${Math.max(3,Math.round(tots[j]/max*BAR_H))}px"></span><span class="l"><span class="lf">${esc(x.w.tag==='current'?'now':x.name)}</span><span class="ls">${esc(x.w.tag==='current'?'now':x.name.replace(/^v\d+\./,''))}</span></span></div>`).join('');
   document.getElementById('tally').innerHTML=`<div><div class="k">${label}</div><div class="big">${n(t.total)}<small>points</small></div>`+
-    `<div class="split"><span><b>${n(t.contributor)}</b> contributor</span><span><b>${n(t.steward)}</b> steward</span><span><b>${n(t.backer)}</b> backer</span><span><b>${n(t.people)}</b> people</span></div>${delta}`+
+    `<div class="split"><span><b>${n(t.contributor)}</b> contributor</span><span><b>${n(t.steward)}</b> steward</span><span><b>${n(t.backer)}</b> backer</span><span><b>${n(t.people)}</b> people</span>`+
+    (t.penalties?`<span title="Penalties come off the people who incurred them, not this total"><b>&minus;${n(t.penalties)}</b> in penalties, not counted here</span>`:'')+`</div>${delta}`+
     `<span class="tab alltime${v.w.all?' on':''}" onclick="cur='all';picked=true;linkView();render()">All time</span></div>`+
     `<div class="bars" aria-label="Points logged per release"><div class="grid" aria-hidden="true">${grid}</div>${bars}</div>`;
 }

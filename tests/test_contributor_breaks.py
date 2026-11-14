@@ -101,6 +101,26 @@ led, breaks = cp.score(db)
 check('one-commit span blames the PR', ('bob', 'break_author', 'pr#22') in penalties(led))
 check('one-commit break has no range', 'range' not in next(b for b in breaks if b['sha'] == 'r2'))
 
+# Penalties stay on the person (net points) and are reported per board in
+# 'deducted', so window totals can leave them out.
+db, _ = fresh(3)
+led, _ = cp.score(db)
+st = {r['login']: r for r in cp.standings(db, led)}
+def neg(r, rules):
+    return -sum(e['points'] for e in r['events'] if e['points'] < 0 and e['rule'] in rules)
+alice, carol, dave = st.get('alice'), st.get('carol'), st.get('dave')
+check('author penalty deducted on the contributor board',
+      alice is not None and alice['deducted']['contributor'] == neg(alice, {'break_author', 'spam'}) > 0)
+check('merger/approver penalties deducted on the steward board',
+      carol is not None and dave is not None
+      and carol['deducted']['steward'] == neg(carol, cp.STEWARD_RULES) > 0
+      and dave['deducted']['steward'] == neg(dave, cp.STEWARD_RULES) > 0)
+check('person keeps the net score',
+      alice is not None and alice['total'] == sum(e['points'] for e in alice['events']))
+check('penalty-free person has nothing deducted',
+      all(sum(r['deducted'].values()) == 0 for r in st.values()
+          if not any(e['points'] < 0 for e in r['events'])))
+
 # Span never collected: unchanged behavior.
 db, _ = fresh(3)
 db.execute("DELETE FROM state WHERE name='span:r1..r2'")
