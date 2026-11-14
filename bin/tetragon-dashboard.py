@@ -5449,7 +5449,7 @@ body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
   <div class="aj-ch">
     <div class="aj-chl"><span id="x-act-label">Active jobs &amp; agent activity &middot; last 24 hours</span><button id="x-zoom-back" onclick="drawActivity(null,null)" style="display:none;margin-left:10px;background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:6px;padding:1px 8px;font-size:10px;cursor:pointer;vertical-align:middle">&#8592; back to 24h</button><span id="x-trend-total" class="aj-dim" style="margin-left:auto"></span></div>
     <div id="x-trend" title="Drag to zoom in" style="cursor:crosshair"></div>
-    <div class="aj-key"><span><i class="aj-sw" style="background:rgba(133,152,180,.55)"></i>active jobs, average per 5 min</span><span><i class="aj-sw" style="background:rgba(133,152,180,.22)"></i>peak</span><span><i class="aj-sw aj-dash"></i>job limit</span><span><i class="aj-sw" style="background:#2f96ea;height:2px"></i>agent events</span><span><span style="color:#a878e0">&#9679;</span> agent runs</span></div>
+    <div class="aj-key"><span><i class="aj-sw" style="background:var(--cat-blue);opacity:.85"></i>active jobs, average per 5 min</span><span><i class="aj-sw" style="background:var(--cat-blue);opacity:.35"></i>peak</span><span><i class="aj-sw aj-dash"></i>job limit</span><span><i class="aj-sw" style="background:#f2c14e;height:2px"></i>agent events</span><span><span style="color:#a878e0">&#9679;</span> agent runs</span></div>
   </div>
   <div id="x-ajobs-stats"></div>
 </div>
@@ -5634,6 +5634,7 @@ function svgAreaChart(buckets,w,h,opts){
   h=h||160;opts=opts||{};
   const cid=opts.id||'x-trend-svg';
   const get=opts.val||(b=>b.events);
+  const lc=opts.color||'#2f96ea';
   if(!buckets||buckets.length<2)return '<div style="color:var(--muted-dim);font-size:12px">No activity data yet</div>';
   const padL=8,padR=8,padT=10,padB=20,iw=w-padL-padR,ih=h-padT-padB;
   const vals=buckets.map(get),mx=Math.max.apply(null,vals.concat([1]));
@@ -5651,7 +5652,7 @@ function svgAreaChart(buckets,w,h,opts){
   let adot='';
   if(opts.dur&&!REDUCED_MOTION){
     const mpath='M '+xs.map((x,i)=>x.toFixed(1)+' '+ys[i].toFixed(1)).join(' L ');
-    adot=`<circle r="3.5" fill="#5de3ff"><animateMotion dur="${opts.dur}s" repeatCount="indefinite" calcMode="linear" keyPoints="0;1;1" keyTimes="0;0.45;1" path="${mpath}"/></circle>`;
+    adot=`<circle r="3.5" fill="${opts.dotColor||'#5de3ff'}"><animateMotion dur="${opts.dur}s" repeatCount="indefinite" calcMode="linear" keyPoints="0;1;1" keyTimes="0;0.45;1" path="${mpath}"/></circle>`;
   }
   // Event markers (opts.markers: [{t,...}]) — dots riding the line at their
   // timestamp, 2px surface ring so they read over the stroke, plus an
@@ -5672,10 +5673,10 @@ function svgAreaChart(buckets,w,h,opts){
     });
   }
   return `<svg id="${cid}" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`+
-    `<defs><linearGradient id="${cid}-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f96ea" stop-opacity=".18"/><stop offset="1" stop-color="#2f96ea" stop-opacity="0"/></linearGradient></defs>`+
+    `<defs><linearGradient id="${cid}-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${lc}" stop-opacity=".18"/><stop offset="1" stop-color="${lc}" stop-opacity="0"/></linearGradient></defs>`+
     grid+(opts.underlay&&buckets.length>1?opts.underlay(new Date(buckets[0].t).getTime(),new Date(buckets[buckets.length-1].t).getTime(),padL,iw,padT,ih):'')+
     `<polygon points="${area}" fill="url(#${cid}-grad)"/>`+
-    `<polyline points="${line}" fill="none" stroke="#2f96ea" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`+
+    `<polyline points="${line}" fill="none" stroke="${lc}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`+
     adot+
     `<line id="${cid}-cross" y1="${padT}" y2="${(padT+ih).toFixed(1)}" x1="0" x2="0" stroke="rgba(120,190,230,.28)" stroke-width="1" visibility="hidden"/>`+
     (opts.brush?`<rect id="${cid}-brush" x="0" y="${padT}" width="0" height="${ih.toFixed(1)}" fill="rgba(93,227,255,.14)" stroke="rgba(93,227,255,.5)" stroke-width="1" visibility="hidden" pointer-events="none"/>`:'')+
@@ -5768,6 +5769,7 @@ function drawActivity(i0,i1){
   const marks=(_act.marks||[]).filter(m=>{const t=new Date(m.t).getTime();return !isNaN(t)&&t>=t0&&t<=t1;});
   const tip=b=>`<b>${b.events}</b> events · ${b.blocked} blocked`+ajJobsAt(b.t);
   tw.innerHTML=svgAreaChart(buckets,_act.w,160,{dur:10.7,markers:marks,mtip:_act.card,brush:true,
+    color:'#f2c14e',dotColor:'#ffe08a',
     underlay:_ajLast?ajUnderlay(_ajLast):null});
   wireTrendHover(buckets,{markers:marks,mtip:_act.card,tip});
   wireBrush(buckets,i0);
@@ -5826,8 +5828,8 @@ function ajUnderlay(a){return (t0,t1,padL,iw,padT,ih)=>{
   const X=t=>padL+Math.max(0,Math.min(1,(t-t0)/span))*iw,Y=v=>padT+ih-v/top*ih;
   let g='';
   for(const h of hs){const x0=X(h[0]*1000),x1=X(h[0]*1000+bs),w=Math.max(x1-x0-0.5,0.6).toFixed(1);
-    g+=`<rect x="${x0.toFixed(1)}" y="${Y(h[1]).toFixed(1)}" width="${w}" height="${(h[1]/top*ih).toFixed(1)}" fill="rgba(133,152,180,.22)"/>`+
-       `<rect x="${x0.toFixed(1)}" y="${Y(h[2]).toFixed(1)}" width="${w}" height="${(h[2]/top*ih).toFixed(1)}" fill="rgba(133,152,180,.55)"/>`;}
+    g+=`<rect x="${x0.toFixed(1)}" y="${Y(h[1]).toFixed(1)}" width="${w}" height="${(h[1]/top*ih).toFixed(1)}" fill="var(--cat-blue)" opacity=".35"/>`+
+       `<rect x="${x0.toFixed(1)}" y="${Y(h[2]).toFixed(1)}" width="${w}" height="${(h[2]/top*ih).toFixed(1)}" fill="var(--cat-blue)" opacity=".85"/>`;}
   const ly=Y(lim).toFixed(1);
   return g+`<line x1="${padL}" x2="${(padL+iw).toFixed(1)}" y1="${ly}" y2="${ly}" stroke="var(--crit)" stroke-width="1" stroke-dasharray="3 3" opacity=".8"/>`+
     `<text x="${(padL+iw-2).toFixed(1)}" y="${(+ly-3).toFixed(1)}" font-size="9" fill="var(--crit)" text-anchor="end" font-family="inherit">${lim}-job limit</text>`;
