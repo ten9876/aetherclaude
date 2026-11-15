@@ -2347,6 +2347,7 @@ _active_jobs_done = {}     # job id -> when its completed event/poll arrived (ou
 _active_jobs_meta = {'last_event_at': 0.0, 'events_24h': deque(), 'last_poll_at': 0.0,
                 'poll_error': None, 'polled_runs': 0}
 _active_jobs_history = deque()   # (ts, active, queued, macos_active, macos_queued, oldest wait s or None)
+_active_jobs_runs = {}           # run id -> {'pr','event','branch','workflow'} (or {'err': when}), bounded
 _active_jobs_waits = deque()     # (ts started, seconds queued, os) per job, last 24 h
 
 
@@ -2398,9 +2399,66 @@ def active_jobs_webhook(payload, now=None):
             if w is not None:
                 _active_jobs_waits.append((now, w, osn))
         _active_jobs_jobs[jid] = {'status': st, 'os': osn, 'name': job.get('name', ''),
+                             'workflow': job.get('workflow_name') or '', 'branch': job.get('head_branch') or '',
                              'run_id': job.get('run_id'), 'created_at': job.get('created_at'),
                              'started_at': job.get('started_at') if st == 'in_progress' else None,
                              'seen': now}
+
+
+def _active_jobs_run_info(run, lookup=None):
+    """The PR a workflow run is for (None for a push or an unmatched head),
+    from pull_requests[] or, for a fork head, the head commit."""
+    prs = run.get('pull_requests') or []
+    pr = prs[0].get('number') if prs and isinstance(prs[0], dict) else None
+    ev = run.get('event') or ''
+    if pr is None and ev in ('pull_request', 'pull_request_target'):
+        owner = ((run.get('head_repository') or {}).get('owner') or {}).get('login') or ''
+        try:
+            pr = (lookup or _pr_for_head)(run.get('head_sha') or '', owner, run.get('head_branch') or '')
+        except Exception as _e:
+            _log_exc('active_jobs_run_info', _e)
+            return {'err': time.time()}
+    return {'pr': pr, 'event': ev, 'branch': run.get('head_branch') or '', 'workflow': run.get('name') or ''}
+
+
+def active_jobs_resolve_runs(get, limit=5, now=None):
+    """Look up the runs of tracked jobs not yet mapped to a PR (jobs a
+    webhook reported since the last reconcile), a few per call. A failed
+    lookup is retried after 5 min."""
+    now = now or time.time()
+    with _active_jobs_lock:
+        rids = {j['run_id'] for j in _active_jobs_jobs.values() if j.get('run_id')}
+    if len(_active_jobs_runs) > 500:
+        for rid in [k for k in _active_jobs_runs if k not in rids]:
+            _active_jobs_runs.pop(rid, None)
+    todo = [rid for rid in sorted(rids)
+            if 'pr' not in _active_jobs_runs.get(rid, {})
+            and now - _active_jobs_runs.get(rid, {}).get('err', 0) >= 300][:limit]
+    for rid in todo:
+        try:
+            run = get(f'actions/runs/{rid}') or {}
+        except Exception as _e:
+            _log_exc('active_jobs_resolve_runs', _e)
+            _active_jobs_runs[rid] = {'err': now}
+            continue
+        _active_jobs_runs[rid] = _active_jobs_run_info(run, lambda s, o, b: _pr_for_head(s, o, b, get=get))
+
+
+def _active_jobs_list():
+    """Running jobs in slot order (OS, then start time), each with the PR
+    or branch it is building. Caller holds _active_jobs_lock."""
+    out = []
+    for j in _active_jobs_jobs.values():
+        if j['status'] != 'in_progress':
+            continue
+        r = _active_jobs_runs.get(j.get('run_id')) or {}
+        out.append({'os': j['os'], 'name': j.get('name', ''),
+                    'workflow': j.get('workflow') or r.get('workflow') or '',
+                    'branch': j.get('branch') or r.get('branch') or '',
+                    'event': r.get('event'), 'pr': r.get('pr'), 'run_id': j.get('run_id'),
+                    'started_at': j.get('started_at')})
+    out.sort(key=lambda x: (ACTIVE_JOBS_OS.index(x['os']), x['started_at'] or ''))
+    return out
 
 
 def active_jobs_reconcile(get, now=None):
@@ -2413,12 +2471,17 @@ def active_jobs_reconcile(get, now=None):
             runs = (get(f'actions/runs?status={status}&per_page=100&page={page}') or {}).get('workflow_runs') or []
             for r in runs:
                 nruns += 1
+                if r.get('id') and 'pr' not in _active_jobs_runs.get(r['id'], {}):
+                    _active_jobs_runs[r['id']] = _active_jobs_run_info(
+                        r, lambda s, o, b: _pr_for_head(s, o, b, get=get))
                 jobs = (get(f"actions/runs/{r['id']}/jobs?filter=latest&per_page=100") or {}).get('jobs') or []
                 for j in jobs:
                     osn, st = _active_jobs_os(j.get('labels')), _active_jobs_status(j.get('status'))
                     if osn is None or st is None:
                         continue
                     fresh[j['id']] = {'status': st, 'os': osn, 'name': j.get('name', ''),
+                                      'workflow': j.get('workflow_name') or r.get('name') or '',
+                                      'branch': j.get('head_branch') or r.get('head_branch') or '',
                                       'run_id': j.get('run_id'), 'created_at': j.get('created_at'),
                                       'started_at': j.get('started_at') if st == 'in_progress' else None,
                                       'seen': t0}
@@ -2485,6 +2548,7 @@ def active_jobs_summary(now=None):
     now = now or time.time()
     with _active_jobs_lock:
         c, oldest = _active_jobs_counts()
+        running = _active_jobs_list()
         ev = _active_jobs_meta['events_24h']
         while ev and ev[0] < now - 86400:
             ev.popleft()
@@ -2512,7 +2576,7 @@ def active_jobs_summary(now=None):
         'limit': ACTIVE_JOBS_LIMIT, 'macos_limit': ACTIVE_JOBS_MACOS_LIMIT,
         'active': sum(v['active'] for v in c.values()),
         'queued': sum(v['queued'] for v in c.values()),
-        'by_os': c, 'oldest_queued_at': oldest, **meta,
+        'by_os': c, 'oldest_queued_at': oldest, 'jobs': running, **meta,
         'sample_secs': ACTIVE_JOBS_SAMPLE_SECS, 'bucket_secs': ACTIVE_JOBS_BUCKET_SECS,
         # [bucket start, peak active, mean active, peak queued, peak macOS active, mean queued]
         'history': [[t, b[0], round(b[1] / b[3], 1), b[2], b[4], round(b[5] / b[3], 1)]
@@ -2561,6 +2625,10 @@ def active_jobs_poller():
                 with _active_jobs_lock:
                     _active_jobs_meta['poll_error'] = str(_e)[:120]
                 _log_exc('active_jobs_reconcile', _e)
+        try:
+            active_jobs_resolve_runs(_webhook_gh_get)
+        except Exception as _e:
+            _log_exc('active_jobs_resolve_runs', _e)
         if now - last_sample >= ACTIVE_JOBS_SAMPLE_SECS:
             last_sample = now
             active_jobs_sample(now)
@@ -5893,16 +5961,28 @@ function ajChart(a,kind){
     `<rect x="0" y="0" width="${W}" height="${H}" fill="var(--bg-1)"/>${bars}${limLine}${wline}</svg>`+
     `<div class="aj-axis"><span>24 h ago</span><span>12 h</span><span>now</span></div></div>`;
 }
+function ajJobTip(j,osName){
+  const t=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+  if(!j)return `${osName} job`;
+  const src=j.pr?`PR #${j.pr}`:j.event==='push'?`${j.branch||'branch'} (push)`:j.event?`${j.branch||'?'} (${j.event})`:j.branch?`${j.branch} (PR not looked up yet)`:'PR not looked up yet';
+  const what=[j.workflow,j.name].filter(Boolean).join(' / ');
+  const m=j.started_at?Math.floor((Date.now()-new Date(j.started_at))/60000):null;
+  const run=m==null?'':m<1?'started under a minute ago':`running ${m} min`;
+  return t([src,what,[osName,run].filter(Boolean).join(', ')].filter(Boolean).join('\n')).replace(/\n/g,'&#10;');
+}
 function renderActiveJobs(a){
   const el=document.getElementById('x-ajobs-body'),src=document.getElementById('x-ajobs-src');if(!el||!a)return;
   const by=a.by_os||{},lim=a.limit,act=a.active,q=a.queued;
-  const cells=[];for(const [k,,c] of AJ_OS)for(let i=0;i<(by[k]||{}).active||0;i++)cells.push(c);
-  let slots='';for(let i=0;i<lim;i++)slots+=`<div class="aj-slot"${i<cells.length?` style="background:${cells[i]};border-color:transparent"`:''}></div>`;
+  // One cell per running job, in OS order; its tooltip names the PR.
+  const cells=[];for(const [k,n,c] of AJ_OS){const js=(a.jobs||[]).filter(j=>j.os===k);
+    for(let i=0;i<((by[k]||{}).active||0);i++)cells.push([c,ajJobTip(js[i],n)])}
+  const free=`${lim-Math.min(act,lim)} of ${lim} job slots free`;
+  let slots='';for(let i=0;i<lim;i++)slots+=i<cells.length?`<div class="aj-slot" style="background:${cells[i][0]};border-color:transparent" title="${cells[i][1]}"></div>`:`<div class="aj-slot" title="${free}"></div>`;
   const numC=act>=lim?'var(--crit)':act>=lim*0.8?'var(--warn)':'var(--ink)';
   const wait=a.oldest_queued_at?mciDur((Date.now()-new Date(a.oldest_queued_at))/1000):null;
   let h=`<div class="aj-top"><span class="aj-num" style="color:${numC}">${act}<span class="of"> / ${lim} active</span></span>`+
     (q?`<span class="aj-q">queue depth ${q}</span>${wait?`<span class="aj-dim">oldest waiting ${wait}</span>`:''}`:`<span class="aj-dim">queue empty</span>`)+`</div>`;
-  h+=`<div class="aj-slots" title="${act} of ${lim} concurrent job slots in use">${slots}</div>`;
+  h+=`<div class="aj-slots">${slots}</div>`;
   h+=`<div class="aj-leg">`+AJ_OS.map(([k,n,c])=>{const o=by[k]||{active:0,queued:0};
     return `<span><i style="background:${c}"></i>${n} <b>${o.active}</b>${k==='macos'?` / ${a.macos_limit}`:''} active${o.queued?` &middot; <span style="color:var(--warn)">${o.queued} queued</span>`:''}</span>`}).join('')+`</div>`;
   // Below the queue chart: the 24 h stats.

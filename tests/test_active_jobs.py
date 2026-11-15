@@ -15,6 +15,9 @@ Covers:
     in_progress after completed doesn't resurrect it
   - reconcile drops jobs a webhook never closed, keeps newer webhook state,
     and doesn't resurrect a job completed after the poll began
+  - each running job is mapped to its PR: from the run listing on reconcile,
+    by fetching the run for jobs a webhook reported, via the head commit for
+    a fork run; a push run has no PR; a failed lookup is retried later
   - 24 h stats: at-limit / queued shares, queue depth mean/peak, buckets,
     wait-before-start from created_at → started_at, and the oldest queued
     job's wait sampled each minute
@@ -46,6 +49,7 @@ def reset():
     td._active_jobs_done.clear()
     td._active_jobs_history.clear()
     td._active_jobs_waits.clear()
+    td._active_jobs_runs.clear()
     td._active_jobs_meta.update(last_event_at=0.0, last_poll_at=0.0, poll_error=None, polled_runs=0)
     td._active_jobs_meta['events_24h'].clear()
 
@@ -114,6 +118,47 @@ def main():
           ids == [11, 13, 14], str(ids))
     check("reconcile records poll", td._active_jobs_meta['polled_runs'] == 1
           and td._active_jobs_meta['last_poll_at'] > 0)
+
+    print("job → PR")
+    reset()
+    td._ci_head_pr_cache.clear()
+    runs = {
+        21: {'id': 21, 'name': 'CI', 'event': 'pull_request', 'head_branch': 'feat',
+             'pull_requests': [{'number': 7300}]},
+        22: {'id': 22, 'name': 'CI', 'event': 'pull_request', 'head_branch': 'main', 'head_sha': 'fk',
+             'pull_requests': [], 'head_repository': {'owner': {'login': 'nonoo'}}},
+        23: {'id': 23, 'name': 'CI', 'event': 'push', 'head_branch': 'main', 'pull_requests': []}}
+    calls = []
+    fail = {'on': True}
+
+    def run_get(path):
+        calls.append(path)
+        if path.startswith('actions/runs/'):
+            if fail['on'] and path.endswith('/23'):
+                raise OSError('proxy down')
+            return runs[int(path.rsplit('/', 1)[1])]
+        if path.startswith('pulls?'):
+            return [{'number': 7242, 'head': {'sha': 'fk'}}]
+        return {}
+    for jid, rid in ((31, 21), (32, 22), (33, 23)):
+        e = ev('in_progress', jid, run=rid, labels=['macos-15'] if jid == 31 else ['ubuntu-latest'])
+        e['workflow_job'].update(workflow_name='CI', head_branch=runs[rid]['head_branch'])
+        td.active_jobs_webhook(e, now=T)
+    td.active_jobs_resolve_runs(run_get, now=T)
+    js = {j['run_id']: j for j in td.active_jobs_summary(now=T)['jobs']}
+    check("same-repo PR from pull_requests[]", js[21]['pr'] == 7300, str(js[21]))
+    check("fork PR from head commit", js[22]['pr'] == 7242, str(js[22]))
+    check("failed lookup leaves the job unmapped", js[23]['pr'] is None and js[23]['event'] is None, str(js[23]))
+    n = len(calls)
+    td.active_jobs_resolve_runs(run_get, now=T + 60)
+    check("mapped runs not fetched again; failure not retried within 5 min", len(calls) == n, str(calls[n:]))
+    fail['on'] = False
+    td.active_jobs_resolve_runs(run_get, now=T + 301)
+    js = {j['run_id']: j for j in td.active_jobs_summary(now=T)['jobs']}
+    check("push run: no PR, branch and event kept", js[23]['pr'] is None and js[23]['event'] == 'push'
+          and js[23]['branch'] == 'main', str(js[23]))
+    check("jobs listed in slot order (OS, then start)",
+          [j['os'] for j in td.active_jobs_summary(now=T)['jobs']] == ['linux', 'linux', 'macos'])
 
     print("summary")
     reset()
