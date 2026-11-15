@@ -5354,7 +5354,7 @@ body.view-ops #view-exec{display:none}
 .aj-dim{color:var(--muted);font-size:12px}
 .aj-q{font-size:13px;font-weight:600;color:var(--warn)}
 .aj-slots{display:flex;gap:3px;margin:6px 0 8px}
-.aj-slot{flex:1;height:18px;border-radius:3px;background:var(--bg-2);border:1px solid var(--line)}
+.aj-slot{flex:1;min-width:0;height:18px;border-radius:3px;background:var(--bg-2);border:1px solid var(--line);font:600 11px/16px var(--mono);color:#fff;text-align:center;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:0 2px}
 .aj-leg{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--ink-soft);margin-bottom:12px}
 .aj-leg i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:baseline}
 .aj-chart{width:100%;display:block}
@@ -5961,10 +5961,14 @@ function ajChart(a,kind){
     `<rect x="0" y="0" width="${W}" height="${H}" fill="var(--bg-1)"/>${bars}${limLine}${wline}</svg>`+
     `<div class="aj-axis"><span>24 h ago</span><span>12 h</span><span>now</span></div></div>`;
 }
+const ajAttr=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+// The slot's label: the PR the job builds, else its branch (push, or a
+// run not mapped to a PR yet: "…").
+function ajJobLabel(j){if(!j)return '';return j.pr?`#${j.pr}`:j.event?(j.branch||j.event):'…'}
 function ajJobTip(j,osName){
-  const t=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+  const t=ajAttr;
   if(!j)return `${osName} job`;
-  const src=j.pr?`PR #${j.pr}`:j.event==='push'?`${j.branch||'branch'} (push)`:j.event?`${j.branch||'?'} (${j.event})`:j.branch?`${j.branch} (PR not looked up yet)`:'PR not looked up yet';
+  const src=j.pr?'':j.event==='push'?`push to ${j.branch||'a branch'}`:j.event?`${j.event}${j.branch?' on '+j.branch:''}, no open PR`:'PR not looked up yet';
   const what=[j.workflow,j.name].filter(Boolean).join(' / ');
   const m=j.started_at?Math.floor((Date.now()-new Date(j.started_at))/60000):null;
   const run=m==null?'':m<1?'started under a minute ago':`running ${m} min`;
@@ -5975,9 +5979,9 @@ function renderActiveJobs(a){
   const by=a.by_os||{},lim=a.limit,act=a.active,q=a.queued;
   // One cell per running job, in OS order; its tooltip names the PR.
   const cells=[];for(const [k,n,c] of AJ_OS){const js=(a.jobs||[]).filter(j=>j.os===k);
-    for(let i=0;i<((by[k]||{}).active||0);i++)cells.push([c,ajJobTip(js[i],n)])}
+    for(let i=0;i<((by[k]||{}).active||0);i++)cells.push([c,ajJobTip(js[i],n),ajAttr(ajJobLabel(js[i]))])}
   const free=`${lim-Math.min(act,lim)} of ${lim} job slots free`;
-  let slots='';for(let i=0;i<lim;i++)slots+=i<cells.length?`<div class="aj-slot" style="background:${cells[i][0]};border-color:transparent" title="${cells[i][1]}"></div>`:`<div class="aj-slot" title="${free}"></div>`;
+  let slots='';for(let i=0;i<lim;i++)slots+=i<cells.length?`<div class="aj-slot" style="background:${cells[i][0]};border-color:transparent" title="${cells[i][1]}">${cells[i][2]}</div>`:`<div class="aj-slot" title="${free}"></div>`;
   const numC=act>=lim?'var(--crit)':act>=lim*0.8?'var(--warn)':'var(--ink)';
   const wait=a.oldest_queued_at?mciDur((Date.now()-new Date(a.oldest_queued_at))/1000):null;
   let h=`<div class="aj-top"><span class="aj-num" style="color:${numC}">${act}<span class="of"> / ${lim} active</span></span>`+
