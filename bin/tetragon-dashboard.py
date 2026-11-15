@@ -5715,7 +5715,7 @@ body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
        run dots; drawActivity() renders it and the queue chart below, with
        hover cards; drag it sideways to move both back through time. -->
   <div class="aj-ch">
-    <div class="aj-chl"><span id="x-act-label">Active jobs &amp; agent activity &middot; last 24 hours</span><button id="x-act-now" onclick="actNow()" style="display:none;margin-left:10px;background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:6px;padding:1px 8px;font-size:10px;cursor:pointer;vertical-align:middle">back to now &#8594;</button><span class="aj-key aj-key-in"><span><i class="aj-sw" style="background:var(--cat-blue);opacity:.85"></i>active jobs, average per 5 min</span><span><i class="aj-sw" style="background:var(--cat-blue);opacity:.35"></i>peak</span><span><i class="aj-sw aj-dash"></i>job limit</span><span><i class="aj-sw" style="background:#f2c14e;height:2px"></i>agent events</span><span><i class="aj-sw" style="background:var(--warn);opacity:.85"></i>queue depth</span><span><span style="color:#a878e0">&#9679;</span> agent runs</span></span><span id="x-trend-total" class="aj-dim" style="margin-left:auto"></span></div>
+    <div class="aj-chl"><span id="x-act-label">Active jobs &amp; agent activity &middot; last 24 hours</span><span class="aj-key aj-key-in"><span><i class="aj-sw" style="background:var(--cat-blue);opacity:.85"></i>active jobs, average per 5 min</span><span><i class="aj-sw" style="background:var(--cat-blue);opacity:.35"></i>peak</span><span><i class="aj-sw aj-dash"></i>job limit</span><span><i class="aj-sw" style="background:#f2c14e;height:2px"></i>agent events</span><span><i class="aj-sw" style="background:var(--warn);opacity:.85"></i>queue depth</span><span><span style="color:#a878e0">&#9679;</span> agent runs</span></span><span id="x-trend-total" class="aj-dim" style="margin-left:auto"></span></div>
     <div id="x-trend" title="Drag sideways to move through time (up to 7 days back)"></div>
   </div>
   <div id="x-ajobs-q"></div>
@@ -6022,13 +6022,16 @@ function openWalkForMarker(m){
 // The activity chart and the queue-depth chart under it show 24 h ending at
 // _actView (start of the last 15-minute bucket, epoch s), or the live 24 h
 // when _actView is null. Dragging the activity chart sideways moves both,
-// up to ACT_DAYS back. Everything fetched (the live /api/trends window, the
+// up to ACT_DAYS back, and 30 s after the last drag they return to live.
+// Everything fetched (the live /api/trends window, the
 // live job history, /api/activity-window windows) lands in _actStore, so a
 // drag only re-renders; the window under the view is fetched on release.
 const ACT_DAYS=7,ACT_SPAN=95*900;
 const ACT_WF={triage:{c:'#21a184',l:'Triage',p:'#'},implement:{c:'#bd7c20',l:'Implement',p:'#'},
               review:{c:'#a878e0',l:'PR review',p:'PR #'},detect:{c:'#e85578',l:'Antares',p:'#'}};
-let _act=null,_actView=null,_actDrag=null,_actLoading=0,_brushing=false,_actDownX=null;
+let _act=null,_actView=null,_actDrag=null,_actLoading=0,_brushing=false,_actDownX=null,_actLiveTimer=0;
+// A view moved off live returns to it ACT_RETURN_MS after the last drag.
+const ACT_RETURN_MS=30000;
 const _actStore={act:new Map(),marks:new Map(),jobs:new Map(),wait:new Map(),fetched:new Set()};
 function actStoreActivity(list){for(const b of list||[]){const t=new Date(b.t).getTime()/1000;if(!isNaN(t))_actStore.act.set(t,b)}}
 function actStoreMarks(cg,wf){
@@ -6059,7 +6062,7 @@ function actLoadView(){
   _actLoading++;drawActivity();
   Promise.all(need.map(actFetch)).then(()=>{_actLoading--;if(!_brushing)drawActivity()});
 }
-function actNow(){_actView=null;drawActivity()}
+function actNow(){clearTimeout(_actLiveTimer);_actLiveTimer=0;_actView=null;if(!_brushing)drawActivity()}
 function actFmt(t,withDate){const d=new Date(t*1000);
   return (withDate?d.toLocaleDateString([],{month:'short',day:'numeric'})+' ':'')+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}
 function drawActivity(){
@@ -6074,7 +6077,6 @@ function drawActivity(){
   tw.innerHTML=svgAreaChart(buckets,_act.w,160,{dur:_brushing?0:10.7,markers:marks,mtip:_act.card,
     color:'#f2c14e',dotColor:'#ffe08a',underlay:ajUnderlay(t0,E)});
   wireTrendHover(buckets,{markers:marks,mtip:_act.card,tip});
-  const bb=document.getElementById('x-act-now');if(bb)bb.style.display=live?'none':'inline-block';
   const lbl=document.getElementById('x-act-label');
   const days=new Date(t0*1000).toDateString()!==new Date().toDateString()||new Date(E*1000).toDateString()!==new Date().toDateString();
   if(lbl)lbl.innerHTML='Active jobs &amp; agent activity &middot; '+(live?'last 24 hours':actFmt(t0,days)+'&ndash;'+actFmt(E+900,days))+
@@ -6096,7 +6098,7 @@ function actBindDrag(){
   const tw=document.getElementById('x-trend');if(!tw||tw._actBound)return;tw._actBound=true;
   tw.addEventListener('pointerdown',ev=>{
     if(ev.button!==0||!_act)return;
-    _actDownX=ev.clientX;
+    _actDownX=ev.clientX;clearTimeout(_actLiveTimer);
     _actDrag={x:ev.clientX,E:actEnd(),iw:Math.max(tw.getBoundingClientRect().width-16,1),moved:false,raf:0};
   });
   window.addEventListener('pointermove',ev=>{
@@ -6114,6 +6116,8 @@ function actBindDrag(){
     if(!d.raf)d.raf=requestAnimationFrame(()=>{d.raf=0;drawActivity()});
   });
   const end=()=>{const d=_actDrag;if(!d)return;_actDrag=null;
+    clearTimeout(_actLiveTimer);
+    if(_actView!=null)_actLiveTimer=setTimeout(actNow,ACT_RETURN_MS);
     if(!d.moved)return;
     _brushing=false;tw.classList.remove('dragging');
     drawActivity();actLoadView();};
