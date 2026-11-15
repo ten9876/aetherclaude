@@ -2338,6 +2338,9 @@ ACTIVE_JOBS_MACOS_LIMIT = 5
 ACTIVE_JOBS_RECONCILE_SECS = 300
 ACTIVE_JOBS_SAMPLE_SECS = 60
 ACTIVE_JOBS_HISTORY_SECS = 24 * 3600
+# Per-minute samples are kept longer than the 24 h stats so the activity
+# chart can scroll back (ACTIVITY_WINDOW_DAYS).
+ACTIVE_JOBS_RETAIN_SECS = 7 * 86400
 ACTIVE_JOBS_BUCKET_SECS = 300
 ACTIVE_JOBS_SNAPSHOT = '/Users/aetherclaude/state/active-jobs.json'
 ACTIVE_JOBS_OS = ('linux', 'windows', 'macos')
@@ -2527,7 +2530,7 @@ def active_jobs_sample(now=None):
     _active_jobs_history.append((int(now), sum(v['active'] for v in c.values()),
                             sum(v['queued'] for v in c.values()),
                             c['macos']['active'], c['macos']['queued'], wait))
-    while _active_jobs_history and _active_jobs_history[0][0] < now - ACTIVE_JOBS_HISTORY_SECS:
+    while _active_jobs_history and _active_jobs_history[0][0] < now - ACTIVE_JOBS_RETAIN_SECS:
         _active_jobs_history.popleft()
 
 
@@ -2540,6 +2543,26 @@ def _active_jobs_wait_series(hist):
     for m, w in pts:
         v[m - m0] = w if v[m - m0] is None else max(v[m - m0], w)
     return {'t0': m0 * 60, 'step': 60, 'v': v}
+
+
+def _active_jobs_buckets(hist):
+    """[bucket start, peak active, mean active, peak queued, peak macOS
+    active, mean queued] per ACTIVE_JOBS_BUCKET_SECS, from minute samples."""
+    buckets = {}
+    for h in hist:
+        ts, u, q, mu = h[0], h[1], h[2], h[3]
+        b = buckets.setdefault(ts - ts % ACTIVE_JOBS_BUCKET_SECS, [0, 0, 0, 0, 0, 0])
+        b[0] = max(b[0], u); b[1] += u; b[2] = max(b[2], q); b[3] += 1; b[4] = max(b[4], mu); b[5] += q
+    return [[t, b[0], round(b[1] / b[3], 1), b[2], b[4], round(b[5] / b[3], 1)]
+            for t, b in sorted(buckets.items())]
+
+
+def active_jobs_window(t0, t1):
+    """Job history between t0 and t1 (epoch s) for a scrolled-back chart:
+    the buckets and the oldest-wait series, as in active_jobs_summary."""
+    hist = [h for h in list(_active_jobs_history) if t0 <= h[0] < t1]
+    return {'limit': ACTIVE_JOBS_LIMIT, 'bucket_secs': ACTIVE_JOBS_BUCKET_SECS,
+            'history': _active_jobs_buckets(hist), 'oldest_wait': _active_jobs_wait_series(hist)}
 
 
 def active_jobs_summary(now=None):
@@ -2555,12 +2578,7 @@ def active_jobs_summary(now=None):
         meta = {'last_event_at': _active_jobs_meta['last_event_at'] or None,
                 'events_24h': len(ev), 'last_poll_at': _active_jobs_meta['last_poll_at'] or None,
                 'poll_error': _active_jobs_meta['poll_error'], 'polled_runs': _active_jobs_meta['polled_runs']}
-    hist = list(_active_jobs_history)
-    buckets = {}
-    for h in hist:
-        ts, u, q, mu = h[0], h[1], h[2], h[3]
-        b = buckets.setdefault(ts - ts % ACTIVE_JOBS_BUCKET_SECS, [0, 0, 0, 0, 0, 0])
-        b[0] = max(b[0], u); b[1] += u; b[2] = max(b[2], q); b[3] += 1; b[4] = max(b[4], mu); b[5] += q
+    hist = [h for h in list(_active_jobs_history) if h[0] >= now - ACTIVE_JOBS_HISTORY_SECS]
     n = len(hist)
     with _active_jobs_lock:
         while _active_jobs_waits and _active_jobs_waits[0][0] < now - ACTIVE_JOBS_HISTORY_SECS:
@@ -2579,8 +2597,7 @@ def active_jobs_summary(now=None):
         'by_os': c, 'oldest_queued_at': oldest, 'jobs': running, **meta,
         'sample_secs': ACTIVE_JOBS_SAMPLE_SECS, 'bucket_secs': ACTIVE_JOBS_BUCKET_SECS,
         # [bucket start, peak active, mean active, peak queued, peak macOS active, mean queued]
-        'history': [[t, b[0], round(b[1] / b[3], 1), b[2], b[4], round(b[5] / b[3], 1)]
-                    for t, b in sorted(buckets.items())],
+        'history': _active_jobs_buckets(hist),
         'queue_mean': round(sum(h[2] for h in hist) / n, 1) if n else None,
         # The oldest queued job's wait, per minute: v[i] is the minute
         # t0 + 60*i (0: nothing queued, null: no sample that minute).
@@ -2610,7 +2627,8 @@ def active_jobs_poller():
         with open(ACTIVE_JOBS_SNAPSHOT) as f:
             cut = time.time() - ACTIVE_JOBS_HISTORY_SECS
             snap = json.load(f)
-            _active_jobs_history.extend(tuple(h) for h in snap.get('history', []) if h[0] >= cut)
+            _active_jobs_history.extend(tuple(h) for h in snap.get('history', [])
+                                        if h[0] >= time.time() - ACTIVE_JOBS_RETAIN_SECS)
             _active_jobs_waits.extend(tuple(w) for w in snap.get('waits', []) if w[0] >= cut)
     except Exception:
         pass
@@ -2639,6 +2657,161 @@ def active_jobs_poller():
         except Exception as _e:
             _log_exc('active_jobs_summary', _e)
         time.sleep(10)
+
+
+# ── Activity chart time windows ──────────────────────────────────────────
+# The exec view's activity and queue-depth charts show 24 h ending at a
+# chosen time; /api/trends serves the live window and /api/activity-window
+# any 24 h window in the last ACTIVITY_WINDOW_DAYS days. Bounds are SQL
+# datetimes ('YYYY-MM-DD HH:MM:SS', UTC), lower inclusive, upper exclusive.
+ACTIVITY_WINDOW_DAYS = 7
+_activity_window_cache = {}      # window end -> (built at, payload), bounded
+
+
+def _activity_codeguard_marks(conn, w0, w1):
+    """CodeGuard runs: activity within 5 minutes clustered into one marker,
+    carrying up to 12 entries for the hover card plus the true total and
+    finding count. Two sources merged by time: Validation Gate events
+    (events.source='codeguard') and codeguard_findings rows, the only record
+    of PR-review scans."""
+    try:
+        cg_rows = conn.execute(
+            "SELECT * FROM ("
+            "SELECT CAST(strftime('%s',created_at) AS INTEGER) AS ep, "
+            "created_at AS ca, type, args, policy, 0 AS is_finding "
+            "FROM events WHERE source='codeguard' "
+            "AND created_at>=? AND created_at<? "
+            "UNION ALL "
+            "SELECT CAST(strftime('%s',scan_time) AS INTEGER), scan_time, "
+            "COALESCE(severity,''), "
+            "(CASE WHEN source='pr' THEN 'PR #' ELSE '#' END) "
+            "|| COALESCE(ref,'?') || ' ' || COALESCE(rule_id,'') || ' ' "
+            "|| COALESCE(title,'') || ' in ' || COALESCE(file_path,''), "
+            "'codeguard', 1 "
+            "FROM codeguard_findings "
+            "WHERE scan_time>=? AND scan_time<?"
+            ") ORDER BY ep DESC LIMIT 2000", (w0, w1, w0, w1)).fetchall()[::-1]
+    except Exception:
+        return []
+    clusters = []
+    for ep, ca, ty, ar, po, is_f in cg_rows:
+        if ep is None:
+            continue
+        evd = {'t': (ca or '').replace(' ', 'T') + 'Z',
+               'type': ty or '', 'args': (ar or '')[:90], 'policy': po or ''}
+        if clusters and ep - clusters[-1]['_end'] <= 300:
+            c = clusters[-1]
+            c['_end'] = ep
+            c['count'] += 1
+            c['findings'] += is_f
+            if len(c['events']) < 12:
+                c['events'].append(evd)
+        else:
+            clusters.append({'t': evd['t'], '_end': ep, 'count': 1,
+                             'findings': is_f, 'events': [evd]})
+    for c in clusters:
+        c['t_end'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(c.pop('_end')))
+    return clusters[-50:]
+
+
+def _activity_workflow_marks(conn, w0, w1):
+    """Agent passes (triage / implement / review / antares) from
+    issue_actions, each with a one-line summary of the Antares and CodeGuard
+    findings for that issue or PR in the same window. Titles are joined
+    client-side from rings.issue_titles."""
+    try:
+        ant_sum = {}
+        for num, verdict, cand, rat in conn.execute(
+                "SELECT issue_number, verdict, file_path, rationale FROM detector_findings "
+                "WHERE scan_time>=? AND scan_time<? ORDER BY id ASC", (w0, w1)):
+            if num is None:
+                continue
+            k = str(num)
+            if verdict == 'vulnerable' and (rat or cand):
+                ant_sum[k] = ('vulnerable', (rat or '').strip() or ('candidate: ' + (cand or '')))
+            elif k not in ant_sum:
+                ant_sum[k] = (verdict or 'clean', '')
+        cg_sum = {}
+        for ref, sev, rid, ctitle in conn.execute(
+                "SELECT ref, severity, rule_id, title FROM codeguard_findings "
+                "WHERE source='pr' AND ref IS NOT NULL AND scan_time>=? AND scan_time<? "
+                "ORDER BY id ASC", (w0, w1)):
+            cg_sum.setdefault(str(ref), []).append(
+                '[%s] %s %s' % (sev or '', rid or '', (ctitle or '')[:70]))
+        iac = sqlite3.connect(ISSUE_ACTIONS_DB, timeout=10)
+        try:
+            rows = iac.execute(
+                "SELECT issue_number, action, state, outcome, detail, created_at "
+                "FROM issue_actions "
+                "WHERE action IN ('triage','implement','review','detect') "
+                "AND outcome!='started' "
+                # Real ISO timestamps only: migrated rows carry a
+                # 'migration-…' created_at that would defeat the window.
+                "AND created_at GLOB '2[0-9][0-9][0-9]-*' "
+                "AND replace(created_at,'T',' ')>=? AND replace(created_at,'T',' ')<? "
+                "ORDER BY created_at DESC LIMIT 600", (w0, w1)).fetchall()[::-1]
+        finally:
+            iac.close()
+        wf = []
+        for num, action, state, outcome, detail, ca in rows:
+            k = str(num)
+            mk = {'t': (ca or '').replace(' ', 'T') + 'Z', 'kind': action, 'num': k,
+                  'state': state or '', 'outcome': outcome or ''}
+            av = ant_sum.get(k)
+            if av:
+                mk['antares_verdict'] = av[0]
+                if av[1]:
+                    mk['antares'] = av[1][:180]
+            cv = cg_sum.get(k)
+            if cv:
+                mk['codeguard'] = cv[0]
+                mk['codeguard_more'] = len(cv) - 1
+            if action == 'detect' and detail:
+                mk['detail'] = detail[:180]
+            wf.append(mk)
+        return wf[-250:]
+    except Exception:
+        return []
+
+
+def activity_window(end, now=None):
+    """The activity chart's data for the 24 h whose last 15-minute bucket
+    starts at `end` (epoch s): event counts per bucket, run markers, and
+    the CI job history. `end` is aligned down to 15 min and clamped to the
+    last ACTIVITY_WINDOW_DAYS days."""
+    now = now or time.time()
+    live = int(now // 900) * 900
+    end = int(end) // 900 * 900
+    end = max(live - (ACTIVITY_WINDOW_DAYS - 1) * 86400, min(end, live))
+    hit = _activity_window_cache.get(end)
+    # A window wholly in the past doesn't change; one touching the last
+    # hour is rebuilt after a minute.
+    if hit and (end < live - 3600 or now - hit[0] < 60):
+        return hit[1]
+    t0 = end - 95 * 900
+    fmt = lambda t: time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(t))
+    w0, w1 = fmt(t0), fmt(end + 900)
+    out = {'end': end, 'activity': [], 'codeguard': [], 'workflow': []}
+    conn = sqlite3.connect(EVENTS_DB, timeout=10)
+    try:
+        got = {r[0]: (r[1], r[2]) for r in conn.execute(
+            "SELECT strftime('%Y-%m-%dT%H:',created_at) || "
+            "printf('%02d',(CAST(strftime('%M',created_at) AS INTEGER)/15)*15) || ':00Z', "
+            "COUNT(*), SUM(CASE WHEN type='BLOCK' OR policy='domain-filter' THEN 1 ELSE 0 END) "
+            "FROM events WHERE created_at>=? AND created_at<? GROUP BY 1", (w0, w1))}
+        for t in range(t0, end + 1, 900):
+            key = time.strftime('%Y-%m-%dT%H:%M:00Z', time.gmtime(t))
+            ev, bl = got.get(key, (0, 0))
+            out['activity'].append({'t': key, 'events': ev, 'blocked': bl or 0})
+        out['codeguard'] = _activity_codeguard_marks(conn, w0, w1)
+        out['workflow'] = _activity_workflow_marks(conn, w0, w1)
+    finally:
+        conn.close()
+    out['jobs'] = active_jobs_window(t0 - ACTIVE_JOBS_BUCKET_SECS, end + 900)
+    if len(_activity_window_cache) >= 32:
+        _activity_window_cache.clear()
+    _activity_window_cache[end] = (now, out)
+    return out
 
 # ── Contributor leaderboard (/leaderboard) ───────────────────────────────
 # Standings are scored from the facts bin/contributor-points.py collects
@@ -5359,7 +5532,9 @@ body.view-ops #view-exec{display:none}
 .aj-leg i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:baseline}
 .aj-chart{width:100%;display:block}
 .aj-ch{margin-top:12px}
-#x-ajobs-stats .aj-ch{margin-top:2px}
+#x-ajobs-stats .aj-ch,#x-ajobs-q .aj-ch{margin-top:2px}
+#x-trend{cursor:grab;touch-action:pan-y;user-select:none}
+#x-trend.dragging{cursor:grabbing}
 .aj-key-in{margin:0 0 0 14px}
 #x-ajobs>.aj-ch{border-top:1px solid var(--line-hi);margin-top:4px;padding-top:14px}
 .aj-chl{flex-wrap:wrap}
@@ -5537,11 +5712,13 @@ body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
   <div class="x-ph"><span>Active CI jobs</span><span id="x-ajobs-src" style="text-transform:none;letter-spacing:0;font-weight:400"></span></div>
   <div id="x-ajobs-body"><div class="aj-dim">fetching&hellip;</div></div>
   <!-- Active jobs (grey bars, dashed limit) under the agent activity line and
-       run dots; drawActivity() renders it, with hover cards and drag-to-zoom. -->
+       run dots; drawActivity() renders it and the queue chart below, with
+       hover cards; drag it sideways to move both back through time. -->
   <div class="aj-ch">
-    <div class="aj-chl"><span id="x-act-label">Active jobs &amp; agent activity &middot; last 24 hours</span><button id="x-zoom-back" onclick="drawActivity(null,null)" style="display:none;margin-left:10px;background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:6px;padding:1px 8px;font-size:10px;cursor:pointer;vertical-align:middle">&#8592; back to 24h</button><span class="aj-key aj-key-in"><span><i class="aj-sw" style="background:var(--cat-blue);opacity:.85"></i>active jobs, average per 5 min</span><span><i class="aj-sw" style="background:var(--cat-blue);opacity:.35"></i>peak</span><span><i class="aj-sw aj-dash"></i>job limit</span><span><i class="aj-sw" style="background:#f2c14e;height:2px"></i>agent events</span><span><i class="aj-sw" style="background:var(--warn);opacity:.85"></i>queue depth</span><span><span style="color:#a878e0">&#9679;</span> agent runs</span></span><span id="x-trend-total" class="aj-dim" style="margin-left:auto"></span></div>
-    <div id="x-trend" title="Drag to zoom in" style="cursor:crosshair"></div>
+    <div class="aj-chl"><span id="x-act-label">Active jobs &amp; agent activity &middot; last 24 hours</span><button id="x-act-now" onclick="actNow()" style="display:none;margin-left:10px;background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:6px;padding:1px 8px;font-size:10px;cursor:pointer;vertical-align:middle">back to now &#8594;</button><span class="aj-key aj-key-in"><span><i class="aj-sw" style="background:var(--cat-blue);opacity:.85"></i>active jobs, average per 5 min</span><span><i class="aj-sw" style="background:var(--cat-blue);opacity:.35"></i>peak</span><span><i class="aj-sw aj-dash"></i>job limit</span><span><i class="aj-sw" style="background:#f2c14e;height:2px"></i>agent events</span><span><i class="aj-sw" style="background:var(--warn);opacity:.85"></i>queue depth</span><span><span style="color:#a878e0">&#9679;</span> agent runs</span></span><span id="x-trend-total" class="aj-dim" style="margin-left:auto"></span></div>
+    <div id="x-trend" title="Drag sideways to move through time (up to 7 days back)"></div>
   </div>
+  <div id="x-ajobs-q"></div>
   <div id="x-ajobs-stats"></div>
 </div>
 
@@ -5816,10 +5993,10 @@ function wireTrendHover(buckets,opts){
   });
   svg.addEventListener('mouseleave',()=>{tt.style.display='none';cross.setAttribute('visibility','hidden')});
   // Click a marker dot -> open the Agent Walk for that run's trace. Skip if the
-  // pointer moved (a drag = zoom, not a click). Workflow dots resolve their
+  // pointer moved (a drag through time, not a click). Workflow dots resolve their
   // trace by issue+time; CodeGuard dots open the CodeGuard modal.
   svg.addEventListener('click',ev=>{
-    if(_actDownX!=null&&Math.abs(ev.clientX-_actDownX)>5)return;   // was a drag/zoom
+    if(_actDownX!=null&&Math.abs(ev.clientX-_actDownX)>5)return;   // was a drag
     const r=ev.target;
     if(!r.dataset||r.dataset.m===undefined||!opts.markers)return;
     const m=opts.markers[+r.dataset.m];if(!m)return;
@@ -5841,58 +6018,107 @@ function openWalkForMarker(m){
     }).catch(()=>{if(w)w.location='/agent-walk';});
 }
 
-// ── Activity chart drag-to-zoom ────────────────────────────────────────────
-// _act holds the full activity render inputs (set on each trends refresh);
-// drawActivity(i0,i1) renders a bucket sub-range; a brush selection or the
-// back button drives i0/i1. Zoom persists across refreshes by time range.
-let _act=null, _actZoomT=null, _brushing=false, _actDownX=null;
-function drawActivity(i0,i1){
+// ── Activity chart: drag through time ──────────────────────────────────────
+// The activity chart and the queue-depth chart under it show 24 h ending at
+// _actView (start of the last 15-minute bucket, epoch s), or the live 24 h
+// when _actView is null. Dragging the activity chart sideways moves both,
+// up to ACT_DAYS back. Everything fetched (the live /api/trends window, the
+// live job history, /api/activity-window windows) lands in _actStore, so a
+// drag only re-renders; the window under the view is fetched on release.
+const ACT_DAYS=7,ACT_SPAN=95*900;
+const ACT_WF={triage:{c:'#21a184',l:'Triage',p:'#'},implement:{c:'#bd7c20',l:'Implement',p:'#'},
+              review:{c:'#a878e0',l:'PR review',p:'PR #'},detect:{c:'#e85578',l:'Antares',p:'#'}};
+let _act=null,_actView=null,_actDrag=null,_actLoading=0,_brushing=false,_actDownX=null;
+const _actStore={act:new Map(),marks:new Map(),jobs:new Map(),wait:new Map(),fetched:new Set()};
+function actStoreActivity(list){for(const b of list||[]){const t=new Date(b.t).getTime()/1000;if(!isNaN(t))_actStore.act.set(t,b)}}
+function actStoreMarks(cg,wf){
+  for(const m of cg||[])_actStore.marks.set('cg'+m.t,{...m,kind:'codeguard',color:'#d94fd4',r:4});
+  for(const m of wf||[])_actStore.marks.set(m.kind+m.num+m.t,{...m,color:(ACT_WF[m.kind]||{}).c||'#5de3ff'});
+}
+function actStoreJobs(j){
+  if(!j)return;for(const h of j.history||[])_actStore.jobs.set(h[0],h);
+  const ow=j.oldest_wait;if(ow)ow.v.forEach((v,i)=>{if(v!=null)_actStore.wait.set(ow.t0+i*ow.step,v)});
+}
+function actEnd(){return _actView==null?_act.liveEnd:_actView}
+function actMinEnd(){return _act.liveEnd-(ACT_DAYS-1)*86400}
+function actCovered(E){for(let t=E-ACT_SPAN;t<=E;t+=900)if(!_actStore.act.has(t))return false;return true}
+function actFetch(E){
+  if(_actStore.fetched.has(E))return Promise.resolve();
+  _actStore.fetched.add(E);
+  return fetch('/api/activity-window?end='+E).then(r=>r.json()).then(d=>{
+    if(!d||d.error){_actStore.fetched.delete(E);return}
+    actStoreActivity(d.activity);actStoreMarks(d.codeguard,d.workflow);actStoreJobs(d.jobs);
+  }).catch(()=>{_actStore.fetched.delete(E)});
+}
+// After a drag: fetch the window under the view if any of it is missing,
+// and the day before it, so the next drag back is already loaded.
+function actLoadView(){
+  if(!_act||_actView==null)return;
+  const need=[_actView,_actView-86400].filter(e=>e>=actMinEnd()&&!actCovered(e));
+  if(!need.length)return;
+  _actLoading++;drawActivity();
+  Promise.all(need.map(actFetch)).then(()=>{_actLoading--;if(!_brushing)drawActivity()});
+}
+function actNow(){_actView=null;drawActivity()}
+function actFmt(t,withDate){const d=new Date(t*1000);
+  return (withDate?d.toLocaleDateString([],{month:'short',day:'numeric'})+' ':'')+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}
+function drawActivity(){
   if(!_act)return;
   const tw=document.getElementById('x-trend');if(!tw)return;
-  const all=_act.buckets;if(!all||all.length<2)return;
-  if(i0==null||i1==null){i0=0;i1=all.length-1;}
-  i0=Math.max(0,Math.min(i0,all.length-2));
-  i1=Math.max(i0+1,Math.min(i1,all.length-1));
-  const buckets=all.slice(i0,i1+1);
-  const zoomed=(i0>0||i1<all.length-1);
-  _actZoomT=zoomed?{t0:buckets[0].t,t1:buckets[buckets.length-1].t}:null;
-  const t0=new Date(buckets[0].t).getTime(),t1=new Date(buckets[buckets.length-1].t).getTime();
-  const marks=(_act.marks||[]).filter(m=>{const t=new Date(m.t).getTime();return !isNaN(t)&&t>=t0&&t<=t1;});
+  const live=_actView==null,E=actEnd(),t0=E-ACT_SPAN;
+  const buckets=[];
+  for(let t=t0;t<=E;t+=900)buckets.push(_actStore.act.get(t)||{t:new Date(t*1000).toISOString().replace('.000Z','Z'),events:0,blocked:0});
+  const marks=[..._actStore.marks.values()].filter(m=>{const t=new Date(m.t).getTime()/1000;return t>=t0&&t<=E})
+    .sort((a,b)=>new Date(a.t)-new Date(b.t));
   const tip=b=>`<b>${b.events}</b> events · ${b.blocked} blocked`+ajJobsAt(b.t);
-  tw.innerHTML=svgAreaChart(buckets,_act.w,160,{dur:10.7,markers:marks,mtip:_act.card,brush:true,
-    color:'#f2c14e',dotColor:'#ffe08a',
-    underlay:_ajLast?ajUnderlay(_ajLast):null});
+  tw.innerHTML=svgAreaChart(buckets,_act.w,160,{dur:_brushing?0:10.7,markers:marks,mtip:_act.card,
+    color:'#f2c14e',dotColor:'#ffe08a',underlay:ajUnderlay(t0,E)});
   wireTrendHover(buckets,{markers:marks,mtip:_act.card,tip});
-  wireBrush(buckets,i0);
-  const bb=document.getElementById('x-zoom-back');if(bb)bb.style.display=zoomed?'inline-block':'none';
-  const fT=s=>{const d=new Date(s);return isNaN(d)?'':d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})};
+  const bb=document.getElementById('x-act-now');if(bb)bb.style.display=live?'none':'inline-block';
   const lbl=document.getElementById('x-act-label');
-  if(lbl)lbl.innerHTML='Active jobs &amp; agent activity &middot; '+(zoomed?fT(buckets[0].t)+'&ndash;'+fT(buckets[buckets.length-1].t):'last 24 hours');
-  const WF=_act.WF||{},kc={};
+  const days=new Date(t0*1000).toDateString()!==new Date().toDateString()||new Date(E*1000).toDateString()!==new Date().toDateString();
+  if(lbl)lbl.innerHTML='Active jobs &amp; agent activity &middot; '+(live?'last 24 hours':actFmt(t0,days)+'&ndash;'+actFmt(E+900,days))+
+    (_actLoading?' <span class="aj-dim">loading&hellip;</span>':'');
+  const qe=document.getElementById('x-ajobs-q');if(qe)qe.innerHTML=ajQueueChart(t0,E,_act.w,live);
+  const kc={};
   marks.forEach(m=>{if(m.kind&&m.kind!=='codeguard')kc[m.kind]=(kc[m.kind]||0)+1;});
   const cgn=marks.filter(m=>m.kind==='codeguard').length;
-  let leg=Object.keys(WF).filter(k=>kc[k]).map(k=>`<span style="color:${WF[k].c}">&#9679;</span> ${kc[k]} ${WF[k].l.toLowerCase()}`).join(' &nbsp; ');
+  let leg=Object.keys(ACT_WF).filter(k=>kc[k]).map(k=>`<span style="color:${ACT_WF[k].c}">&#9679;</span> ${kc[k]} ${ACT_WF[k].l.toLowerCase()}`).join(' &nbsp; ');
   if(cgn)leg+=`${leg?' &nbsp; ':''}<span style="color:#d94fd4">&#9679;</span> ${cgn} CodeGuard`;
   const tot=buckets.reduce((a,b)=>a+(b.events||0),0);
   const el=document.getElementById('x-trend-total');
   if(el)el.innerHTML=`${leg?leg+' &nbsp;&middot;&nbsp; ':''}${fmtCompact(tot)} events`;
 }
-function zoomActToTime(zt){
-  if(!_act||!zt)return;const all=_act.buckets;
-  const near=t=>{const tt=new Date(t).getTime();let bi=0,bd=Infinity;for(let i=0;i<all.length;i++){const d=Math.abs(new Date(all[i].t).getTime()-tt);if(d<bd){bd=d;bi=i;}}return bi;};
-  drawActivity(near(zt.t0),near(zt.t1));
-}
-function wireBrush(buckets,baseI0){
-  const svg=document.getElementById('x-trend-svg');if(!svg)return;
-  const brush=svg.querySelector('#x-trend-svg-brush');if(!brush)return;
-  const W=(svg.viewBox&&svg.viewBox.baseVal&&svg.viewBox.baseVal.width)||880;
-  const padL=8,iw=W-16;let sx=null;
-  const toX=ev=>{const r=svg.getBoundingClientRect();return (ev.clientX-r.left)/r.width*W;};
-  svg.addEventListener('mousedown',ev=>{if(ev.button!==0)return;_actDownX=ev.clientX;sx=toX(ev);_brushing=true;brush.setAttribute('x',sx);brush.setAttribute('width',0);brush.setAttribute('visibility','visible');ev.preventDefault();});
-  svg.addEventListener('mousemove',ev=>{if(!_brushing||sx==null)return;const x=toX(ev);brush.setAttribute('x',Math.min(sx,x));brush.setAttribute('width',Math.abs(x-sx));});
-  const done=ev=>{if(!_brushing||sx==null)return;_brushing=false;brush.setAttribute('visibility','hidden');const x=toX(ev);const x0=Math.min(sx,x),x1=Math.max(sx,x);sx=null;if(x1-x0<6)return;const n=buckets.length-1;const f0=Math.max(0,Math.min(1,(x0-padL)/iw)),f1=Math.max(0,Math.min(1,(x1-padL)/iw));const a=Math.round(f0*n),b=Math.round(f1*n);if(b<=a)return;drawActivity(baseI0+a,baseI0+b);};
-  svg.addEventListener('mouseup',done);
-  svg.addEventListener('mouseleave',ev=>{if(_brushing)done(ev);});
+// Pointer drag on the activity chart (bound once; the SVG inside is
+// replaced on every draw). Dragging right moves back in time. A press that
+// moves under 6 px stays a click, so run dots still open Agent Walk.
+function actBindDrag(){
+  const tw=document.getElementById('x-trend');if(!tw||tw._actBound)return;tw._actBound=true;
+  tw.addEventListener('pointerdown',ev=>{
+    if(ev.button!==0||!_act)return;
+    _actDownX=ev.clientX;
+    _actDrag={x:ev.clientX,E:actEnd(),iw:Math.max(tw.getBoundingClientRect().width-16,1),moved:false,raf:0};
+  });
+  window.addEventListener('pointermove',ev=>{
+    const d=_actDrag;if(!d)return;
+    const dx=ev.clientX-d.x;
+    if(!d.moved){if(Math.abs(dx)<=5)return;
+      d.moved=true;_brushing=true;tw.classList.add('dragging');
+      const tt=document.getElementById('x-tt');if(tt)tt.style.display='none';}
+    ev.preventDefault();
+    let E=Math.round((d.E-dx/d.iw*ACT_SPAN)/900)*900;
+    E=Math.max(actMinEnd(),Math.min(_act.liveEnd,E));
+    const v=E>=_act.liveEnd?null:E;
+    if(v===_actView)return;
+    _actView=v;
+    if(!d.raf)d.raf=requestAnimationFrame(()=>{d.raf=0;drawActivity()});
+  });
+  const end=()=>{const d=_actDrag;if(!d)return;_actDrag=null;
+    if(!d.moved)return;
+    _brushing=false;tw.classList.remove('dragging');
+    drawActivity();actLoadView();};
+  window.addEventListener('pointerup',end);
+  window.addEventListener('pointercancel',end);
 }
 
 // ── Executive view render ─────────────────────────────────────────────────
@@ -5910,11 +6136,12 @@ let lastKpisHtml='';
 // per 5 min) with queued stacked on top against the limit line.
 const AJ_OS=[['linux','Linux','var(--cat-blue)'],['windows','Windows','var(--cat-teal)'],['macos','macOS','var(--cat-violet)']];
 let lastAjHtml='',lastAjStats='',_ajLast=null,_ajHistKey='';
-// Grey job bars for the activity chart, in its own 0..limit+ scale, mapped
-// onto the chart's time axis (t0..t1 ms across padL..padL+iw).
-function ajUnderlay(a){return (t0,t1,padL,iw,padT,ih)=>{
-  const span=(t1-t0)||1,bs=a.bucket_secs*1000,lim=a.limit;
-  const hs=(a.history||[]).filter(h=>h[0]*1000+bs>t0&&h[0]*1000<t1);
+// Job bars for the activity chart, in their own 0..limit+ scale, mapped
+// onto the chart's time axis (t0..t1 s across padL..padL+iw).
+function ajUnderlay(t0s,t1s){return (t0,t1,padL,iw,padT,ih)=>{
+  if(!_ajLast)return '';
+  const span=(t1-t0)||1,bs=_ajLast.bucket_secs*1000,lim=_ajLast.limit;
+  const hs=[..._actStore.jobs.values()].filter(h=>h[0]*1000+bs>t0&&h[0]*1000<t1);
   const top=Math.max(lim+2,...hs.map(h=>h[1]));
   const X=t=>padL+Math.max(0,Math.min(1,(t-t0)/span))*iw,Y=v=>padT+ih-v/top*ih;
   let g='';
@@ -5927,39 +6154,42 @@ function ajUnderlay(a){return (t0,t1,padL,iw,padT,ih)=>{
 }}
 // Jobs during the 5-minute bucket around t, for the activity hover card.
 function ajJobsAt(t){
-  if(!_ajLast)return '';const ts=new Date(t).getTime()/1000,bs=_ajLast.bucket_secs;
-  const h=(_ajLast.history||[]).find(x=>ts>=x[0]&&ts<x[0]+bs);
+  if(!_ajLast)return '';const bs=_ajLast.bucket_secs,ts=new Date(t).getTime()/1000;
+  const h=_actStore.jobs.get(ts-ts%bs);
   return h?` &middot; jobs <b>${h[2]}</b> avg, ${h[1]} peak${h[3]?`, <span style="color:var(--warn)">${h[3]} queued</span>`:''}`:'';
 }
 function ajPct(v,c){return `<b style="color:${v>=25?c:'inherit'}">${v}%</b>`}
-function ajChart(a,kind){
-  const hs=(a.history||[]).filter(h=>h[0]>=Date.now()/1000-86400);
-  if(hs.length<2)return '<div class="aj-dim">History builds up over the next hour (one sample a minute).</div>';
-  const W=288,H=kind==='q'?56:72,t0=Date.now()/1000-86400,lim=a.limit,bw=Math.max(W*a.bucket_secs/86400,1).toFixed(2);
-  const pk=h=>kind==='q'?h[3]:h[1],mn=h=>kind==='q'?(h[5]||0):h[2];
-  const top=kind==='q'?Math.max(4,...hs.map(pk)):Math.max(lim+2,...hs.map(pk));
-  const x=t=>((t-t0)/86400*W).toFixed(1),y=v=>(H-v/top*H).toFixed(1),hh=v=>(v/top*H).toFixed(1);
-  const col=kind==='q'?'var(--warn)':'var(--cat-blue)';
+// Queue depth over the activity chart's window (t0..t1 s), on the same
+// time axis: viewBox as wide as that chart, same 8 px side padding.
+function ajQueueChart(t0,t1,W,live){
+  if(!_ajLast)return '';
+  const bs=_ajLast.bucket_secs,H=56,padL=8,iw=W-16,span=(t1-t0)||1;
+  const hs=[..._actStore.jobs.values()].filter(h=>h[0]+bs>t0&&h[0]<t1);
+  const top=Math.max(4,...hs.map(h=>h[3]));
+  const X=t=>padL+Math.max(0,Math.min(1,(t-t0)/span))*iw;
+  const y=v=>(H-v/top*H).toFixed(1),hh=v=>(v/top*H).toFixed(1);
   let bars='';
-  for(const h of hs){
-    bars+=`<rect x="${x(h[0])}" y="${y(pk(h))}" width="${bw}" height="${hh(pk(h))}" fill="${col}" opacity=".35"/>`+
-          `<rect x="${x(h[0])}" y="${y(mn(h))}" width="${bw}" height="${hh(mn(h))}" fill="${col}" opacity=".85"/>`;}
-  // Queue chart: the oldest queued job's wait per minute, a thin red line
-  // on its own scale (0 to the 24 h maximum).
-  let wline='',wtop=0;const ow=kind==='q'&&a.oldest_wait;
-  if(ow&&ow.v.some(v=>v)){
-    wtop=Math.ceil(Math.max(60,...ow.v.filter(v=>v!=null))/60)*60;const segs=[];let cur=[];
-    ow.v.forEach((v,i)=>{const t=ow.t0+i*ow.step;
-      if(v==null||t<t0){if(cur.length)segs.push(cur);cur=[];return;}
-      cur.push(`${x(t)},${(H-v/wtop*(H-2)).toFixed(1)}`);});
+  for(const h of hs){const x0=X(h[0]),w=Math.max(X(h[0]+bs)-x0,0.6).toFixed(1);
+    bars+=`<rect x="${x0.toFixed(1)}" y="${y(h[3])}" width="${w}" height="${hh(h[3])}" fill="var(--warn)" opacity=".35"/>`+
+          `<rect x="${x0.toFixed(1)}" y="${y(h[5]||0)}" width="${w}" height="${hh(h[5]||0)}" fill="var(--warn)" opacity=".85"/>`;}
+  // The oldest queued job's wait per minute: a thin red line on its own
+  // scale (0 to the window's maximum, in whole minutes).
+  let wline='',wtop=0;const ws=[];
+  for(let t=Math.ceil(t0/60)*60;t<=t1;t+=60){const v=_actStore.wait.get(t);ws.push(v==null?null:[t,v])}
+  if(ws.some(p=>p&&p[1])){
+    wtop=Math.ceil(Math.max(60,...ws.filter(Boolean).map(p=>p[1]))/60)*60;const segs=[];let cur=[];
+    for(const p of ws){if(!p){if(cur.length)segs.push(cur);cur=[];continue}
+      cur.push(`${X(p[0]).toFixed(1)},${(H-p[1]/wtop*(H-2)).toFixed(1)}`)}
     if(cur.length)segs.push(cur);
     wline=segs.filter(sg=>sg.length>1).map(sg=>`<polyline points="${sg.join(' ')}" fill="none" stroke="var(--crit)" stroke-width="1.2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`).join('');
   }
-  const limLine=kind==='q'?'':`<line x1="0" x2="${W}" y1="${y(lim)}" y2="${y(lim)}" stroke="var(--crit)" stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>`;
-  return `<div class="aj-ch"><div class="aj-chl">${kind==='q'?'Queue depth':'Active jobs'} <span class="aj-dim">peak (light) and average (solid) per 5 min${kind==='q'?(wline?` &middot; <span style="color:var(--crit)">line: oldest job's wait, per minute</span>`:''):` &middot; dashed line: ${lim}-job limit`}</span><span class="aj-dim" style="margin-left:auto">scale 0&ndash;${top}${wline?` &middot; <span style="color:var(--crit)">wait 0&ndash;${wtop/60}m</span>`:''}</span></div>`+
-    `<svg class="aj-chart" style="height:${H}px" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${kind==='q'?'Queued jobs':'Active jobs'}, last 24 hours">`+
-    `<rect x="0" y="0" width="${W}" height="${H}" fill="var(--bg-1)"/>${bars}${limLine}${wline}</svg>`+
-    `<div class="aj-axis"><span>24 h ago</span><span>12 h</span><span>now</span></div></div>`;
+  const empty=hs.length?'':`<text x="${W/2}" y="${H/2+4}" font-size="11" fill="#8598b4" text-anchor="middle" font-family="inherit">no CI job history for this period</text>`;
+  const days=!live&&new Date(t0*1000).toDateString()!==new Date(t1*1000).toDateString();
+  const axis=live?['24 h ago','12 h','now']:[actFmt(t0,days),actFmt((t0+t1+900)/2,days),actFmt(t1+900,days)];
+  return `<div class="aj-ch"><div class="aj-chl">Queue depth <span class="aj-dim">peak (light) and average (solid) per 5 min${wline?` &middot; <span style="color:var(--crit)">line: oldest job's wait, per minute</span>`:''}</span><span class="aj-dim" style="margin-left:auto">scale 0&ndash;${top}${wline?` &middot; <span style="color:var(--crit)">wait 0&ndash;${wtop/60}m</span>`:''}</span></div>`+
+    `<svg class="aj-chart" style="height:${H}px" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Queued jobs">`+
+    `<rect x="${padL}" y="0" width="${iw}" height="${H}" fill="var(--bg-1)"/>${bars}${wline}${empty}</svg>`+
+    `<div class="aj-axis" style="padding:0 8px">${axis.map(s=>`<span>${s}</span>`).join('')}</div></div>`;
 }
 const ajAttr=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
 // The slot's label: the PR the job builds, else its branch (push, or a
@@ -5989,8 +6219,8 @@ function renderActiveJobs(a){
   h+=`<div class="aj-slots">${slots}</div>`;
   h+=`<div class="aj-leg">`+AJ_OS.map(([k,n,c])=>{const o=by[k]||{active:0,queued:0};
     return `<span><i style="background:${c}"></i>${n} <b>${o.active}</b>${k==='macos'?` / ${a.macos_limit}`:''} active${o.queued?` &middot; <span style="color:var(--warn)">${o.queued} queued</span>`:''}</span>`}).join('')+`</div>`;
-  // Below the queue chart: the 24 h stats.
-  let st=ajChart(a,'q');
+  // Below the queue chart: the live 24 h stats.
+  let st='';
   if(a.samples)st+=`<div class="aj-stats"><span>At the ${lim}-job limit ${ajPct(a.at_limit_pct,'var(--crit)')} of the last 24 h</span>`+
       `<span>macOS at its ${a.macos_limit}-job limit ${ajPct(a.macos_at_limit_pct,'var(--warn)')}</span>`+
       `<span>Peak <b>${a.peak}</b> active</span></div>`;
@@ -6007,12 +6237,11 @@ function renderActiveJobs(a){
   if(key!==lastAjHtml){lastAjHtml=key;el.innerHTML=h;src.innerHTML=`GitHub Free plan &middot; ${s}`}
   const se=document.getElementById('x-ajobs-stats');
   if(se&&st!==lastAjStats){lastAjStats=st;se.innerHTML=st}
-  // New history (a sample a minute) redraws the shared chart, keeping any
-  // zoom; never mid-drag.
-  _ajLast=a;
+  // New history (a sample a minute) redraws both charts, at whatever time
+  // they are showing; never mid-drag.
+  _ajLast=a;actStoreJobs(a);
   const hk=JSON.stringify((a.history||[]).slice(-1))+(a.history||[]).length;
-  if(hk!==_ajHistKey&&!_brushing&&typeof _act!=='undefined'&&_act){_ajHistKey=hk;
-    if(_actZoomT)zoomActToTime(_actZoomT);else drawActivity(null,null);}
+  if(hk!==_ajHistKey&&!_brushing&&_act){_ajHistKey=hk;drawActivity();}
 }
 let lastMci=null,lastMciHtml='';
 function mciAgo(s){const t=new Date(s).getTime();if(!s||isNaN(t))return '';const m=Math.round((Date.now()-t)/60000);
@@ -6322,14 +6551,7 @@ function renderExec(d){
     const titles=(lastData&&lastData.rings&&lastData.rings.issue_titles)||{};
     const fT=s=>{const d=new Date(s);return isNaN(d)?'':d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})};
     // Workflow-kind styling: color + label + issue/PR prefix.
-    const WF={triage:{c:'#21a184',l:'Triage',p:'#'},implement:{c:'#bd7c20',l:'Implement',p:'#'},
-              review:{c:'#a878e0',l:'PR review',p:'PR #'},detect:{c:'#e85578',l:'Antares',p:'#'}};
-    // CodeGuard OS-telemetry run markers (clustered server-side, magenta).
-    const cg=(tr.codeguard_24h||[]).map(m=>({...m,kind:'codeguard',color:'#d94fd4',r:4}));
-    // Workflow markers (triage / implement / review / antares passes).
-    const wf=(tr.workflow_24h||[]).map(m=>({...m,color:(WF[m.kind]||{}).c||'#5de3ff'}));
-    // One merged, time-sorted marker array; per-marker color drives the dot.
-    const marks=cg.concat(wf).sort((a,b)=>new Date(a.t)-new Date(b.t));
+    const WF=ACT_WF;
     // Unified hover card — dispatches on kind.
     const card=m=>{
       if(m.kind==='codeguard'){
@@ -6370,10 +6592,12 @@ function renderExec(d){
         s+=`<div style="color:#8598b4;font-size:10px;margin-top:3px">no sweep findings</div>`;
       return s+'</div>';
     };
-    // Stash the full render inputs; drawActivity() renders full or a zoomed
-    // sub-range and wires the drag-brush. Zoom (if any) persists by time range.
-    _act={buckets:tr.activity,marks,card,w,WF};
-    if(_actZoomT)zoomActToTime(_actZoomT);else drawActivity(null,null);
+    // The live window goes into the shared store (CodeGuard runs and agent
+    // passes as markers); drawActivity() renders whichever window is shown.
+    actStoreActivity(tr.activity);actStoreMarks(tr.codeguard_24h,tr.workflow_24h);
+    _act={liveEnd:new Date(tr.activity[tr.activity.length-1].t).getTime()/1000,card,w};
+    actBindDrag();
+    if(!_brushing)drawActivity();
   }
   // Alerts — section hidden entirely when quiet
   const alerts=s.alerts||[];
@@ -11483,6 +11707,24 @@ a{{color:#0a6aba}}
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self._send_json({'events': rows, 'total': db_count()})
+        elif self.path.startswith('/api/activity-window'):
+            # One 24 h window of the activity chart, for scrolling back.
+            from urllib.parse import urlparse, parse_qs
+            try:
+                end = int(parse_qs(urlparse(self.path).query).get('end', ['0'])[0])
+                body = json.dumps(activity_window(end)).encode()
+                self.send_response(200)
+            except ValueError:
+                body = b'{"error":"end must be epoch seconds"}'
+                self.send_response(400)
+            except Exception as _e:
+                _log_exc('activity_window', _e)
+                body = b'{"error":"window unavailable"}'
+                self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif self.path.startswith('/api/trends'):
             # Exec-view aggregates: hourly activity (24h), daily agent runs
             # (7d), posture history, eval + issue-action two-window rates.
@@ -11579,118 +11821,12 @@ a{{color:#0a6aba}}
                         tot, inp, out, cache = got_t.get(key, (0, 0, 0, 0))
                         payload['tokens_48h'].append({'t': key, 'total': tot or 0, 'inp': inp or 0,
                                                       'out': out or 0, 'cache': cache or 0})
-                    # CodeGuard run markers for the activity chart: cluster
-                    # CodeGuard activity within 5 minutes into 'runs'; each
-                    # carries its entries (capped at 12) for the hover data
-                    # card, plus the true total and finding counts. Two
-                    # sources, merged by time: Validation Gate events
-                    # (events.source='codeguard', from validation.log) and
-                    # finding rows from codeguard_findings, which is the only
-                    # place PR-review scans are recorded.
-                    try:
-                        cg_rows = conn.execute(
-                            "SELECT * FROM ("
-                            "SELECT CAST(strftime('%s',created_at) AS INTEGER) AS ep, "
-                            "created_at AS ca, type, args, policy, 0 AS is_finding "
-                            "FROM events WHERE source='codeguard' "
-                            "AND created_at>=datetime('now','-24 hours') "
-                            "UNION ALL "
-                            "SELECT CAST(strftime('%s',scan_time) AS INTEGER), scan_time, "
-                            "COALESCE(severity,''), "
-                            "(CASE WHEN source='pr' THEN 'PR #' ELSE '#' END) "
-                            "|| COALESCE(ref,'?') || ' ' || COALESCE(rule_id,'') || ' ' "
-                            "|| COALESCE(title,'') || ' in ' || COALESCE(file_path,''), "
-                            "'codeguard', 1 "
-                            "FROM codeguard_findings "
-                            "WHERE scan_time>=datetime('now','-24 hours')"
-                            ") ORDER BY ep ASC LIMIT 2000").fetchall()
-                        cg_clusters = []
-                        for ep, ca, ty, ar, po, is_f in cg_rows:
-                            if ep is None:
-                                continue
-                            evd = {'t': (ca or '').replace(' ', 'T') + 'Z',
-                                   'type': ty or '', 'args': (ar or '')[:90], 'policy': po or ''}
-                            if cg_clusters and ep - cg_clusters[-1]['_end'] <= 300:
-                                c = cg_clusters[-1]
-                                c['_end'] = ep
-                                c['count'] += 1
-                                c['findings'] += is_f
-                                if len(c['events']) < 12:
-                                    c['events'].append(evd)
-                            else:
-                                cg_clusters.append({'t': evd['t'], '_end': ep,
-                                                    'count': 1, 'findings': is_f,
-                                                    'events': [evd]})
-                        for c in cg_clusters:
-                            c['t_end'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(c.pop('_end')))
-                        payload['codeguard_24h'] = cg_clusters[-50:]
-                    except Exception:
-                        payload['codeguard_24h'] = []
-                    # Workflow markers: triage / implement / review / antares
-                    # (detect) passes from issue_actions, each enriched with a
-                    # first-line finding summary from the Antares + CodeGuard
-                    # sweeps for that issue/PR. Titles are joined client-side
-                    # from rings.issue_titles.
-                    try:
-                        # Antares summary per number (prefer a vulnerable verdict).
-                        ant_sum = {}
-                        for num, verdict, cand, rat in conn.execute(
-                                "SELECT issue_number, verdict, file_path, rationale "
-                                "FROM detector_findings "
-                                "WHERE scan_time>=datetime('now','-24 hours') "
-                                "ORDER BY id ASC"):
-                            if num is None:
-                                continue
-                            k = str(num)
-                            if verdict == 'vulnerable' and (rat or cand):
-                                ant_sum[k] = ('vulnerable', (rat or '').strip()
-                                              or ('candidate: ' + (cand or '')))
-                            elif k not in ant_sum:
-                                ant_sum[k] = (verdict or 'clean', '')
-                        # CodeGuard PR summary per ref (first finding + count).
-                        cg_sum = {}
-                        for ref, sev, rid, ctitle in conn.execute(
-                                "SELECT ref, severity, rule_id, title "
-                                "FROM codeguard_findings "
-                                "WHERE source='pr' AND ref IS NOT NULL "
-                                "AND scan_time>=datetime('now','-24 hours') "
-                                "ORDER BY id ASC"):
-                            k = str(ref)
-                            cg_sum.setdefault(k, []).append(
-                                '[%s] %s %s' % (sev or '', rid or '', (ctitle or '')[:70]))
-                        iac = sqlite3.connect(ISSUE_ACTIONS_DB, timeout=10)
-                        wf = []
-                        for num, action, state, outcome, detail, ca in iac.execute(
-                                "SELECT issue_number, action, state, outcome, detail, created_at "
-                                "FROM issue_actions "
-                                "WHERE action IN ('triage','implement','review','detect') "
-                                "AND outcome!='started' "
-                                # Real ISO timestamps only — migrated rows carry a
-                                # 'migration-…' created_at that lexically defeats the
-                                # window filter and is an unparseable marker time.
-                                "AND created_at GLOB '2[0-9][0-9][0-9]-*' "
-                                "AND replace(created_at,'T',' ')>=datetime('now','-24 hours') "
-                                "ORDER BY created_at ASC LIMIT 600"):
-                            k = str(num)
-                            mk = {'t': (ca or '').replace(' ', 'T') + 'Z',
-                                  'kind': action, 'num': k,
-                                  'state': state or '', 'outcome': outcome or ''}
-                            av = ant_sum.get(k)
-                            if av:
-                                mk['antares_verdict'] = av[0]
-                                if av[1]:
-                                    mk['antares'] = av[1][:180]
-                            cv = cg_sum.get(k)
-                            if cv:
-                                mk['codeguard'] = cv[0]
-                                mk['codeguard_more'] = len(cv) - 1
-                            if action == 'detect' and detail:
-                                mk['detail'] = detail[:180]
-                            wf.append(mk)
-                        iac.close()
-                        payload['workflow_24h'] = wf[-250:]
-                    except Exception:
-                        payload['workflow_24h'] = []
+                    # Run markers for the activity chart (CodeGuard runs and
+                    # agent workflow passes), last 24 h.
+                    _w0 = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(nowt - 86400))
+                    _w1 = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(nowt + 60))
+                    payload['codeguard_24h'] = _activity_codeguard_marks(conn, _w0, _w1)
+                    payload['workflow_24h'] = _activity_workflow_marks(conn, _w0, _w1)
                     # eval pass rates, two 24h windows (ts is ISO w/ 'T' — normalize)
                     def _pr(where):
                         tot, ok = conn.execute(

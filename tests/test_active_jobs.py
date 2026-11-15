@@ -18,6 +18,8 @@ Covers:
   - each running job is mapped to its PR: from the run listing on reconcile,
     by fetching the run for jobs a webhook reported, via the head commit for
     a fork run; a push run has no PR; a failed lookup is retried later
+  - minute samples are kept 7 days for the scrolled-back chart, the stats
+    stay on the last 24 h
   - 24 h stats: at-limit / queued shares, queue depth mean/peak, buckets,
     wait-before-start from created_at → started_at, and the oldest queued
     job's wait sampled each minute
@@ -188,8 +190,16 @@ def main():
     check("wait stats", s['waits'] and s['waits']['jobs'] == 20 and s['waits']['avg_s'] == 180, str(s['waits']))
     td.active_jobs_sample(now=T + 86400 + 61)
     s = td.active_jobs_summary(now=T + 86400 + 61)
-    check("history and waits age out after 24 h", s['samples'] == 1 and s['waits'] is None,
-          f"{s['samples']} {s['waits']}")
+    check("24 h stats and waits age out after 24 h", s['samples'] == 1 and s['waits'] is None
+          and s['peak'] == 10 and len(s['history']) == 1, f"{s['samples']} {s['waits']} {s['peak']}")
+    check("minute samples kept for scrolling back", len(td._active_jobs_history) == 3)
+    w = td.active_jobs_window(T - 300, T + 900)
+    check("window: buckets and wait series for that span only",
+          [h[1] for h in w['history']] == [20] and w['oldest_wait']['v'][0] == exp
+          and w['limit'] == 20, str(w))
+    td.active_jobs_sample(now=T + 7 * 86400 + 1)
+    check("samples older than 7 days dropped", td._active_jobs_history[0][0] == T + 60,
+          str(td._active_jobs_history[0]))
 
     if _FAILED:
         print(f"\n{len(_FAILED)} failure(s): {', '.join(_FAILED)}")
