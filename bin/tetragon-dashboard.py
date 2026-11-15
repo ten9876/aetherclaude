@@ -5354,7 +5354,7 @@ body.view-ops #view-exec{display:none}
 .aj-dim{color:var(--muted);font-size:12px}
 .aj-q{font-size:13px;font-weight:600;color:var(--warn)}
 .aj-slots{display:flex;gap:3px;margin:6px 0 8px}
-.aj-slot{flex:1;min-width:0;height:18px;border-radius:3px;background:var(--bg-2);border:1px solid var(--line);font:600 11px/16px var(--mono);color:#fff;text-align:center;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:0 2px}
+.aj-slot{flex:1;min-width:0;height:18px;border-radius:3px;background:var(--bg-2);border:1px solid var(--line);font:700 12px/16px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",Arial,sans-serif;letter-spacing:.01em;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.35);text-align:center;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:0 2px}
 .aj-leg{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--ink-soft);margin-bottom:12px}
 .aj-leg i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:baseline}
 .aj-chart{width:100%;display:block}
