@@ -905,6 +905,25 @@ def is_degenerate(text, min_seq=8, min_repeats=11):
     return False
 
 
+def existing_candidates(paths, reasons, files):
+    """Keep only candidates that are files in the snapshot. A ':line' or
+    ':function' suffix and a leading './' are removed first; anything still
+    not a file (an invented path) is returned as dropped."""
+    kept, kept_reasons, dropped = [], {}, []
+    for raw in paths:
+        p = raw.strip().lstrip('./') if raw.strip().startswith('./') else raw.strip()
+        if p not in files and ':' in p:
+            p = p.split(':', 1)[0]
+        if p in files:
+            if p not in kept:
+                kept.append(p)
+                if raw in reasons:
+                    kept_reasons[p] = reasons[raw]
+        else:
+            dropped.append(raw)
+    return kept, kept_reasons, dropped
+
+
 def _tool(text):
     return {'role': 'tool', 'content': text}
 
@@ -969,7 +988,9 @@ def localize(repo, cwe, context, max_commands):
                          'tool_calls': [{'name': name, 'arguments': args}]})
 
         if name == 'submit_vulnerable_files':
-            paths, per_file = _candidate_files(args)
+            paths, per_file, dropped = existing_candidates(*_candidate_files(args), files)
+            if dropped:
+                result['dropped_candidates'] = dropped
             result['verdict'] = 'vulnerable' if paths else 'no_candidates'
             result['candidates'] = paths
             result['candidate_reasons'] = per_file

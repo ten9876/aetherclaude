@@ -21,6 +21,9 @@ Covers:
   - the unread-search-hit notice appears while a search hit is unopened and
     names no file; it stops once the file is read
   - runaway repetition is rejected uncharged; three in a row end the run
+  - candidates that are not files in the snapshot are dropped (and
+    recorded); a ':line' / ':function' suffix or './' prefix is removed;
+    nothing left → verdict no_candidates
   - submit_vulnerable_files{ranked_files} yields candidates and a rationale
     taken from the reasoning when there is no prose; a '<tool_call>' inside
     <think> is not taken as the call
@@ -179,6 +182,17 @@ try:
     check('call after </think> wins over one inside it', name == 'submit_vulnerable_files', name)
     res, _ = run([call('terminal', command='cat src/a.cpp'), reply])
     check('rationale from the reasoning', 'CWE-787' in res.get('rationale', ''), res.get('rationale'))
+
+    res, _ = run([call('terminal', command='ls src'),
+                  call('submit_vulnerable_files', ranked_files=[
+                      'src/pcap_parser.cpp', 'src/a.cpp:12', './src/b.cpp', 'src/a.cpp:f',
+                      'tests/test_x.cpp'])])
+    check('invented paths dropped, suffixes removed', res['candidates'] == ['src/a.cpp', 'src/b.cpp']
+          and res['dropped_candidates'] == ['src/pcap_parser.cpp', 'tests/test_x.cpp'], res)
+    res, _ = run([call('terminal', command='ls src'),
+                  call('submit_vulnerable_files', ranked_files=['src/nope.cpp'])])
+    check('only invented paths → no_candidates', res['verdict'] == 'no_candidates'
+          and res['candidates'] == [], res['verdict'])
 finally:
     shutil.rmtree(repo, ignore_errors=True)
 
