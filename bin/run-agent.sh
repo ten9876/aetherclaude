@@ -366,13 +366,35 @@ post_bot_comment() {
 #
 # Side effects: writes the dashboard feed (antares-latest.json) + a per-issue
 # cache (data/antares/issue-<N>.json) that the implement-fix pass consumes;
-# posts a GitHub advisory comment ONLY when it localizes candidate files
-# (so non-code issues stay quiet); records a "detect" action.
+# records a "detect" action. A GitHub advisory comment is posted only for a
+# localized finding the run was seeded with a CWE for (the issue named one);
+# a finding from a generic (unseeded) run stays in the cache, dashboard and
+# action log, and is commented only if the Validator confirms it.
 #
 # Args: NUMBER TITLE CONTEXT_TEXT TOKEN REPO_DIR [KIND]
 #   REPO_DIR — the checkout to explore (main workspace for issues, a PR-head
 #              worktree for PRs). KIND is "issue" (default) or "pr", label only.
 # =====================================================================
+# Post the Antares advisory comment for a per-issue cache and mark the cache
+# commented, so the Detector and the Validator never both post it.
+# Args: NUMBER TOKEN CACHE NOTE  (NOTE: extra line, e.g. the Validator result)
+post_antares_comment() {
+    local number="$1" token="$2" cache="$3" note="$4"
+    [ -n "$token" ] && [ -s "$cache" ] || return 0
+    [ "$(jq -r '.commented // false' "$cache" 2>/dev/null)" = "true" ] && return 0
+    local cwe files_md rationale comment_body payload
+    cwe=$(jq -r '.cwe // ""' "$cache" 2>/dev/null || echo "")
+    files_md=$(jq -r '. as $r | ($r.candidates // [])[] | "- `" + . + "`" + ((($r.candidate_reasons // {})[.] // "") | if . == "" then "" else " — " + . end)' "$cache" 2>/dev/null || echo "")
+    rationale=$(jq -r '.rationale // ""' "$cache" 2>/dev/null || echo "")
+    comment_body=$(printf '**Antares Detector — candidate vulnerable file(s)**%s\n\n%s\n\n%s%s\n\n<sub>Localized by Cisco Foundation AI **Antares-1B** running locally in the AetherClaude sandbox, seeded by the Cartographer security map. Advisory only — please verify before acting.</sub>' \
+        "${cwe:+ (${cwe})}" "$files_md" "$rationale" "${note:+$'\n\n'$note}")
+    payload=$(jq -n --arg b "$comment_body" '{body:$b}')
+    post_bot_comment "/repos/${REPO}/issues/${number}/comments" "$token" "$payload" issue_comment > /dev/null 2>&1 || return 0
+    if jq '.commented = true' "$cache" > "${cache}.tmp" 2>/dev/null; then
+        mv "${cache}.tmp" "$cache"
+    fi
+}
+
 run_antares_detector() {
     local number="$1" title="$2" context_text="$3" token="$4" repo_dir="$5" kind="${6:-issue}"
     local detector="/Users/aetherclaude/bin/antares-detector.py"
@@ -424,8 +446,7 @@ run_antares_detector() {
     cands=$(jq -r '(.candidates // []) | join(", ")' "$out_issue" 2>/dev/null || echo "")
 
     if [ "$verdict" = "vulnerable" ] && [ -n "$cands" ]; then
-        local files_md rationale comment_body payload
-        files_md=$(jq -r '. as $r | ($r.candidates // [])[] | "- `" + . + "`" + ((($r.candidate_reasons // {})[.] // "") | if . == "" then "" else " — " + . end)' "$out_issue" 2>/dev/null || echo "")
+        local rationale
         rationale=$(jq -r '.rationale // ""' "$out_issue" 2>/dev/null || echo "")
 
         # Structural gate: the public advisory comment only posts when the
@@ -441,10 +462,15 @@ run_antares_detector() {
             return 0
         fi
 
-        comment_body=$(printf '**Antares Detector — candidate vulnerable file(s)**%s\n\n%s\n\n%s\n\n<sub>Localized by Cisco Foundation AI **Antares-1B** running locally in the AetherClaude sandbox, seeded by the Cartographer security map. Advisory only — please verify before acting.</sub>' \
-            "${cwe:+ (${cwe})}" "$files_md" "$rationale")
-        payload=$(jq -n --arg b "$comment_body" '{body:$b}')
-        post_bot_comment "/repos/${REPO}/issues/${number}/comments" "$token" "$payload" issue_comment > /dev/null 2>&1 || true
+        # Unseeded runs flag most issues they see, so their findings are not
+        # posted on the model's word alone (see run_validator).
+        if [ -z "$cwe" ]; then
+            record_action "$number" "detect" "vulnerable" "success" "held (no CWE named): $cands"
+            log "ANTARES: ${kind} #${number} vulnerable — ${cands} (generic run, no comment)"
+            return 0
+        fi
+
+        post_antares_comment "$number" "$token" "$out_issue" ""
         record_action "$number" "detect" "vulnerable" "success" "$cands"
         log "ANTARES: ${kind} #${number} vulnerable — ${cands}"
     else
@@ -467,10 +493,13 @@ run_antares_detector() {
 # records a 'validate' action, and merges the verdict back into the cache so the
 # implement-fix pass sees "Validator CONFIRMED this".
 #
-# Args: NUMBER REPO_DIR
+# A CONFIRMED verdict also posts the Detector's advisory comment when the
+# Detector held it (generic run), given a TOKEN.
+#
+# Args: NUMBER REPO_DIR [TOKEN]
 # =====================================================================
 run_validator() {
-    local number="$1" repo_dir="$2"
+    local number="$1" repo_dir="$2" token="${3:-}"
     local cache="/Users/aetherclaude/data/antares/issue-${number}.json"
     local validator="/Users/aetherclaude/bin/fuzz-finding.sh"
     local fuzz_seconds="${ANTARES_FUZZ_SECONDS:-40}"
@@ -514,6 +543,10 @@ run_validator() {
         if jq --arg f "$file" --arg v "$verdict" \
               '.validation = {file:$f, verdict:$v}' "$cache" > "${cache}.tmp" 2>/dev/null; then
             mv "${cache}.tmp" "$cache"
+        fi
+        if [ "$verdict" = "CONFIRMED" ]; then
+            post_antares_comment "$number" "$token" "$cache" \
+                "**Validator:** \`${file}\` CONFIRMED under AddressSanitizer/UndefinedBehaviorSanitizer with a reproducer."
         fi
         break   # one validation per issue for now
     done < <(jq -r '(.candidates // [])[]' "$cache" 2>/dev/null)
@@ -1467,7 +1500,7 @@ list_pr_files for the remainder before commenting on anything below this point]"
         run_antares_detector "$pr_number" "$pr_title" \
             "$(printf 'Changed files in this PR:\n%s' "$pr_files")" \
             "$token" "$pr_worktree" pr || true
-        run_validator "$pr_number" "$pr_worktree" || true
+        run_validator "$pr_number" "$pr_worktree" "$token" || true
         git -C "$WORKSPACE" worktree remove "$pr_worktree" --force 2>/dev/null || true
     fi
 }
@@ -2211,7 +2244,7 @@ skill_process_issues() {
                 "$token" "$WORKSPACE" issue || true
             # Foundry Validator: confirm/refute the Detector's candidate by
             # running the real code under ASan/UBSan (registry-gated, fail-open).
-            run_validator "$number" "$WORKSPACE" || true
+            run_validator "$number" "$WORKSPACE" "$token" || true
 
             # Check if we asked questions (look for ? in our comment).
             # `|| true` on the bare assignment is critical: this fetches

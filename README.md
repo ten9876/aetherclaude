@@ -97,9 +97,11 @@ Beyond containing the agent, AetherClaude hunts for vulnerabilities in the
   Apache 2.0) served locally via Ollama on loopback. On **every issue and PR**
   it explores the repo in a **read-only allowlist-jail sandbox** (`grep`/`find`/
   `cat`/`ls`/`head`/… + pipes, no writes or exec — red-teamed), seeded by the
-  Cartographer overlay, and localizes candidate vulnerable files. It posts an
-  advisory comment only on a positive verdict, feeds candidates into the fixer,
-  and is fully fail-open (`bin/antares-detector.py`).
+  Cartographer overlay, and localizes candidate vulnerable files. The model
+  explores a snapshot of the tracked files, never the checkout itself. It
+  feeds candidates into the fixer and the dashboard, posts an advisory comment
+  only when the issue named a CWE or the Validator confirms the finding, and
+  is fully fail-open (`bin/antares-detector.py`).
 - **Validator** — for files with a harness, `bin/validate-finding.sh` /
   `bin/fuzz-finding.sh` build the localized code under **AddressSanitizer +
   UndefinedBehaviorSanitizer** (and **libFuzzer**) against crafted/generated
