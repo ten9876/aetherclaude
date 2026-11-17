@@ -89,8 +89,12 @@ down, `verdict: server_unreachable` and the Detector no-ops — it never blocks.
 - **Loopback only.** `OLLAMA_HOST=127.0.0.1:11434` — the model server is never
   exposed off-box. The detector reaches it over the pf loopback rule (uid 965
   → 127.0.0.1) and bypasses tinyproxy via `NO_PROXY`; no firewall change.
-- **Server-agnostic.** The harness speaks the OpenAI-compatible `/api/chat`; if
-  Ollama can't serve the hybrid GGUF, `llama-server` (llama.cpp) or vLLM serve
-  the same shape — set `ANTARES_OLLAMA_URL` to point at it.
+- **Prompt format.** The detector renders the model's own chat template
+  (`config/antares/chat_template.jinja`, copied verbatim from
+  `fdtn-ai/antares-1b`) itself and sends it raw to Ollama's `/api/generate`,
+  so the Modelfile `TEMPLATE` only matters for interactive `ollama run`.
+  `tests/test_antares_detector_loop.py` checks the rendering byte for byte
+  against that template. Any server with a raw-completion endpoint works —
+  set `ANTARES_GENERATE_URL`.
 - **Memory.** `OLLAMA_KEEP_ALIVE=5m` unloads the model between the bursty
   per-issue runs so it isn't resident 24/7.

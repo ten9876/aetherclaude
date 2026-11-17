@@ -19,6 +19,20 @@ only the repo's tracked regular files (no symlinks, no submodules, no
 repo text cannot pose as agent protocol. The harness itself runs as uid 965
 behind the pf firewall as defense in depth.
 
+PROMPT FORMAT: the conversation is rendered with the model's own Granite
+chat template (tools listed in a <tools> block, tool calls as <tool_call>
+JSON, sandbox output as a user <tool_response>, generation primed with
+<think>) and sent raw to Ollama's /api/generate, with the tool schema of
+the model card (terminal / submit_vulnerable_files{ranked_files} /
+submit_no_vulnerability_found). Earlier turns are replayed as their tool
+calls only; their reasoning is not re-sent.
+
+LOOP CONTROL: a repeated command is answered from the first run and not
+charged; three repeats in a row, or the budget running out, close the
+terminal and leave only the submit tools for a few turns. The model is
+told at 80% of the budget, and when search hits it has not opened yet
+remain. Runaway repetition in a reply is rejected uncharged.
+
 Fail-open: if the model server is unreachable the run yields an empty verdict
 and never raises — the Detector must never block triage.
 
@@ -39,7 +53,7 @@ import tempfile
 import time
 import urllib.request
 
-OLLAMA_URL = os.environ.get('ANTARES_OLLAMA_URL', 'http://127.0.0.1:11434/api/chat')
+GENERATE_URL = os.environ.get('ANTARES_GENERATE_URL', 'http://127.0.0.1:11434/api/generate')
 MODEL = os.environ.get('ANTARES_MODEL', 'antares-1b')
 CARTOGRAPHER = '/Users/aetherclaude/bin/codegraph-cartographer.py'
 # Snapshots are hardlinked from the checkout, so they live on the same volume.
@@ -79,10 +93,25 @@ FIND_DANGEROUS = {'-exec', '-execdir', '-delete', '-ok', '-okdir',
 SHELL_OPERATORS = {';', '||', '&&', '&', '>', '>>', '<', '<<', '<<<',
                    '`', '$(', '$((', ')', '{', '}'}
 MAX_STAGES = 6                 # cap pipeline length
-MAX_OUTPUT_BYTES = 6000        # per-command stdout cap fed back to the model
+DEFAULT_MAX_CHARS = 2000       # terminal tool's max_chars default (model card)
+MAX_OUTPUT_BYTES = 6000        # ceiling on a max_chars the model asks for
 PER_CMD_TIMEOUT = 15           # seconds
-OVERALL_TIMEOUT = 240          # seconds — hard ceiling for the whole loop
+OVERALL_TIMEOUT = 300          # seconds — hard ceiling for the whole loop
+GENERATE_TIMEOUT = 120         # seconds — one model turn
 MIN_CLEAN_COMMANDS = 3         # clean verdict below this = 'clean_unverified'
+
+# Sampling: model card temperature/top_p; the benchmark harness's
+# frequency_penalty; room for the <think> block plus the call.
+GEN_OPTIONS = {'temperature': 0.3, 'top_p': 1.0, 'frequency_penalty': 0.3,
+               'num_predict': 2048, 'num_ctx': 32768,
+               'stop': ['<|end_of_text|>', '<|start_of_role|>', '<tool_response>']}
+
+# Loop control (counts are per run).
+MAX_TERMINAL_ATTEMPTS = 20     # charged + duplicate terminal calls
+DUPLICATE_STOP = 3             # consecutive repeated commands → terminal closed
+FORCED_SUBMISSION_TURNS = 3    # turns allowed after the terminal closes
+UNPARSEABLE_STOP = 3           # consecutive replies with no tool call
+DEGENERATE_STOP = 3            # consecutive runaway-repetition replies
 
 # Verbs whose own flags can hang — reject those specific args even though the
 # verb reads by default.
@@ -125,69 +154,149 @@ def sanitize_tool_output(text):
         text = pat.sub(repl, text)
     return text
 
-SYSTEM_PROMPT = (
-    "You are a security vulnerability localization agent. The repository is "
-    "mounted at the current directory. Determine whether the code involved "
-    "in the context below contains an actual SECURITY vulnerability — a "
-    "memory-safety violation (overflow, out-of-bounds, use-after-free, "
-    "double-free), injection, path traversal, format-string bug, unsafe "
-    "deserialization, or unvalidated external input reaching a dangerous "
-    "operation. Neither verdict is preferred: the evidence decides.\n"
-    "\n"
-    "What counts: a crash, glitch, or wrong output is a vulnerability only "
-    "if untrusted input can trigger it to corrupt memory, execute commands, "
-    "escape a path, or leak data. A functional bug with no attacker-"
-    "relevant consequence is NOT a vulnerability, even if the context "
-    "describes it as serious. You are not a bug localizer.\n"
-    "\n"
-    "Procedure:\n"
-    "1. Identify from the context which subsystem/files are involved.\n"
-    "2. Inspect the dangerous-API sites the security map lists for that "
-    "area — actually read the code around them; do not judge from file or "
-    "function names alone.\n"
-    "3. Submit the verdict the evidence supports:\n"
-    "   - submit_vulnerable_files when untrusted input can reach the flaw. "
-    "The rationale MUST name the vulnerability class, ideally the CWE "
-    "(e.g. \"CWE-787 out-of-bounds write in the ADIF parser\"). A rationale "
-    "that only describes a functional bug is not acceptable. Give a reason "
-    "PER FILE, citing what you saw: "
-    "{\"name\": \"submit_vulnerable_files\", \"arguments\": {\"files\": "
-    "[{\"path\": \"src/x.cpp\", \"reason\": \"CWE-787: memcpy at line 214 "
-    "writes len bytes from the network packet into a 64-byte buffer with "
-    "no bounds check\"}]}}\n"
-    "   - submit_no_vulnerability_found when you have inspected the "
-    "relevant sites and found them sound.\n"
-    "Never submit either verdict without having examined code first.\n"
-    "\n"
-    "Think step by step. Emit exactly "
-    "one tool call per turn as <tool_call>{\"name\": \"terminal\", "
-    "\"arguments\": {\"command\": \"...\"}}</tool_call>.\n"
-    "\n"
-    "SANDBOX RULES — the terminal is read-only (no shell metacharacters except "
-    "the pipe), so obey these or the command is REJECTED and your turn wasted:\n"
-    "- Allowed programs (read-only only): rg, grep, find, cat, ls, tree, "
-    "head, tail, nl, wc, cut, tr, sort, uniq, diff, file, stat, du, "
-    "basename, dirname, realpath, pwd, echo, true, false, and sed for "
-    "printing line ranges only. Anything else (awk, xargs, cd, python) is "
-    "REJECTED.\n"
-    "- Commands run from the repository root; there is no cd, so use "
-    "relative paths (src/core/...).\n"
-    "- Pipes ARE allowed: chain the programs above, e.g. "
-    "rg -n \"memcpy\" src | head -n 40.\n"
-    "- NOT allowed: redirection '>' '<', ';' '&&' '||' '&', '$()' or "
-    "backticks. Paths must stay inside the repository (no '..' or absolute "
-    "paths like /etc).\n"
-    "- Useful idioms:\n"
-    "    * search a tree:            rg -n \"pattern\" src | head -n 40\n"
-    "    * view code AROUND a match: rg -n -B5 -A20 \"pattern\" path/to/file\n"
-    "    * read part of a file:      sed -n '120,180p' path/to/file\n"
-    "    * read a file:              cat path/to/file  (or: nl path | head -n 60)\n"
-    "\n"
-    "You have a limited command budget. A grep hit plus reading the lines "
-    "around it is usually enough evidence — you do not need to read whole "
-    "files. Do not exhaust the budget re-reading the same files; submit as "
-    "soon as the evidence supports a verdict."
+CWE_DESCRIPTIONS = {
+    'CWE-20': 'Improper Input Validation',
+    'CWE-22': 'Improper Limitation of a Pathname to a Restricted Directory (Path Traversal)',
+    'CWE-78': 'Improper Neutralization of Special Elements used in an OS Command (OS Command Injection)',
+    'CWE-120': 'Buffer Copy without Checking Size of Input (Classic Buffer Overflow)',
+    'CWE-122': 'Heap-based Buffer Overflow',
+    'CWE-125': 'Out-of-bounds Read',
+    'CWE-131': 'Incorrect Calculation of Buffer Size',
+    'CWE-134': 'Use of Externally-Controlled Format String',
+    'CWE-190': 'Integer Overflow or Wraparound',
+    'CWE-191': 'Integer Underflow (Wrap or Wraparound)',
+    'CWE-295': 'Improper Certificate Validation',
+    'CWE-319': 'Cleartext Transmission of Sensitive Information',
+    'CWE-362': 'Concurrent Execution using Shared Resource with Improper Synchronization (Race Condition)',
+    'CWE-367': 'Time-of-check Time-of-use (TOCTOU) Race Condition',
+    'CWE-400': 'Uncontrolled Resource Consumption',
+    'CWE-401': 'Missing Release of Memory after Effective Lifetime',
+    'CWE-415': 'Double Free',
+    'CWE-416': 'Use After Free',
+    'CWE-457': 'Use of Uninitialized Variable',
+    'CWE-476': 'NULL Pointer Dereference',
+    'CWE-502': 'Deserialization of Untrusted Data',
+    'CWE-770': 'Allocation of Resources Without Limits or Throttling',
+    'CWE-787': 'Out-of-bounds Write',
+    'CWE-824': 'Access of Uninitialized Pointer',
+}
+GENERIC_TASK = ('any', 'Any weakness that untrusted input can reach: memory safety '
+                '(out-of-bounds read/write, use-after-free, double free, integer '
+                'overflow), injection, path traversal, format string, unsafe '
+                'deserialization, or missing input validation')
+
+TOOLS = [
+    {'type': 'function', 'function': {
+        'name': 'terminal',
+        'description': (
+            'Execute a read-only terminal command from the repository root. Allowed: '
+            'ls, tree, find, cat, head, tail, sed -n (line ranges only), grep, rg, wc, '
+            'sort, uniq, cut, tr, nl, file, stat, du, pwd, basename, dirname, realpath, '
+            'diff, echo, true, false. Pipes are OK. No cd, xargs, awk, interpreters, '
+            ';, &&, ||, redirects, or paths outside the repository.'),
+        'parameters': {'type': 'object', 'properties': {
+            'command': {'type': 'string', 'description': 'The shell command to run'},
+            'max_chars': {'type': 'integer', 'description': 'Max output chars (default 2000)',
+                          'default': 2000}},
+            'required': ['command']}}},
+    {'type': 'function', 'function': {
+        'name': 'submit_vulnerable_files',
+        'description': (
+            'Submit your answer: a ranked list of file paths you believe contain the '
+            'vulnerability. Most likely vulnerable file first. Paths relative to repository root.'),
+        'parameters': {'type': 'object', 'properties': {
+            'ranked_files': {'type': 'array', 'items': {'type': 'string'},
+                             'description': 'Ordered list of file paths, most vulnerable first'}},
+            'required': ['ranked_files']}}},
+    {'type': 'function', 'function': {
+        'name': 'submit_no_vulnerability_found',
+        'description': ('Declare that no vulnerability matching the CWE description was '
+                        'found in this codebase.'),
+        'parameters': {'type': 'object', 'properties': {}, 'required': []}}},
+]
+
+SYSTEM_TEMPLATE = (
+    'You are Antares, a security agent that localizes vulnerabilities in source code.\n'
+    'You receive a CWE identifier and description, then explore a read-only repository '
+    'snapshot using terminal tools.\n'
+    '\n'
+    'Rules:\n'
+    '- Issue up to {max_calls} read-only terminal commands (ls, find, cat, head, tail, '
+    'grep, rg, tree, wc, pwd).\n'
+    '- After exploration, submit exactly one final answer:\n'
+    '  - submit_vulnerable_files with ranked_files (repo-relative paths), OR\n'
+    '  - submit_no_vulnerability_found\n'
+    '\n'
+    'Task CWE: {cwe}\n'
+    'CWE description: {cwe_description}\n'
+    '\n'
+    'Repository root: .\n'
 )
+
+# Granite 4.0 chat template (the model's chat_template.jinja), rendered for
+# the message shapes this harness produces.
+_TOOLS_PREFIX = ('You are a helpful assistant with access to the following tools. You may '
+                 'call one or more tools to assist with the user query.\n\nYou are provided '
+                 'with function signatures within <tools></tools> XML tags:\n<tools>')
+_TOOLS_SUFFIX = ('\n</tools>\n\nFor each tool call, return a json object with function name '
+                 'and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n'
+                 '{"name": <function-name>, "arguments": <args-json-object>}\n</tool_call>. '
+                 'If a tool does not exist in the provided list of tools, notify the user '
+                 'that you do not have the ability to fulfill the request.')
+GENERATION_PREFIX = '<|start_of_role|>assistant<|end_of_role|><think>\n'
+
+
+def render_prompt(messages, tools=TOOLS):
+    """Render messages ({role: system|user|assistant|tool}) exactly as the
+    model's chat template does with add_generation_prompt=True. Assistant
+    turns carry 'tool_calls' [{name, arguments(dict)}] and/or 'content'."""
+    tools_msg = _TOOLS_PREFIX + ''.join(
+        '\n' + json.dumps(t, ensure_ascii=False) for t in tools) + _TOOLS_SUFFIX
+    system = messages[0]['content'] + '\n\n' + tools_msg \
+        if messages and messages[0]['role'] == 'system' else tools_msg
+    out = [f'<|start_of_role|>system<|end_of_role|>{system}<|end_of_text|>\n']
+    for i, m in enumerate(messages):
+        role, content = m['role'], m.get('content') or ''
+        if role == 'user' or (role == 'system' and i > 0):
+            out.append(f'<|start_of_role|>{role}<|end_of_role|>{content}<|end_of_text|>\n')
+        elif role == 'assistant':
+            out.append(f'<|start_of_role|>assistant<|end_of_role|>{content}')
+            for j, call in enumerate(m.get('tool_calls') or []):
+                if (j == 0 and content) or j > 0:
+                    out.append('\n')
+                out.append('<tool_call>\n{"name": "' + call['name'] + '", "arguments": '
+                           + json.dumps(call['arguments'], ensure_ascii=False) + '}\n</tool_call>')
+            out.append('<|end_of_text|>\n')
+        elif role == 'tool':
+            if i == 0 or messages[i - 1]['role'] != 'tool':
+                out.append('<|start_of_role|>user<|end_of_role|>')
+            out.append(f'\n<tool_response>\n{content}\n</tool_response>')
+            if i == len(messages) - 1 or messages[i + 1]['role'] != 'tool':
+                out.append('<|end_of_text|>\n')
+    out.append(GENERATION_PREFIX)
+    return ''.join(out)
+
+
+def build_messages(cwe, context, overlay, max_calls):
+    task, desc = (cwe, CWE_DESCRIPTIONS.get(cwe, cwe)) if cwe else GENERIC_TASK
+    system = SYSTEM_TEMPLATE.format(max_calls=max_calls, cwe=task, cwe_description=desc)
+    if cwe:
+        user = (f'Search this repository for vulnerabilities matching: {cwe}. Read source '
+                'files, identify vulnerable code patterns, and submit ranked vulnerable '
+                'file paths only.')
+    else:
+        user = ('Search this repository for a vulnerability in the code the issue report '
+                'below concerns. Read source files, identify vulnerable code patterns, and '
+                'submit ranked vulnerable file paths only, or submit_no_vulnerability_found '
+                'if the code is sound.')
+    if context:
+        user += ('\n\nIssue report (user-filed; it may or may not describe a security '
+                 'problem):\n' + context.strip()[:4000])
+    if overlay:
+        user += ('\n\nSecurity map of this repository (candidate sites to inspect first):\n'
+                 + overlay.strip())
+    return [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]
+
 
 _TOOLCALL_OPEN = '<tool_call>'
 
@@ -416,17 +525,19 @@ def validate_command(cmd_str, repo_root):
     return validated, None
 
 
-def run_command(cmd_str, repo_root):
+def run_command_ex(cmd_str, repo_root, max_chars=DEFAULT_MAX_CHARS):
     """Validate + execute one model command (single program or a read-only
-    pipeline). Returns a <tool_response> body string (never raises).
+    pipeline). Returns (exit_code, output) and never raises; output is
+    quarantined and cut to max_chars.
 
     Executes with shell=False and chains stages by wiring each Popen's stdout
     into the next stage's stdin — so `|` works without a shell interpreting the
     string. `;`, `>`, `$()`, backticks etc. are inert because no shell ever
     sees the command; they are also rejected up front for clear feedback."""
+    max_chars = max(200, min(int(max_chars or DEFAULT_MAX_CHARS), MAX_OUTPUT_BYTES))
     stages, reason = validate_command(cmd_str, repo_root)
     if reason:
-        return f'REJECTED: {reason}'
+        return 126, f'REJECTED: {reason}'
     env = {'PATH': EXEC_PATH, 'LANG': 'C'}
     procs = []
     try:
@@ -455,31 +566,38 @@ def run_command(cmd_str, repo_root):
                     p.wait(timeout=2)
                 except Exception:
                     pass
-            return f'(command timed out after {PER_CMD_TIMEOUT}s)'
+            return 124, f'(command timed out after {PER_CMD_TIMEOUT}s)'
         # Reap upstream stages so they don't linger.
         for p in procs[:-1]:
             try:
                 p.wait(timeout=2)
             except Exception:
                 p.kill()
+        rc = procs[-1].returncode
         out = (out_b or b'').decode('utf-8', 'replace')
         if not out:
-            err = (err_b or b'').decode('utf-8', 'replace')
-            rc = procs[-1].returncode
-            out = err or (f'(exit {rc}, no output)' if rc else '')
+            out = (err_b or b'').decode('utf-8', 'replace')
         out = sanitize_tool_output(out)
-        if len(out) > MAX_OUTPUT_BYTES:
-            out = out[:MAX_OUTPUT_BYTES] + '\n… [truncated]'
-        return out or '(no output)'
+        if len(out) > max_chars:
+            out = out[:max_chars] + '\n… [truncated]'
+        return rc, out
     except FileNotFoundError as e:
-        return f'(program not found: {e})'
+        return 127, f'(program not found: {e})'
     except Exception as e:
         for p in procs:
             try:
                 p.kill()
             except Exception:
                 pass
-        return f'(execution error: {e})'
+        return 1, f'(execution error: {e})'
+
+
+def run_command(cmd_str, repo_root, max_chars=MAX_OUTPUT_BYTES):
+    """run_command_ex's output alone, with an empty result spelled out."""
+    rc, out = run_command_ex(cmd_str, repo_root, max_chars)
+    if not out:
+        out = f'(exit {rc}, no output)' if rc else '(no output)'
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -566,21 +684,16 @@ def materialize_snapshot(repo, base=None):
 # Model server (OpenAI-compatible /api/chat — Ollama / llama.cpp-server / vLLM)
 # --------------------------------------------------------------------------
 
-def chat(messages, timeout=60):
-    body = json.dumps({
-        'model': MODEL, 'messages': messages, 'stream': False,
-        'options': {'temperature': 0.3, 'top_p': 1.0, 'num_predict': 512},
-    }).encode()
-    req = urllib.request.Request(OLLAMA_URL, data=body, method='POST',
+def generate(prompt, timeout=GENERATE_TIMEOUT):
+    """One model turn: the rendered prompt, sent raw (the chat template is
+    already applied) to Ollama's /api/generate. Returns the completion."""
+    body = json.dumps({'model': MODEL, 'prompt': prompt, 'raw': True, 'stream': False,
+                       'options': GEN_OPTIONS}).encode()
+    req = urllib.request.Request(GENERATE_URL, data=body, method='POST',
                                  headers={'Content-Type': 'application/json'})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         d = json.loads(r.read().decode())
-    # Ollama: {'message': {'content': ...}}; OpenAI: {'choices':[{'message':...}]}
-    if 'message' in d:
-        return d['message'].get('content', '')
-    if 'choices' in d and d['choices']:
-        return d['choices'][0].get('message', {}).get('content', '')
-    return ''
+    return d.get('response', '') or ''
 
 
 def parse_tool_call(content):
@@ -592,7 +705,12 @@ def parse_tool_call(content):
     ignores any trailing `</tool_call>`, whitespace, or end-of-turn text."""
     if not content:
         return None, None
-    marker = content.find(_TOOLCALL_OPEN)
+    # The call follows the reasoning; a '<tool_call>' mentioned inside the
+    # <think> block is not the call.
+    after = content.rfind('</think>')
+    marker = content.find(_TOOLCALL_OPEN, after if after != -1 else 0)
+    if marker == -1:
+        marker = content.find(_TOOLCALL_OPEN)
     if marker == -1:
         return None, None                       # no tool call -> caller nudges
     brace = content.find('{', marker + len(_TOOLCALL_OPEN))
@@ -678,11 +796,19 @@ def _extract_rationale(args, content):
         k = key.rstrip('[]').lower()
         if any(t in k for t in _REASON_KEY_HINTS) and isinstance(v, str) and v.strip():
             return v.strip()
-    # Fallback: prose before the tool call, after any chain-of-thought.
-    prose = content.split(_TOOLCALL_OPEN)[0]
-    if '</think>' in prose:
-        prose = prose.rsplit('</think>', 1)[1]
+    # Fallback: prose between the reasoning and the call, else the end of
+    # the reasoning itself (the conclusion it submitted on).
+    head = content
+    after = content.rfind('</think>')
+    call_at = content.find(_TOOLCALL_OPEN, after if after != -1 else 0)
+    if call_at != -1:
+        head = content[:call_at]
+    think, _, prose = head.rpartition('</think>')
     prose = ' '.join(prose.split()).strip()
+    if not prose and think:
+        prose = ' '.join(think.replace('<think>', ' ').split()).strip()
+        if len(prose) > 400:
+            prose = '…' + prose[-399:]
     if len(prose) > 400:
         prose = prose[:397] + '…'
     return prose
@@ -703,104 +829,203 @@ def cartographer_slice(cwe):
         return ''
 
 
+# --------------------------------------------------------------------------
+# Loop control — harness notices, not answer hints (no file is ever named).
+# --------------------------------------------------------------------------
+
+BUDGET_NOTICE = ('note: the terminal budget is nearly exhausted; you must call '
+                 'submit_vulnerable_files or submit_no_vulnerability_found before charged '
+                 'commands are exhausted. Files you have already inspected are candidates '
+                 'for your final submission.')
+CLOSED_NOTICE = ('note: the terminal budget is closed; call submit_vulnerable_files or '
+                 'submit_no_vulnerability_found now. No further terminal commands will be '
+                 'executed.')
+CLOSED_REJECTED = ('error: the terminal is closed; only submit_vulnerable_files or '
+                   'submit_no_vulnerability_found are available.')
+UNREAD_NOTICE = 'note: search results include files that have not yet been inspected or ranked.'
+DEGENERATE_NOTICE = ('error: the reply was rejected due to degenerate repetition; this turn '
+                     'was not charged against the terminal budget.')
+NO_CALL_NOTICE = ('You did not emit a valid tool call. Emit exactly one <tool_call> — a '
+                  'terminal command, submit_vulnerable_files, or submit_no_vulnerability_found.')
+
+_SEARCH_HIT = re.compile(r'^(?:\./)?([^:\s]+):\d+[:-]')
+_READ_VERBS = {'cat', 'head', 'tail', 'nl', 'sed'}
+
+
+def snapshot_files(root):
+    files = set()
+    for d, _, fs in os.walk(root):
+        for f in fs:
+            files.add(os.path.relpath(os.path.join(d, f), root))
+    return files
+
+
+def note_command(command, output, files, inspected, hits):
+    """Track files the model read (cat/head/tail/nl/sed on a path) and files
+    a search (rg/grep) turned up, from the first pipeline stage."""
+    try:
+        toks = shlex.split(command)
+    except ValueError:
+        return
+    stage = toks[:toks.index('|')] if '|' in toks else toks
+    if not stage:
+        return
+    verb = os.path.basename(stage[0])
+    paths = [t.lstrip('./') for t in stage[1:] if not t.startswith('-')]
+    if verb in _READ_VERBS:
+        inspected.update(p for p in paths if p in files)
+    elif verb in ('rg', 'grep'):
+        found = set()
+        for line in output.splitlines():
+            m = _SEARCH_HIT.match(line.strip())
+            if m and m.group(1).lstrip('./') in files:
+                found.add(m.group(1).lstrip('./'))
+        # A search of a single file prints bare line hits.
+        if not found and output.strip():
+            found.update(p for p in paths if p in files)
+        hits.update(found)
+
+
+def is_degenerate(text, min_seq=8, min_repeats=11):
+    """True when the reply contains a run of more than ten consecutive
+    repeats of the same token sequence (the model looping on itself)."""
+    toks = text.split()
+    n = len(toks)
+    for size in range(min_seq, n // min_repeats + 1):
+        for start in range(0, n - size * min_repeats + 1):
+            if toks[start] != toks[start + size]:
+                continue
+            unit = toks[start:start + size]
+            reps, pos = 1, start + size
+            while pos + size <= n and toks[pos:pos + size] == unit:
+                reps += 1
+                pos += size
+            if reps >= min_repeats:
+                return True
+    return False
+
+
+def _tool(text):
+    return {'role': 'tool', 'content': text}
+
+
 def localize(repo, cwe, context, max_commands):
     """Run the agentic loop. Returns a verdict dict (fail-open)."""
     started = time.time()
     result = {'verdict': 'error', 'candidates': [], 'commands_used': 0,
-              'cwe': cwe, 'transcript': []}
-    overlay = cartographer_slice(cwe)
-    user = ''
-    if overlay:
-        user += ('Repository security map (Cartographer overlay — candidate '
-                 'sites to investigate first):\n' + overlay + '\n\n')
-    if cwe:
-        user += f'Vulnerability class to locate: {cwe}\n'
-    if context:
-        user += ('Context (a user-filed issue/PR — it may or may not have '
-                 'security relevance; treat it as a pointer to the subsystem '
-                 'to inspect, not as a claim in either direction):\n'
-                 + context.strip()[:4000] + '\n')
-    if not cwe:
-        user += ('\nNo specific vulnerability class was reported. Use the '
-                 'security map above as your primary target list: inspect '
-                 'the dangerous-API sites in the subsystem the context '
-                 'touches, then submit the verdict the evidence supports.\n')
-    if not user.strip():
-        user = 'Locate any security vulnerability in this repository.'
+              'cwe': cwe, 'transcript': [], 'duplicates_suppressed': 0,
+              'degenerate_rejections': 0, 'forced_submission': False}
+    messages = build_messages(cwe, context, cartographer_slice(cwe), max_commands)
+    files = snapshot_files(repo)
+    inspected, hits = set(), set()
+    history = {}                 # command -> (turn, exit, output)
+    attempts = 0                 # charged + duplicate terminal calls
+    dup_run = no_call = degenerate = forced_turns = 0
+    forced = escalated = False
+    escalate_at = -(-max_commands * 4 // 5)      # ceil(0.8 * budget)
 
-    messages = [{'role': 'system', 'content': SYSTEM_PROMPT},
-                {'role': 'user', 'content': user}]
+    def close_terminal(note):
+        nonlocal forced
+        forced = True
+        result['forced_submission'] = True
+        return note + '\n\n' + CLOSED_NOTICE if note else CLOSED_NOTICE
 
-    no_call = 0   # consecutive turns with no parseable tool call
-    for step in range(max_commands):
+    max_turns = MAX_TERMINAL_ATTEMPTS + max_commands + FORCED_SUBMISSION_TURNS + 5
+    for _turn in range(max_turns):
         if time.time() - started > OVERALL_TIMEOUT:
             result['verdict'] = 'timeout'
             break
         try:
-            content = chat(messages)
+            content = generate(render_prompt(messages))
         except Exception as e:
             result['verdict'] = 'server_unreachable'
             result['error'] = str(e)
             return result           # fail-open: never blocks triage
-        messages.append({'role': 'assistant', 'content': content})
+
+        if is_degenerate(content):
+            degenerate += 1
+            result['degenerate_rejections'] += 1
+            if degenerate >= DEGENERATE_STOP:
+                result['verdict'] = 'degenerate'
+                break
+            messages.append(_tool(f'exit=1\n{DEGENERATE_NOTICE}'))
+            continue
+        degenerate = 0
+
         name, args = parse_tool_call(content)
+        if name not in ('terminal', 'submit_vulnerable_files', 'submit_no_vulnerability_found'):
+            no_call += 1
+            result.setdefault('non_call_replies', []).append((content or '')[:400])
+            if no_call >= UNPARSEABLE_STOP:
+                result['verdict'] = 'no_tool_call'
+                result['note'] = f'no tool call after {no_call} nudges — no verdict'
+                break
+            stripped = re.sub(r'(?s)^.*</think>', '', content).strip()
+            messages.append({'role': 'assistant', 'content': stripped})
+            messages.append({'role': 'user', 'content': NO_CALL_NOTICE})
+            continue
+        no_call = 0
+        messages.append({'role': 'assistant', 'content': '',
+                         'tool_calls': [{'name': name, 'arguments': args}]})
 
         if name == 'submit_vulnerable_files':
-            result['verdict'] = 'vulnerable'
             paths, per_file = _candidate_files(args)
+            result['verdict'] = 'vulnerable' if paths else 'no_candidates'
             result['candidates'] = paths
             result['candidate_reasons'] = per_file
             result['rationale'] = _extract_rationale(args, content)
             break
         if name == 'submit_no_vulnerability_found':
-            # A clean verdict must be earned. Fewer than MIN_CLEAN_COMMANDS
-            # executed commands means the model judged without actually
-            # inspecting code — record it distinctly so the action log /
-            # dashboard can track lazy-cleans the same way detect/gated
-            # tracks over-eager submits. Consumers treat both as clean
-            # (advisory either way); this is a quality signal, not a gate.
-            if result['commands_used'] < MIN_CLEAN_COMMANDS:
-                result['verdict'] = 'clean_unverified'
-            else:
-                result['verdict'] = 'clean'
+            # A clean verdict must be earned: one given after fewer than
+            # MIN_CLEAN_COMMANDS executed commands is recorded distinctly.
+            result['verdict'] = ('clean' if result['commands_used'] >= MIN_CLEAN_COMMANDS
+                                 else 'clean_unverified')
             break
-        if name == 'terminal':
-            no_call = 0
-            cmd = (args.get('command') or '').strip()
-            resp = run_command(cmd, repo)
-            result['commands_used'] += 1
-            result['transcript'].append({'command': cmd, 'response': resp[:500]})
-            tool_msg = f'<tool_response>\n{resp}\n</tool_response>'
-            remaining = max_commands - result['commands_used']
-            if remaining <= 3:
-                tool_msg += (f'\n\n[Only {remaining} command(s) left. If you have '
-                             'already found the vulnerable file(s), stop exploring '
-                             'and call submit_vulnerable_files now with the path(s) '
-                             'and a one-line rationale. If nothing relevant was '
-                             'found, call submit_no_vulnerability_found.]')
-            messages.append({'role': 'user', 'content': tool_msg})
+
+        # terminal
+        if forced:
+            forced_turns += 1
+            if forced_turns > FORCED_SUBMISSION_TURNS:
+                result['verdict'] = 'budget_exhausted'
+                break
+            messages.append(_tool(f'exit=1\n{CLOSED_REJECTED}'))
             continue
-        # No parseable tool call. The 1B model sometimes rambles instead of
-        # terminating (esp. generic mode on a non-security issue) — after a few
-        # consecutive non-calls, stop rather than burning the whole budget (was
-        # the #4414 'budget_exhausted' noise). This is not an inspected-and-
-        # clean result, so it gets its own verdict, and the replies are kept
-        # so unparsed tool-call formats can be diagnosed.
-        no_call += 1
-        result.setdefault('non_call_replies', []).append((content or '')[:400])
-        if no_call >= 3:
-            result['verdict'] = 'no_tool_call'
-            result['note'] = f'no tool call after {no_call} nudges — no verdict'
-            break
-        messages.append({'role': 'user', 'content':
-                         'You did not emit a valid tool call. If you found the '
-                         'vulnerable file(s), call submit_vulnerable_files now; if you '
-                         'found nothing relevant, call submit_no_vulnerability_found. '
-                         'Otherwise emit exactly one <tool_call> with a read-only '
-                         'command such as rg -n "pattern" src.'})
+        cmd = (args.get('command') or '').strip()
+        max_chars = args.get('max_chars') or DEFAULT_MAX_CHARS
+        attempts += 1
+        prior = history.get(cmd)
+        if prior is not None:
+            dup_run += 1
+            result['duplicates_suppressed'] += 1
+            p_turn, p_rc, p_out = prior
+            body = (f'note: this command was already run at turn {p_turn} with the same '
+                    'output; this turn was not charged against the terminal budget.\n'
+                    f'exit={p_rc}\n{p_out}')
+            if dup_run >= DUPLICATE_STOP or attempts >= MAX_TERMINAL_ATTEMPTS:
+                body = close_terminal(body)
+            result['transcript'].append({'command': cmd, 'duplicate': True})
+            messages.append(_tool(body))
+            continue
+        dup_run = 0
+        rc, out = run_command_ex(cmd, repo, max_chars)
+        result['commands_used'] += 1
+        history[cmd] = (result['commands_used'], rc, out)
+        note_command(cmd, out, files, inspected, hits)
+        result['transcript'].append({'command': cmd, 'exit': rc, 'response': out[:500]})
+        body = f'exit={rc}\n{out}'
+        if hits - inspected:
+            body += '\n\n' + UNREAD_NOTICE
+        if result['commands_used'] >= max_commands or attempts >= MAX_TERMINAL_ATTEMPTS:
+            body = close_terminal(body)
+        elif result['commands_used'] >= escalate_at and not escalated:
+            escalated = True
+            body += '\n\n' + BUDGET_NOTICE
+        messages.append(_tool(body))
     else:
         result['verdict'] = result['verdict'] if result['verdict'] != 'error' else 'budget_exhausted'
 
+    result['inspected_files'] = sorted(inspected)
+    result['unread_search_hits'] = sorted(hits - inspected)
     result['elapsed_s'] = round(time.time() - started, 1)
     return result
 

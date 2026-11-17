@@ -153,12 +153,12 @@ try:
         check(f'parse_tool_call {content[:60]!r} -> {args!r}',
               name == 'terminal' and args.get('command') == want)
 
-    real_chat = det.chat
-    det.chat = lambda messages, timeout=60: 'I think the bug is somewhere in src.'
+    real_gen = det.generate
+    det.generate = lambda prompt, timeout=60: 'I think the bug is somewhere in src.'
     try:
         res = det.localize(repo, '', 'test context', 15)
     finally:
-        det.chat = real_chat
+        det.generate = real_gen
     check(f'no tool call -> no_tool_call verdict ({res.get("verdict")})',
           res.get('verdict') == 'no_tool_call')
     check('non-call replies are kept for diagnosis',
