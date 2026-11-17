@@ -24,7 +24,8 @@ Covers:
   - run_command executes rg and sed against a temp repo (skipped if rg absent)
   - a symlink pointing outside the repo is refused when named bare, as a
     directory prefix, or behind '.'; symlink-following options of rg, grep,
-    find, tree, ls, du, stat and file are refused
+    find, tree, ls, du, stat and file are refused, except grep -R, which
+    becomes -r
   - a path attached to an option (--opt=/abs, -f/abs) is refused; an
     in-repo --opt=path still passes
   - command output that contains tool-call / tool-response / think / role
@@ -169,8 +170,7 @@ try:
     os.symlink(os.path.join(outside, 'secret'), os.path.join(repo, 'lnk'))
     os.symlink(outside, os.path.join(repo, 'src', 'dirlnk'))
     for cmd in ['cat lnk', 'head lnk', 'cat src/dirlnk/secret', 'ls src/dirlnk',
-                'rg -L TOP .', 'rg --follow TOP .', 'rg -nL TOP .', 'grep -R TOP .',
-                'grep -rRn TOP .', 'grep --dereference-recursive TOP .', 'grep -S -r TOP .',
+                'rg -L TOP .', 'rg --follow TOP .', 'rg -nL TOP .', 'grep -S -r TOP .', 'grep -rO TOP .',
                 'find -L . -name secret', 'find . -follow -name secret', 'find -H .',
                 'tree -l .', 'ls -L src', 'du -L .', 'stat -L lnk', 'file -L lnk',
                 'diff --from-file=/etc/hosts src/a.cpp', 'grep -f/etc/hosts src/a.cpp',
@@ -178,6 +178,12 @@ try:
                 'sort --files0-from=/etc/hosts']:
         stages, reason = det.validate_command(cmd, repo)
         check(f'rejected (symlink/option path): {cmd}', stages is None)
+    for cmd, want in [('grep -RIn x src', ['grep', '-rIn', 'x', 'src']),
+                      ('grep -nR -e R src', ['grep', '-nr', '-e', 'R', 'src']),
+                      ('grep -A2R x src', ['grep', '-A2R', 'x', 'src']),
+                      ('grep --dereference-recursive x src', ['grep', '-r', 'x', 'src'])]:
+        stages, reason = det.validate_command(cmd, repo)
+        check(f'grep -R becomes -r: {cmd} -> {stages}', stages == [want])
     for cmd in ['rg --glob=src/*.cpp memcpy src', 'grep -rn "a/b" src', 'rg -n -- -x src',
                 'ls src', 'cat src/a.cpp']:
         stages, reason = det.validate_command(cmd, repo)

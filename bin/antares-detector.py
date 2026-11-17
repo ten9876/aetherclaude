@@ -96,7 +96,7 @@ DANGEROUS_ARGS = {
 # taking short flags for cluster scanning)
 FOLLOW_OPTIONS = {
     'rg':   ({'--follow'}, 'L', set('ABCEFefgjmMrtT')),
-    'grep': ({'--dereference-recursive'}, 'RSO', set('ABCDdefm')),
+    'grep': (set(), 'SO', set('ABCDdefm')),
     'find': ({'-L', '-H', '-follow'}, '', set()),
     'tree': (set(), 'l', set('HLPITXo')),
     'ls':   (set(), 'LH', set()),
@@ -229,6 +229,26 @@ def _option_path_violation(tok, repo_root):
     return None
 
 
+def _normalize_grep(argv):
+    """grep -R is the model's habit (a third of its commands). It becomes
+    -r, which follows no symlinks met while recursing."""
+    vals = set('ABCDdefm')
+    out = [argv[0]]
+    for tok in argv[1:]:
+        if tok == '--dereference-recursive':
+            tok = '-r'
+        elif tok.startswith('-') and not tok.startswith('--') and 'R' in tok:
+            chars = []
+            for i, ch in enumerate(tok[1:]):
+                if ch in vals:
+                    chars.append(tok[1 + i:])
+                    break
+                chars.append('r' if ch == 'R' else ch)
+            tok = '-' + ''.join(chars)
+        out.append(tok)
+    return out
+
+
 def _follow_violation(verb, args):
     longs, shorts, vals = FOLLOW_OPTIONS.get(verb, (set(), '', set()))
     for tok in args:
@@ -332,6 +352,8 @@ def _validate_stage(argv, repo_root):
     if not argv:
         return None, 'empty pipeline stage'
     verb = os.path.basename(argv[0])
+    if verb == 'grep':
+        argv = _normalize_grep(argv)
     if verb in VERB_HINTS:
         return None, VERB_HINTS[verb]
     if verb not in ALLOWED_CMDS:
