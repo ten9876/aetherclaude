@@ -88,14 +88,33 @@ load_skill() {
     awk '/^---$/{c++; next} c >= 2' "${SKILLS_DIR}/${name}.md"
 }
 
-render_skill() {
-    local template="$1"; shift
-    local rendered="$template"
-    while [ $# -ge 2 ]; do
-        local k="$1" v="$2"; shift 2
-        rendered="${rendered//\$\{$k\}/$v}"
+# Replace ${NAME} placeholders in a template with values, in ONE pass over
+# the template: a value is inserted verbatim and never rescanned, so text
+# in an issue body ("&", "\1", or a literal "${ISSUE_COMMENTS}") stays as
+# written. Bash's ${t//pat/rep} is not used for this: since bash 5.2 an
+# unquoted "&" in the replacement inserts the matched pattern. Unknown
+# placeholders are left as they are.
+# Usage: substitute_vars TEMPLATE NAME VALUE [NAME VALUE ...]
+substitute_vars() {
+    local rest="$1" out="" name; shift
+    local -A vals=()
+    while [ $# -ge 2 ]; do vals["$1"]="$2"; shift 2; done
+    while [[ "$rest" == *'${'* ]]; do
+        out+="${rest%%'${'*}"
+        rest="${rest#*'${'}"
+        name="${rest%%\}*}"
+        if [[ "$rest" == *'}'* && "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && [[ -v "vals[$name]" ]]; then
+            out+="${vals[$name]}"
+            rest="${rest#*\}}"
+        else
+            out+='${'
+        fi
     done
-    printf "%s" "$rendered"
+    printf '%s' "$out$rest"
+}
+
+render_skill() {
+    substitute_vars "$@"
 }
 
 check_token_time() {

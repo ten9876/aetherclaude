@@ -989,17 +989,35 @@ load_skill() {
     fi
 }
 
+# Replace ${NAME} placeholders in a template with values, in ONE pass over
+# the template: a value is inserted verbatim and never rescanned, so text
+# in an issue body ("&", "\1", or a literal "${ISSUE_COMMENTS}") stays as
+# written. Bash's ${t//pat/rep} is not used for this: since bash 5.2 an
+# unquoted "&" in the replacement inserts the matched pattern. Unknown
+# placeholders are left as they are.
+# Usage: substitute_vars TEMPLATE NAME VALUE [NAME VALUE ...]
+substitute_vars() {
+    local rest="$1" out="" name; shift
+    local -A vals=()
+    while [ $# -ge 2 ]; do vals["$1"]="$2"; shift 2; done
+    while [[ "$rest" == *'${'* ]]; do
+        out+="${rest%%'${'*}"
+        rest="${rest#*'${'}"
+        name="${rest%%\}*}"
+        if [[ "$rest" == *'}'* && "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && [[ -v "vals[$name]" ]]; then
+            out+="${vals[$name]}"
+            rest="${rest#*\}}"
+        else
+            out+='${'
+        fi
+    done
+    printf '%s' "$out$rest"
+}
+
 # Substitute variables in a skill template
 render_skill() {
-    local template="$1"
-    shift
-    # Replace ${VAR_NAME} patterns with provided values
-    while [ $# -ge 2 ]; do
-        local var="$1" val="$2"
-        template="${template//\$\{${var}\}/${val}}"
-        shift 2
-    done
-    echo "$template"
+    substitute_vars "$@"
+    printf '\n'
 }
 
 # Read the `goal:` field from a skill file's YAML frontmatter, if present.
@@ -1043,14 +1061,9 @@ render_skill_full() {
     body=$(load_skill "$skill_name") || return 1
     goal=$(read_skill_goal "$skill_name")
     # Substitute ${VAR_NAME} placeholders in BOTH goal and body. Same
-    # arg-pair format as render_skill — single pass over the pairs.
-    local saved_args=("$@")
-    while [ $# -ge 2 ]; do
-        local var="$1" val="$2"
-        body="${body//\$\{${var}\}/${val}}"
-        goal="${goal//\$\{${var}\}/${val}}"
-        shift 2
-    done
+    # arg-pair format as render_skill.
+    body=$(substitute_vars "$body" "$@")
+    goal=$(substitute_vars "$goal" "$@")
     # The goal is appended as a closing instruction, NOT emitted as a `/goal`
     # slash command. A prompt beginning with `/goal` makes Claude Code treat
     # everything after it — goal text and skill body alike — as the goal
