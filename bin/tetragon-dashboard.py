@@ -11682,47 +11682,34 @@ a{{color:#0a6aba}}
                 self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
                 self._send_json({'findings': [], 'total': 0, 'runs': 0, 'error': str(ex)})
         elif self.path.startswith('/api/aibom'):
+            # Components and their open advisories come from the latest scan
+            # only: a package that drops out of a scan, or stops being looked
+            # up, takes its advisories with it. events.db keeps the history.
             try:
-                conn = sqlite3.connect(EVENTS_DB)
-                rows = conn.execute(
-                    'SELECT scan_time, name, category, description, detection, location, evidence FROM aibom_components ORDER BY id DESC LIMIT 200'
-                ).fetchall()
-                total = conn.execute('SELECT COUNT(*) FROM aibom_components').fetchone()[0]
-                # Latest vulns per component: pick the scan_time of the newest row per
-                # component_name and return only the vulns from that scan. Avoids
-                # surfacing CVEs that were resolved upstream + re-scanned clean.
-                vuln_rows = conn.execute('''
-                    WITH latest AS (
-                        SELECT component_name, MAX(scan_time) AS latest_time
-                        FROM aibom_vulnerabilities GROUP BY component_name
-                    )
-                    SELECT v.component_name, v.vuln_id, v.severity, v.score, v.summary, v.refs_json, v.purl
-                    FROM aibom_vulnerabilities v
-                    JOIN latest l ON v.component_name = l.component_name AND v.scan_time = l.latest_time
-                    ORDER BY v.component_name,
-                        CASE v.severity WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2
-                                        WHEN 'MEDIUM' THEN 3 WHEN 'LOW' THEN 4 ELSE 5 END,
-                        v.vuln_id
-                    LIMIT 1000
-                ''').fetchall()
-                conn.close()
-                vulns_by_component: dict = {}
-                for v in vuln_rows:
-                    refs = []
-                    try:
-                        refs = json.loads(v[5] or '[]')
-                    except Exception:
-                        pass
-                    vulns_by_component.setdefault(v[0], []).append({
-                        'id': v[1], 'severity': v[2], 'score': v[3],
-                        'summary': v[4], 'references': refs, 'purl': v[6],
-                    })
+                with open(AIBOM_LATEST) as af:
+                    aibom = json.load(af)
+                total = 0
+                try:
+                    conn = sqlite3.connect(EVENTS_DB)
+                    total = conn.execute('SELECT COUNT(*) FROM aibom_components').fetchone()[0]
+                    conn.close()
+                except Exception:
+                    pass
                 components = []
-                for r in rows:
+                for c in (aibom.get('aibom_analysis') or {}).get('components') or []:
+                    vulns = []
+                    for v in c.get('vulnerabilities') or []:
+                        refs = [r for r in ([v.get('url')] + list(v.get('references') or []))
+                                if isinstance(r, str) and r]
+                        vulns.append({'id': v.get('cve') or v.get('id', ''), 'severity': v.get('severity', 'UNKNOWN'),
+                                      'score': v.get('score'), 'summary': v.get('summary', ''),
+                                      'references': refs, 'purl': c.get('purl', '')})
                     components.append({
-                        'scan_time': r[0], 'name': r[1], 'category': r[2], 'description': r[3],
-                        'detection': r[4], 'location': r[5], 'evidence': r[6],
-                        'vulnerabilities': vulns_by_component.get(r[1], []),
+                        'scan_time': aibom.get('scan_time', ''), 'name': c.get('name', ''),
+                        'category': c.get('category', ''), 'description': c.get('description', ''),
+                        'detection': c.get('detection', ''), 'location': c.get('location', ''),
+                        'evidence': c.get('evidence', ''), 'osv_status': c.get('osv_status', ''),
+                        'vulnerabilities': vulns,
                     })
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
