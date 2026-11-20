@@ -26,8 +26,19 @@ CONFIG OVERRIDES (.aibom.json in target root or via --config)
       ]
     }
 
+INVENTORY SOURCES (merged, one record per component)
+    - THIRD_PARTY_LICENSES sections: name, version, pinned commit, license,
+      source, delivery (bundled / prebuilt / download-on-demand), Go module
+      tables and libraries bundled inside a prebuilt binary
+    - third_party/<dir>: VERSION.txt, COMMIT, README.aethersdr.md, version
+      defines in headers, license files
+    - FetchContent_Declare pins in the project's own CMake files
+    - KB detections (includes + CMake) for system and package-manager libraries
+
 DESIGN NOTES
     KB lives in data/cpp-aibom-components.json — adding components is a data PR.
+    OSV.dev lookups: versioned purls for ecosystems OSV indexes (Go, PyPI, …);
+    C/C++ sources by repository plus pinned commit or release tag (GIT).
     OSV.dev responses cached at ~/.cache/cpp-aibom/osv/ for 7 days.
     Confidence is high if both an include AND a cmake signal fire, medium if one
     fires, low only via .aibom.json override.
@@ -50,7 +61,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-VERSION = "2.0.1"
+VERSION = "2.1.0"
 
 
 def _real_home() -> Path:
@@ -323,11 +334,412 @@ def apply_overrides(detected: list[dict[str, Any]], cfg: dict[str, Any]) -> list
     return out
 
 
-# ── OSV.dev client ─────────────────────────────────────────────────────────────
-def osv_query(purl: str) -> list[dict[str, Any]]:
-    """Query OSV.dev for `purl`; return list of vulnerability dicts. Cached on disk."""
-    if not purl:
+# ── Declared inventory: THIRD_PARTY_LICENSES, third_party/, FetchContent ───────
+# The KB only finds libraries it already knows. The project's own license
+# manifest and its vendored tree name every component it ships, usually with
+# a version or pinned commit, so they are read as well and merged with the KB
+# detections (one record per component).
+_TPL_SECTION_RE = re.compile(r'^(\d+)\.[ \t]+(.+?)[ \t]*\n-{3,}[ \t]*$', re.MULTILINE)
+_URL_RE = re.compile(r'https?://[^\s)>,`]+')
+_SHA1_RE = re.compile(r'\b[0-9a-f]{40}\b')
+_VER_RE = re.compile(r'(?<![\w.-])(?:v|version\s+|tag\s+v?|release\s+v?|\()(\d+\.\d+(?:\.\d+)*)\b',
+                     re.IGNORECASE)
+_TP_PATH_RE = re.compile(r'third_party/([\w.+-]+(?:/[\w.+-]+)*)')
+_GO_ROW_RE = re.compile(r'^[ \t]+([a-z0-9][\w.-]*\.[a-z]{2,}(?:/[\w.~-]+)*)[ \t]+(v\d\S*)[ \t]+(\S+)[ \t]*$',
+                        re.MULTILINE)
+_BUNDLED_INSIDE_RE = re.compile(r'^[ \t]+-[ \t]+(\S+)[ \t]+(\S+)[ \t]+(https?://\S+)[ \t]*$', re.MULTILINE)
+_FETCHCONTENT_RE = re.compile(
+    r'FetchContent_Declare\s*\(\s*([\w.+-]+)\s+GIT_REPOSITORY\s+(\S+?)(?:\.git)?\s+GIT_TAG\s+([\w.+-]+)',
+    re.IGNORECASE)
+_HEADER_VER_RE = re.compile(r'#\s*define\s+\w*VERSION\w*\s+"v?(\d+\.\d+(?:\.\d+)*)"')
+_HEADER_MAJOR_RE = re.compile(r'#\s*define\s+([A-Z][A-Z0-9]*?)_(?:VERSION_)?MAJOR\s+(\d+)\b')
+# Purl types OSV.dev resolves by package version. C/C++ libraries are looked
+# up by repository and tag or commit instead (OSV's GIT ecosystem).
+_OSV_PURL_TYPES = {"golang", "pypi", "npm", "cargo", "maven", "nuget", "gem", "composer", "hex", "pub"}
+
+
+def _norm(name: str) -> str:
+    return re.sub(r'[^a-z0-9]', '', name.lower())
+
+
+def _first_url(text: str) -> str:
+    m = _URL_RE.search(text)
+    return m.group(0).rstrip('.') if m else ""
+
+
+def _field(body: str, *labels: str) -> str:
+    """First value of an indented `Label: value` line in a manifest section."""
+    for label in labels:
+        m = re.search(r'^[ \t]*%s:[ \t]+(.+)$' % label, body, re.MULTILINE)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+_LICENSE_NAMES = {
+    "zlib license": "Zlib",
+    "apache license 2.0": "Apache-2.0",
+    "apache license, version 2.0": "Apache-2.0",
+    "sil open font license, version 1.1": "OFL-1.1",
+    "artistic license 2.0": "Artistic-2.0",
+}
+
+
+def _clean_license(text: str) -> str:
+    text = re.sub(r'\s*\(.*', '', text).strip().rstrip('.;')
+    m = re.match(r'([A-Za-z0-9.+-]+(?: (?:OR|AND|WITH) [A-Za-z0-9.+-]+)*),\s', text)
+    if m and re.search(r'\d', m.group(1)):
+        text = m.group(1)  # "GPL-3.0-or-later, following the release's LICENSE"
+    low = text.lower()
+    for name, spdx in _LICENSE_NAMES.items():
+        if low == name or low.startswith(name + " ") or low.startswith(name + ","):
+            return spdx if low == name else text
+    return text
+
+
+def _license_field(body: str) -> str:
+    for m in re.finditer(r'^[ \t]*Licen[cs]es?(?: understanding)?:[ \t]+(.+)$', body, re.MULTILINE):
+        value = m.group(1).strip()
+        if not value.lower().startswith(("http://", "https://")):
+            return _clean_license(value)
+    return ""
+
+
+def classify_license_file(text: str) -> str:
+    """Best-effort SPDX id for a license file's text."""
+    t = " ".join(text.split()).lower()
+    # A GNU license text names the others in its preamble; its own title
+    # comes first, so the earliest GNU title decides.
+    head = t[:400]
+    gnu = sorted((head.find(k), kind) for k, kind in (
+        ("gnu lesser general public license", "LGPL"), ("gnu library general public license", "LGPL"),
+        ("gnu affero general public license", "AGPL"), ("gnu general public license", "GPL"))
+        if head.find(k) >= 0)
+    if gnu:
+        kind = gnu[0][1]
+        v3 = "version 3" in head[gnu[0][0]: gnu[0][0] + 120]
+        if kind == "LGPL":
+            return "LGPL-3.0-or-later" if v3 else "LGPL-2.1-or-later"
+        if kind == "AGPL":
+            return "AGPL-3.0-or-later"
+        return "GPL-3.0-or-later" if v3 else "GPL-2.0-or-later"
+    if "apache license" in t and "version 2.0" in t:
+        return "Apache-2.0"
+    if "gnu lesser general public license" in t or "gnu library general public license" in t:
+        return "LGPL-3.0-or-later" if "version 3" in t else "LGPL-2.1-or-later"
+    if "gnu affero general public license" in t:
+        return "AGPL-3.0-or-later"
+    if "gnu general public license" in t:
+        return "GPL-3.0-or-later" if "version 3" in t else "GPL-2.0-or-later"
+    if "mozilla public license" in t:
+        return "MPL-2.0"
+    if "sil open font license" in t:
+        return "OFL-1.1"
+    if "permission is hereby granted, free of charge" in t:
+        return "MIT"
+    if "redistribution and use in source and binary forms" in t:
+        return "BSD-3-Clause" if ("neither the name" in t or "the names of" in t) else "BSD-2-Clause"
+    if "this software is provided 'as-is'" in t:
+        return "Zlib"
+    if "creative commons" in t and "cc0" in t:
+        return "CC0-1.0"
+    if "public domain" in t:
+        return "LicenseRef-public-domain"
+    return ""
+
+
+def _purl_for(repo_url: str, version: str, commit: str, fallback: str = "") -> str:
+    m = re.match(r'https?://github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?(?:/|$)', repo_url or "")
+    base = f"pkg:github/{m.group(1)}/{m.group(2)}" if m else (fallback.split('@')[0] if fallback else "")
+    ref = version or commit
+    return f"{base}@{ref}" if base and ref else base
+
+
+def _record(name: str, **kw: Any) -> dict[str, Any]:
+    rec: dict[str, Any] = {
+        "name": name, "category": "dependency", "description": "", "license": "", "purl": "",
+        "ai_ml": False, "detection": "", "location": "", "evidence": "", "confidence": "high",
+        "include_hits": [], "cmake_hits": [], "vulnerabilities": [],
+        "version": "", "commit": "", "repo_url": "", "scope": "required", "delivery": "",
+        "third_party": "", "type": "library",
+    }
+    rec.update({k: v for k, v in kw.items() if v is not None})
+    return rec
+
+
+def _section_delivery(title: str, body: str) -> tuple[str, str, str] | None:
+    """(delivery, scope, cyclonedx type) for a manifest section, or None for
+    sections that record a reference consulted, not software shipped."""
+    t, b = title.lower(), " ".join(body.split()).lower()
+    if "no code was copied" in b or "no code is incorporated" in b:
+        return None
+    if "documentation build only" in t or "documentation build only" in b:
+        return ("documentation", "excluded", "file")
+    if "model weights only" in b or ("model" in t and "download-on-demand" in t):
+        return ("download", "optional", "machine-learning-model")
+    if "download-on-demand" in t or "not bundled" in b:
+        return ("download", "optional", "library")
+    if "community dx database" in t or "bundled at resources/" in b:
+        return ("bundled", "required", "data")
+    if "(optional)" in t or "absent unless the setup script" in b:
+        return ("prebuilt", "optional", "library")
+    if "statically linked" in b:
+        return ("linked", "required", "library")
+    return ("bundled", "required", "library")
+
+
+def parse_third_party_licenses(target: Path) -> list[dict[str, Any]]:
+    path = target / "THIRD_PARTY_LICENSES"
+    if not path.exists():
         return []
+    text = path.read_text(errors="replace")
+    heads = list(_TPL_SECTION_RE.finditer(text))
+    out: list[dict[str, Any]] = []
+    for i, h in enumerate(heads):
+        title = h.group(2)
+        body = text[h.end(): heads[i + 1].start() if i + 1 < len(heads) else len(text)]
+        kind = _section_delivery(title, body)
+        if kind is None:
+            continue
+        delivery, scope, ctype = kind
+        name_part = re.split(r'\s+[—–-]\s+', title, maxsplit=1)
+        name = re.sub(r'\s*\([^)]*\)', '', name_part[0]).strip()
+        desc = name_part[1].strip() if len(name_part) > 1 else ""
+        version = ""
+        m = re.match(r'^(.*?)\s+v?(\d+\.\d+(?:\.\d+)*)$', name)
+        if m:
+            name, version = m.group(1), m.group(2)
+        prose = "\n".join(l for l in _GO_ROW_RE.sub("", body).splitlines()
+                          if not re.search(r'licen[cs]e|copyright|https?://', l, re.IGNORECASE))
+        if not version:
+            vm = _VER_RE.search(prose)
+            version = vm.group(1) if vm else ""
+        commit = ""
+        for line in body.splitlines():
+            if re.search(r'commit|import:', line, re.IGNORECASE):
+                cm = _SHA1_RE.search(line)
+                if cm:
+                    commit = cm.group(0)
+                    break
+        tp = ""
+        tm = re.search(r'(?:bundled|vendored|staged|built from source|binaries)\s+(?:at|under|as[^\n]*?at)\s+'
+                       r'third_party/([\w.+-]+(?:/[\w.+-]+)*)', body, re.IGNORECASE)
+        if tm:
+            tp = tm.group(1).strip('/')
+        if not commit and tp and (target / "third_party" / tp / "COMMIT").is_file():
+            cm = _SHA1_RE.search((target / "third_party" / tp / "COMMIT").read_text(errors="replace"))
+            commit = cm.group(0) if cm else ""
+        repo = _first_url(_field(body, "Source", "Release", "Spec"))
+        lic = _license_field(body)
+        if _GO_ROW_RE.search(body) and "never linked into aethersdr" in " ".join(body.split()).lower():
+            ctype = "application"  # a separate program in the tree; its modules follow
+        rec = _record(
+            name, description=desc, license=lic, version=version, commit=commit, repo_url=repo,
+            scope=scope, delivery=delivery, third_party=tp, type=ctype,
+            ai_ml=ctype == "machine-learning-model",
+            detection=f"declared — THIRD_PARTY_LICENSES section {h.group(1)}",
+            location=str(path), evidence=title, purl=_purl_for(repo, version, commit))
+        out.append(rec)
+
+        # Go modules listed as a table (vendored for a helper program).
+        excluded_from = body.lower().find("vendored but not linked")
+        for gm in _GO_ROW_RE.finditer(body):
+            mod, ver, glic = gm.groups()
+            out.append(_record(
+                mod, category="dependency", license=glic, version=ver,
+                purl=f"pkg:golang/{mod}@{ver}", delivery="vendored",
+                scope="excluded" if 0 <= excluded_from < gm.start() else "required",
+                detection=f"declared — THIRD_PARTY_LICENSES section {h.group(1)} (Go module of {name})",
+                location=str(path), evidence=gm.group(0).strip(), confidence="high"))
+        # Libraries bundled inside a prebuilt binary ("- name  License  URL").
+        for bm in _BUNDLED_INSIDE_RE.finditer(body):
+            sub, slic, surl = bm.groups()
+            if _norm(sub) == _norm(name):
+                continue
+            out.append(_record(
+                sub, license=slic, repo_url=surl, purl=_purl_for(surl, "", ""), scope=scope,
+                delivery=f"inside {name}",
+                detection=f"declared — THIRD_PARTY_LICENSES section {h.group(1)} (bundled in {name})",
+                location=str(path), evidence=bm.group(0).strip()))
+    return out
+
+
+def _license_of_dir(d: Path) -> str:
+    """SPDX ids of the directory's license files; several distinct ones
+    (zstd ships LICENSE and COPYING) mean the code is offered under either."""
+    found: list[str] = []
+    for f in sorted(d.iterdir()):
+        if f.is_file() and re.match(r'(licen[cs]e|copying)', f.name, re.IGNORECASE):
+            spdx = classify_license_file(f.read_text(errors="replace")[:20000])
+            if spdx and spdx not in found:
+                found.append(spdx)
+    return " OR ".join(found)
+
+
+def _version_of_dir(d: Path) -> tuple[str, str, str]:
+    """(version, commit, upstream url) recorded inside a vendored directory."""
+    version = commit = upstream = ""
+    vt = d / "VERSION.txt"
+    if vt.is_file():
+        txt = vt.read_text(errors="replace")
+        m = re.search(r'\bv?(\d+\.\d+(?:\.\d+)*)\b', txt)
+        version = m.group(1) if m else ""
+        upstream = _first_url(txt)
+    if (d / "COMMIT").is_file():
+        m = _SHA1_RE.search((d / "COMMIT").read_text(errors="replace"))
+        commit = m.group(0) if m else ""
+    ra = d / "README.aethersdr.md"
+    if ra.is_file():
+        txt = ra.read_text(errors="replace")
+        for line in txt.splitlines():
+            if not commit and re.search(r'commit', line, re.IGNORECASE) and _SHA1_RE.search(line):
+                commit = _SHA1_RE.search(line).group(0)
+            if not upstream and re.search(r'upstream', line, re.IGNORECASE) and _URL_RE.search(line):
+                upstream = _first_url(line)
+    if not version:
+        headers = sorted(d.rglob("*.h"), key=lambda p: (_norm(d.name) not in _norm(p.stem), len(p.parts)))
+        for hf in headers[:200]:
+            text = hf.read_text(errors="replace")[:100000]
+            m = _HEADER_VER_RE.search(text)
+            if m:
+                version = m.group(1)
+                break
+            m = _HEADER_MAJOR_RE.search(text)
+            if m:
+                pre = re.escape(m.group(1))
+                parts = [m.group(2)]
+                for part in ("MINOR", "(?:PATCH|REVISION|MICRO|RELEASE)"):
+                    pm = re.search(r'#\s*define\s+%s_(?:VERSION_)?%s\s+(\d+)\b' % (pre, part), text)
+                    if not pm:
+                        break
+                    parts.append(pm.group(1))
+                if len(parts) >= 2:
+                    version = ".".join(parts)
+                    break
+    return version, commit, upstream
+
+
+def scan_vendored(target: Path) -> dict[str, dict[str, Any]]:
+    root = target / "third_party"
+    out: dict[str, dict[str, Any]] = {}
+    if not root.is_dir():
+        return out
+    for d in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith('.')):
+        version, commit, upstream = _version_of_dir(d)
+        out[d.name] = _record(
+            d.name, license=_license_of_dir(d), version=version, commit=commit, repo_url=upstream,
+            delivery="bundled", third_party=d.name,
+            detection="vendored — third_party/ directory", location=str(d),
+            evidence=f"third_party/{d.name}/", purl=_purl_for(upstream, version, commit))
+    return out
+
+
+def scan_fetchcontent(cmakes: list[Path], target: Path) -> list[dict[str, Any]]:
+    out = []
+    for cf in cmakes:
+        if "third_party" in cf.relative_to(target).parts:
+            continue  # a vendored library's own optional fetches
+        text = cf.read_text(errors="replace")
+        for m in _FETCHCONTENT_RE.finditer(text):
+            name, repo, tag = m.groups()
+            version = tag.lstrip('v') if re.match(r'v?\d', tag) else tag
+            commit = tag if _SHA1_RE.fullmatch(tag) else ""
+            out.append(_record(
+                name, version="" if commit else version, commit=commit, repo_url=repo,
+                delivery="fetched at build time", detection="cmake — FetchContent_Declare",
+                location=str(cf), evidence=_line_for(text, m.start()),
+                purl=_purl_for(repo, "" if commit else version, commit)))
+    return out
+
+
+def _fill(dst: dict[str, Any], src: dict[str, Any], keys: tuple[str, ...]) -> None:
+    for k in keys:
+        if not dst.get(k) and src.get(k):
+            dst[k] = src[k]
+
+
+def merge_inventory(detected: list[dict[str, Any]], declared: list[dict[str, Any]],
+                    vendored: dict[str, dict[str, Any]], fetched: list[dict[str, Any]],
+                    kb: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One record per component: manifest sections first, then vendored
+    directories they don't cover, then fetched and KB-detected libraries."""
+    out: list[dict[str, Any]] = []
+    for rec in declared:
+        v = vendored.pop(rec["third_party"], None) if rec["third_party"] else None
+        if v:
+            _fill(rec, v, ("version", "commit", "repo_url", "license"))
+            rec["purl"] = _purl_for(rec["repo_url"], rec["version"], rec["commit"], rec["purl"])
+        out.append(rec)
+    out.extend(vendored.values())
+    by_name = {_norm(r["name"]): r for r in out}
+    for rec in fetched:
+        if _norm(rec["name"]) in by_name:
+            _fill(by_name[_norm(rec["name"])], rec, ("version", "commit", "repo_url"))
+        else:
+            out.append(rec)
+            by_name[_norm(rec["name"])] = rec
+    by_dir = {r["third_party"]: r for r in out if r["third_party"]}
+    kb_by_name = {c["name"]: c for c in kb}
+    for det in detected:
+        meta = kb_by_name.get(det["name"], {})
+        target_rec = by_dir.get(meta.get("third_party", "")) or by_name.get(_norm(det["name"]))
+        if target_rec is None:
+            det.update({"version": det.get("version", ""), "commit": "", "repo_url": meta.get("repo_url", ""),
+                        "scope": meta.get("scope", det.get("scope", "required")), "delivery": det.get("delivery", "system / package manager"),
+                        "third_party": meta.get("third_party", ""), "type": det.get("type", "library")})
+            out.append(det)
+            continue
+        target_rec["category"] = det["category"]
+        target_rec["ai_ml"] = target_rec["ai_ml"] or det["ai_ml"]
+        target_rec["confidence"] = det["confidence"] if det["confidence"] == "high" else target_rec["confidence"]
+        target_rec["include_hits"] = det["include_hits"]
+        target_rec["cmake_hits"] = det["cmake_hits"]
+        target_rec["detection"] = f'{target_rec["detection"]}; {det["detection"]}'
+        _fill(target_rec, det, ("description", "license"))
+        _fill(target_rec, meta, ("repo_url",))
+        if not target_rec["purl"] or target_rec["purl"].startswith("pkg:generic"):
+            target_rec["purl"] = _purl_for(target_rec["repo_url"], target_rec["version"],
+                                           target_rec["commit"], det["purl"])
+    return out
+
+
+# ── OSV.dev client ─────────────────────────────────────────────────────────────
+def osv_queries(rec: dict[str, Any]) -> list[dict[str, Any]]:
+    """OSV.dev query bodies for a component. Versioned purls of ecosystems
+    OSV indexes go by purl; C/C++ sources by repository plus commit or tag."""
+    purl, version, commit, repo = rec.get("purl", ""), rec.get("version", ""), rec.get("commit", ""), rec.get("repo_url", "")
+    ptype = purl[4:].split('/', 1)[0] if purl.startswith("pkg:") else ""
+    if ptype in _OSV_PURL_TYPES and "@" in purl:
+        return [{"package": {"purl": purl}}]
+    m = re.match(r'(https?://(?:github\.com|gitlab\.[\w.]+)/[\w.-]+/[\w.-]+?)(?:\.git)?(?:/|$)', repo or "")
+    if m:
+        if commit:
+            return [{"commit": commit}]
+        if version:
+            tags = [version] if version.startswith('v') else [version, f"v{version}"]
+            return [{"version": t, "package": {"name": m.group(1), "ecosystem": "GIT"}} for t in tags]
+        return []
+    if purl and "@" not in purl and ptype not in ("github", "generic"):
+        return [{"package": {"purl": purl}}]
+    return []
+
+
+def osv_lookup(rec: dict[str, Any]) -> list[dict[str, Any]]:
+    seen: dict[str, dict[str, Any]] = {}
+    for q in osv_queries(rec):
+        for v in osv_query(q):
+            seen.setdefault(v["id"], v)
+    return list(seen.values())
+
+
+def osv_query(query: dict[str, Any] | str) -> list[dict[str, Any]]:
+    """Query OSV.dev; return list of vulnerability dicts. Cached on disk.
+    A bare string is taken as a purl (the original call form)."""
+    if not query:
+        return []
+    if isinstance(query, str):
+        query = {"package": {"purl": query}}
+    purl = json.dumps(query, sort_keys=True)
     OSV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_file = OSV_CACHE_DIR / f"{_purl_hash(purl)}.json"
     if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < OSV_CACHE_TTL:
@@ -338,7 +750,7 @@ def osv_query(purl: str) -> list[dict[str, Any]]:
         except Exception:
             pass  # fall through to refetch
 
-    body = json.dumps({"package": {"purl": purl}}).encode()
+    body = json.dumps(query).encode()
     req = Request(OSV_API_URL, data=body, method="POST",
                   headers={"Content-Type": "application/json", "User-Agent": f"cpp-aibom/{VERSION}"})
 
@@ -450,7 +862,7 @@ def _cvss_base_score(vector: str) -> float | None:
 
 def enrich_with_osv(detected: list[dict[str, Any]]) -> None:
     for d in detected:
-        d["vulnerabilities"] = osv_query(d.get("purl", ""))
+        d["vulnerabilities"] = osv_lookup(d)
 
 
 # ── Output: aibom-json (dashboard-compatible) ──────────────────────────────────
@@ -485,26 +897,44 @@ def emit_cyclonedx(target: Path, components: list[dict[str, Any]]) -> dict[str, 
     target_ref = "urn:component:root"
     cdx_components = []
     cdx_vulns = []
+    used_refs: set[str] = set()
     for c in components:
         ref = f"urn:component:{_slug(c['name'])}"
+        n = 2
+        while ref in used_refs:
+            ref = f"urn:component:{_slug(c['name'])}-{n}"
+            n += 1
+        used_refs.add(ref)
         # ML-BOM: ai_ml components get type=machine-learning-model
-        ctype = "machine-learning-model" if c["ai_ml"] else "library"
+        ctype = c.get("type") or "library"
+        if c["ai_ml"] and ctype == "library":
+            ctype = "machine-learning-model"
         comp: dict[str, Any] = {
             "bom-ref": ref,
             "type": ctype,
             "name": c["name"],
-            "description": c["description"],
-            "properties": [
-                {"name": "aibom:category", "value": c["category"]},
-                {"name": "aibom:confidence", "value": c["confidence"]},
-                {"name": "aibom:detection", "value": c["detection"]},
-                {"name": "aibom:location", "value": c["location"]},
-            ],
         }
+        if c.get("version") or c.get("commit"):
+            comp["version"] = c.get("version") or c["commit"]
+        comp["description"] = c["description"]
+        comp["scope"] = c.get("scope") or "required"
+        props = [
+            {"name": "aibom:category", "value": c["category"]},
+            {"name": "aibom:confidence", "value": c["confidence"]},
+            {"name": "aibom:detection", "value": c["detection"]},
+            {"name": "aibom:location", "value": c["location"]},
+        ]
+        for key in ("delivery", "commit", "third_party"):
+            if c.get(key):
+                props.append({"name": f"aibom:{key}", "value": c[key]})
+        comp["properties"] = props
         if c["purl"]:
             comp["purl"] = c["purl"]
         if c["license"]:
-            comp["licenses"] = [{"license": _license_entry(c["license"])}]
+            comp["licenses"] = [_license_choice(c["license"])]
+        if c.get("repo_url"):
+            kind = "vcs" if re.match(r'https?://(github\.com|gitlab\.)', c["repo_url"]) else "website"
+            comp["externalReferences"] = [{"type": kind, "url": c["repo_url"]}]
         cdx_components.append(comp)
         for v in c["vulnerabilities"]:
             cdx_vulns.append({
@@ -531,20 +961,37 @@ def emit_cyclonedx(target: Path, components: list[dict[str, Any]]) -> dict[str, 
                     "version": VERSION,
                 }],
             },
-            "component": {
-                "bom-ref": target_ref,
-                "type": "application",
-                "name": target.name or "target",
-            },
+            "component": _root_component(target, target_ref),
         },
         "components": cdx_components,
         "vulnerabilities": cdx_vulns,
     }
 
 
+def _root_component(target: Path, ref: str) -> dict[str, Any]:
+    root: dict[str, Any] = {"bom-ref": ref, "type": "application", "name": target.name or "target"}
+    try:
+        import subprocess
+        head = subprocess.run(["git", "-C", str(target), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=10).stdout.strip()
+        if _SHA1_RE.fullmatch(head):
+            root["version"] = head
+    except (OSError, ValueError):
+        pass
+    return root
+
+
+def _license_choice(text: str) -> dict[str, Any]:
+    """A CycloneDX license choice: an SPDX expression for "A OR B" forms,
+    otherwise a single license by id or name."""
+    if re.fullmatch(r'[A-Za-z0-9.+-]+(?: (?:OR|AND|WITH) [A-Za-z0-9.+-]+)+', text):
+        return {"expression": text}
+    return {"license": _license_entry(text)}
+
+
 def _license_entry(spdx: str) -> dict[str, str]:
     # SPDX IDs use specific syntax; treat anything unrecognized as `name`.
-    if re.match(r'^[A-Za-z0-9.+-]+$', spdx) and "-" in spdx:
+    if re.match(r'^[A-Za-z0-9.+-]+$', spdx) and ("-" in spdx or spdx in {"MIT", "ISC", "Zlib", "blessing", "Unlicense", "curl", "libpng"}):
         return {"id": spdx}
     return {"name": spdx}
 
@@ -687,6 +1134,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
         rec = match_component(comp, sig)
         if rec:
             detected.append(rec)
+    detected = merge_inventory(detected, parse_third_party_licenses(target), scan_vendored(target),
+                               scan_fetchcontent(cmakes, target), kb)
     detected = apply_overrides(detected, cfg)
     detected.sort(key=lambda c: (c["category"], c["name"]))
 

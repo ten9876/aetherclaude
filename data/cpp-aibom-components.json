@@ -1,5 +1,5 @@
 {
-  "$comment": "cpp-aibom knowledge base. Each entry's `detect` block lists signals the scanner matches in source/CMake files. Confidence = high (both include AND cmake fire), medium (only one fires), or low (fuzzy only). Adding a component is a data-only PR. Schema: name (unique), category, description, license (SPDX), purl (used for OSV.dev), detect.include (header substring list), detect.cmake (find_package/target_link_libraries/include name list), ai_ml (bool: ML inference component, changes CycloneDX type to ml-model).",
+  "$comment": "cpp-aibom knowledge base. Each entry's `detect` block lists signals the scanner matches in source/CMake files. Confidence = high (both include AND cmake fire), medium (only one fires), or low (fuzzy only). Adding a component is a data-only PR. Schema: name (unique), category, description, license (SPDX), purl (used for OSV.dev), detect.include (header substring list), detect.cmake (find_package/target_link_libraries/include name list), ai_ml (bool: ML inference component, changes CycloneDX type to ml-model), third_party (vendored directory name, merges the KB match with that directory's record), repo_url (upstream repository, used for OSV.dev GIT lookups), scope (CycloneDX scope when not required).",
   "version": 1,
   "categories": ["dsp", "audio_io", "audio_dsp", "audio_codec", "audio_ml", "rpc", "ui", "network", "hardware", "dependency", "system", "other"],
   "components": [
@@ -17,6 +17,7 @@
       "description": "Fastest Fourier Transform in the West",
       "license": "GPL-2.0-or-later",
       "purl": "pkg:generic/fftw",
+      "third_party": "fftw3",
       "detect": {"include": ["fftw3.h"], "cmake": ["FFTW", "FFTW3"]}
     },
     {
@@ -57,6 +58,7 @@
       "description": "High-quality audio resampler",
       "license": "MIT",
       "purl": "pkg:github/avaneev/r8brain-free-src",
+      "third_party": "r8brain",
       "detect": {"include": ["CDSPResampler.h", "r8bbase.h"], "cmake": ["r8brain"]}
     },
     {
@@ -98,6 +100,7 @@
       "license": "BSD-3-Clause",
       "purl": "pkg:github/xiph/rnnoise",
       "ai_ml": true,
+      "third_party": "rnnoise",
       "detect": {"include": ["rnnoise.h"], "cmake": ["rnnoise", "RNNoise"]}
     },
     {
@@ -116,6 +119,7 @@
       "license": "MIT",
       "purl": "pkg:github/ggerganov/ggmorse",
       "ai_ml": true,
+      "third_party": "ggmorse",
       "detect": {"include": ["ggmorse/ggmorse.h"], "cmake": ["ggmorse"]}
     },
     {
@@ -125,6 +129,7 @@
       "license": "MIT",
       "purl": "pkg:github/ggerganov/whisper.cpp",
       "ai_ml": true,
+      "third_party": "whisper.cpp",
       "detect": {"include": ["whisper.h"], "cmake": ["whisper"]}
     },
     {
@@ -240,6 +245,7 @@
       "description": "Lossless data compression",
       "license": "Zlib",
       "purl": "pkg:generic/zlib",
+      "third_party": "zlib",
       "detect": {"include": ["zlib.h"], "cmake": ["ZLIB"]}
     },
     {
@@ -248,6 +254,7 @@
       "description": "Embedded SQL database",
       "license": "blessing",
       "purl": "pkg:generic/sqlite",
+      "third_party": "sqlite",
       "detect": {"include": ["sqlite3.h"], "cmake": ["SQLite3"]}
     },
     {
@@ -256,7 +263,76 @@
       "description": "libmosquitto MQTT client (Phase 1 station integration)",
       "license": "EPL-2.0",
       "purl": "pkg:generic/mosquitto",
+      "third_party": "mosquitto",
       "detect": {"include": ["mosquitto.h", "mqtt_protocol.h"], "cmake": ["mosquitto", "Mosquitto"]}
+    },
+    {
+      "name": "QtKeychain",
+      "category": "system",
+      "description": "Platform credential-store access for Qt (Keychain, Credential Manager, Secret Service)",
+      "license": "BSD-3-Clause",
+      "purl": "pkg:github/frankosterfeld/qtkeychain",
+      "repo_url": "https://github.com/frankosterfeld/qtkeychain",
+      "detect": {"include": ["qt6keychain/keychain.h", "qtkeychain/keychain.h"], "cmake": ["Qt6Keychain", "qt6keychain"]}
+    },
+    {
+      "name": "librtlsdr",
+      "category": "hardware",
+      "description": "RTL-SDR USB dongle driver library",
+      "license": "GPL-2.0-or-later",
+      "purl": "pkg:github/osmocom/rtl-sdr",
+      "repo_url": "https://github.com/osmocom/rtl-sdr",
+      "scope": "optional",
+      "detect": {"include": ["rtl-sdr.h"], "cmake": ["RTLSDR", "librtlsdr", "PkgConfig::RTLSDR"]}
+    },
+    {
+      "name": "PipeWire",
+      "category": "audio_io",
+      "description": "Linux audio server client library",
+      "license": "MIT",
+      "purl": "pkg:generic/pipewire",
+      "repo_url": "https://gitlab.freedesktop.org/pipewire/pipewire",
+      "scope": "optional",
+      "detect": {"include": ["pipewire/pipewire.h"], "cmake": ["PIPEWIRE_NATIVE", "libpipewire-0.3"]}
+    },
+    {
+      "name": "libmspack",
+      "category": "dependency",
+      "description": "Microsoft CAB/CHM/LZX decompression library",
+      "license": "LGPL-2.1-only",
+      "purl": "pkg:github/kyz/libmspack",
+      "repo_url": "https://github.com/kyz/libmspack",
+      "third_party": "libmspack",
+      "detect": {"include": ["mspack.h"], "cmake": ["libmspack", "PkgConfig::libmspack"]}
+    },
+    {
+      "name": "RtMidi",
+      "category": "hardware",
+      "description": "Cross-platform MIDI I/O",
+      "license": "MIT",
+      "purl": "pkg:github/thestk/rtmidi",
+      "repo_url": "https://github.com/thestk/rtmidi",
+      "third_party": "rtmidi",
+      "detect": {"include": ["RtMidi.h"], "cmake": ["rtmidi", "PkgConfig::rtmidi"]}
+    },
+    {
+      "name": "Vulkan",
+      "category": "system",
+      "description": "Vulkan loader and glslc shader compiler (optional GPU speech-to-text backend)",
+      "license": "Apache-2.0",
+      "purl": "pkg:generic/vulkan-loader",
+      "scope": "optional",
+      "detect": {"include": ["vulkan/vulkan.h"], "cmake": ["Vulkan"]}
+    },
+    {
+      "name": "SPIRV-Headers",
+      "category": "system",
+      "description": "SPIR-V headers (optional GPU speech-to-text backend)",
+      "license": "MIT",
+      "purl": "pkg:github/KhronosGroup/SPIRV-Headers",
+      "repo_url": "https://github.com/KhronosGroup/SPIRV-Headers",
+      "scope": "optional",
+      "detect": {"include": [], "cmake": ["SPIRV-Headers"]}
     }
   ]
 }
