@@ -2837,6 +2837,19 @@ def _contributor_points():
 def _leaderboard_page():
     return open(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'leaderboard.html'), 'rb').read()
 
+# ── Supply chain (/supply-chain) ─────────────────────────────────────────
+# Built per request from the nightly cpp-aibom scan, so a new scan shows
+# at once; the page itself is read from disk like the leaderboard's.
+AIBOM_LATEST = '/Users/aetherclaude/logs/aibom-latest.json'
+import supply_chain  # noqa: E402
+
+def _supply_chain_page():
+    return open(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'supply-chain.html'), 'rb').read()
+
+def supply_chain_data():
+    with open(AIBOM_LATEST) as fh:
+        return supply_chain.build(json.load(fh))
+
 # ── Public mirror (contributors.aethersdr.com) ──────────────────────────
 # A Cloudflare Worker copies /leaderboard and /api/leaderboard into its own
 # store. This watcher asks it to sync as soon as the standings change, and
@@ -6815,6 +6828,7 @@ cs+=`<div class="si clickable" onclick="showAntares()"><span class="n"><span cla
 cs+=`<div class="si"><span class="n muted">AI Defense SDK</span><span class="c muted">pending license</span></div>`;
 cs+=`<div class="si"><span class="n muted">A2A Scanner</span><span class="c muted">single agent (N/A)</span></div>`;
 cs+=`<div class="si"><span class="n">Project SBOM</span><span class="c"><a href="/sbom.json" target="_blank" style="color:#5de3ff;text-decoration:none">View</a></span></div>`;
+cs+=`<div class="si"><span class="n">Supply chain CVEs</span><span class="c"><a href="/supply-chain" target="_blank" style="color:#5de3ff;text-decoration:none">View</a></span></div>`;
 cs+=`<div class="si"><span class="n">Agent SBOM</span><span class="c"><a href="/agent-sbom.json" target="_blank" style="color:#5de3ff;text-decoration:none">View</a></span></div>`;
 cs+=`<div class="si" id="carto-row"><span class="n"><span class="stag tetragon">map</span> Cartographer</span><span class="c muted" id="carto-val">…</span></div>`;
 document.getElementById('cisco-scanners').innerHTML=cs;
@@ -10646,6 +10660,25 @@ class H(BaseHTTPRequestHandler):
             except Exception as _e:
                 _log_exc('api_leaderboard', _e)
                 body = json.dumps({'error': 'standings unavailable'}).encode()
+                self.send_response(503)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Cache-Control', 'no-cache'); self.end_headers()
+            self.wfile.write(body)
+        elif self.path == '/supply-chain' or self.path.startswith('/supply-chain?'):
+            try:
+                page = _supply_chain_page()
+                self.send_response(200); self.send_header('Content-Type', 'text/html')
+                self.send_header('Cache-Control', 'no-cache'); self.end_headers()
+                self.wfile.write(page)
+            except OSError:
+                self.send_response(404); self.end_headers()
+        elif self.path == '/api/supply-chain':
+            try:
+                body = json.dumps(supply_chain_data()).encode()
+                self.send_response(200)
+            except Exception as _e:
+                _log_exc('api_supply_chain', _e)
+                body = json.dumps({'error': 'supply-chain data unavailable'}).encode()
                 self.send_response(503)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Cache-Control', 'no-cache'); self.end_headers()

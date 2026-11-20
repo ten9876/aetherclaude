@@ -84,7 +84,7 @@ DEFAULT_OUT = Path("/Users/aetherclaude/logs/aibom-latest.json")
 OSV_CACHE_DIR = Path(
     os.environ.get("CPP_AIBOM_CACHE") or str(_real_home() / ".cache" / "cpp-aibom" / "osv")
 )
-OSV_CACHE_TTL = 7 * 24 * 3600  # seconds
+OSV_CACHE_TTL = 24 * 3600  # seconds
 OSV_API_URL = "https://api.osv.dev/v1/query"
 OSV_TIMEOUT = 15
 OSV_MAX_RETRIES = 2
@@ -725,139 +725,256 @@ def osv_queries(rec: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def osv_lookup(rec: dict[str, Any]) -> list[dict[str, Any]]:
-    seen: dict[str, dict[str, Any]] = {}
-    for q in osv_queries(rec):
-        for v in osv_query(q):
-            seen.setdefault(v["id"], v)
-    return list(seen.values())
-
-
-def osv_query(query: dict[str, Any] | str) -> list[dict[str, Any]]:
-    """Query OSV.dev; return list of vulnerability dicts. Cached on disk.
-    A bare string is taken as a purl (the original call form)."""
-    if not query:
+    """Advisories affecting this component, one per vulnerability (records
+    that alias each other are merged). Sets rec["osv_status"]."""
+    queries = osv_queries(rec)
+    if not queries:
+        if not (rec.get("version") or rec.get("commit")):
+            rec["osv_status"] = "not checked: version unknown"
+        else:
+            rec["osv_status"] = "not checked: no OSV-indexed source"
         return []
-    if isinstance(query, str):
-        query = {"package": {"purl": query}}
-    purl = json.dumps(query, sort_keys=True)
-    OSV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_file = OSV_CACHE_DIR / f"{_purl_hash(purl)}.json"
-    if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < OSV_CACHE_TTL:
-        try:
-            cached = json.loads(cache_file.read_text())
-            # Cached entries are already summarized (post-`_summarize_vulns`).
-            return cached.get("summarized", [])
-        except Exception:
-            pass  # fall through to refetch
+    found: list[dict[str, Any]] = []
+    failed = False
+    for q in queries:
+        res = osv_query(q)
+        if res is None:
+            failed = True
+            continue
+        found.extend(res)
+    rec["osv_status"] = "lookup failed" if failed and not found else "checked"
+    return _merge_aliases(found)
 
-    body = json.dumps(query).encode()
-    req = Request(OSV_API_URL, data=body, method="POST",
+
+def _merge_aliases(vulns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse records naming the same vulnerability (GO-…, GHSA-…, CVE-…),
+    keeping the best-scored record and the union of ids and references."""
+    groups: list[dict[str, Any]] = []
+    for v in vulns:
+        ids = {v["id"], *v.get("aliases", [])}
+        hit = next((g for g in groups if g["_ids"] & ids), None)
+        if hit is None:
+            groups.append({**v, "_ids": ids})
+            continue
+        hit["_ids"] |= ids
+        if (v.get("score") or -1) > (hit.get("score") or -1):
+            keep = {k: hit[k] for k in ("_ids", "references", "fixed")}
+            hit.clear(); hit.update(v); hit.update(keep)
+        hit["references"] = list(dict.fromkeys(hit.get("references", []) + v.get("references", [])))
+        hit["fixed"] = list(dict.fromkeys(hit.get("fixed", []) + v.get("fixed", [])))
+    out = []
+    for g in groups:
+        ids = g.pop("_ids")
+        g["aliases"] = sorted(i for i in ids if i != g["id"])
+        cves = sorted(i for i in ids if i.startswith("CVE-"))
+        g["cve"] = cves[0] if cves else ""
+        out.append(g)
+    out.sort(key=lambda v: (-(v.get("score") if v.get("score") is not None else -1), v["id"]))
+    return out
+
+
+OSV_SCHEMA = 2          # bump when the cached summary shape changes
+OSV_VULN_URL = "https://api.osv.dev/v1/vulns/"
+
+
+def _osv_http(url: str, body: dict[str, Any] | None) -> tuple[dict[str, Any] | None, str]:
+    req = Request(url, data=json.dumps(body).encode() if body is not None else None,
+                  method="POST" if body is not None else "GET",
                   headers={"Content-Type": "application/json", "User-Agent": f"cpp-aibom/{VERSION}"})
-
-    last_err = None
-    for attempt in range(OSV_MAX_RETRIES + 1):
+    last_err = ""
+    for _attempt in range(OSV_MAX_RETRIES + 1):
         try:
             with urlopen(req, timeout=OSV_TIMEOUT) as resp:
-                payload = json.loads(resp.read().decode())
-            raw_vulns = payload.get("vulns", [])
-            summarized = _summarize_vulns(raw_vulns)
-            cache_file.write_text(json.dumps({
-                "purl": purl,
-                "queried_at": _iso_now(),
-                "summarized": summarized,
-            }))
-            return summarized
+                return json.loads(resp.read().decode()), ""
         except HTTPError as e:
             if e.code == 404:
-                # No vulns for this purl — cache empty.
-                cache_file.write_text(json.dumps({
-                    "purl": purl, "queried_at": _iso_now(), "summarized": [],
-                }))
-                return []
+                return {}, ""
             last_err = f"HTTP {e.code}"
         except URLError as e:
             last_err = f"network: {e.reason}"
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
         time.sleep(1)
-    sys.stderr.write(f"cpp-aibom: OSV.dev query failed for {purl}: {last_err}\n")
-    return []
+    return None, last_err
 
 
-def _summarize_vulns(raw_vulns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _cache_get(key: str) -> Any:
+    cache_file = OSV_CACHE_DIR / f"{_purl_hash(key)}.json"
+    if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < OSV_CACHE_TTL:
+        try:
+            return json.loads(cache_file.read_text())["value"]
+        except Exception:
+            return None
+    return None
+
+
+def _cache_put(key: str, value: Any) -> None:
+    OSV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    (OSV_CACHE_DIR / f"{_purl_hash(key)}.json").write_text(
+        json.dumps({"key": key, "queried_at": _iso_now(), "value": value}))
+
+
+def osv_query(query: dict[str, Any] | str) -> list[dict[str, Any]] | None:
+    """Query OSV.dev; return summarized advisories, or None when the lookup
+    failed (an empty list means "checked, none found"). Cached on disk.
+    A bare string is taken as a purl (the original call form)."""
+    if not query:
+        return []
+    if isinstance(query, str):
+        query = {"package": {"purl": query}}
+    key = f"v{OSV_SCHEMA} query " + json.dumps(query, sort_keys=True)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    raw: list[dict[str, Any]] = []
+    body = dict(query)
+    for _page in range(10):
+        payload, err = _osv_http(OSV_API_URL, body)
+        if payload is None:
+            sys.stderr.write(f"cpp-aibom: OSV.dev query failed for {json.dumps(query)}: {err}\n")
+            return None
+        raw.extend(payload.get("vulns", []) or [])
+        token = payload.get("next_page_token")
+        if not token:
+            break
+        body = {**query, "page_token": token}
+    summarized = _summarize_vulns(raw, query)
+    _cache_put(key, summarized)
+    return summarized
+
+
+def osv_vuln(vid: str) -> dict[str, Any] | None:
+    """One OSV record by id (cached)."""
+    key = f"v{OSV_SCHEMA} vuln {vid}"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached or None
+    payload, _err = _osv_http(OSV_VULN_URL + vid, None)
+    if payload is None:
+        return None
+    _cache_put(key, payload)
+    return payload or None
+
+
+_CVSS_MOD: list[Any] = []
+
+
+def _cvss_classes() -> tuple[Any, Any] | None:
+    """CVSS3/CVSS4 from the vendored cvss package (vendor/cvss-3.6)."""
+    if not _CVSS_MOD:
+        try:
+            sys.path.insert(0, str(REPO_ROOT / "vendor" / "cvss-3.6"))
+            from cvss import CVSS3, CVSS4  # type: ignore
+            _CVSS_MOD.append((CVSS3, CVSS4))
+        except Exception as e:  # scores then show as unpublished
+            sys.stderr.write(f"cpp-aibom: cvss package unavailable: {e}\n")
+            _CVSS_MOD.append(None)
+    return _CVSS_MOD[0]
+
+
+def cvss_base_score(vector: str) -> tuple[float, str] | None:
+    """(base score, CVSS version) for a CVSS v3.x or v4.0 vector."""
+    classes = _cvss_classes()
+    if not classes or not vector:
+        return None
+    CVSS3, CVSS4 = classes
+    try:
+        if vector.startswith("CVSS:4.0/"):
+            return float(CVSS4(vector).base_score), "4.0"
+        if vector.startswith(("CVSS:3.0/", "CVSS:3.1/")):
+            return float(CVSS3(vector).scores()[0]), vector[5:8]
+    except Exception:
+        return None
+    return None
+
+
+def _severity_for(score: float | None) -> str:
+    if score is None:
+        return "UNKNOWN"
+    if score >= 9.0:
+        return "CRITICAL"
+    if score >= 7.0:
+        return "HIGH"
+    if score >= 4.0:
+        return "MEDIUM"
+    if score > 0:
+        return "LOW"
+    return "NONE"
+
+
+def _best_cvss(record: dict[str, Any]) -> tuple[float | None, str, str]:
+    best: tuple[float | None, str, str] = (None, "", "")
+    for rating in record.get("severity", []) or []:
+        res = cvss_base_score(rating.get("score", ""))
+        if res and (best[0] is None or res[0] > best[0]):
+            best = (res[0], res[1], rating["score"])
+    return best
+
+
+def _fixed_events(record: dict[str, Any], query: dict[str, Any]) -> list[str]:
+    """Fixed / last-affected points for the package the query asked about."""
+    want_purl = ((query.get("package") or {}).get("purl") or "").split("@")[0]
+    want_repo = (query.get("package") or {}).get("name", "")
+    out: list[str] = []
+    for aff in record.get("affected", []) or []:
+        pkg = aff.get("package") or {}
+        if want_purl and pkg.get("purl", "").split("@")[0] not in ("", want_purl):
+            continue
+        for rng in aff.get("ranges", []) or []:
+            if rng.get("type") == "GIT" and want_repo and re.sub(r"\.git$", "", rng.get("repo", "").rstrip("/")) \
+                    not in ("", want_repo.rstrip("/")):
+                continue
+            for ev in rng.get("events", []) or []:
+                if "fixed" in ev:
+                    out.append(f"fixed in {ev['fixed']}")
+                elif "last_affected" in ev:
+                    out.append(f"last affected {ev['last_affected']}")
+    return list(dict.fromkeys(out))[:6]
+
+
+def _summarize_vulns(raw_vulns: list[dict[str, Any]], query: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     out = []
     for v in raw_vulns:
-        sev_label = "UNKNOWN"
-        max_score = -1.0
-        # 1. CVSS vectors (highest signal — the standard CVE path).
-        for rating in v.get("severity", []) or []:
-            score_str = rating.get("score", "")
-            num = _cvss_base_score(score_str)
-            if num is not None and num > max_score:
-                max_score = num
-        if max_score >= 9.0:
-            sev_label = "CRITICAL"
-        elif max_score >= 7.0:
-            sev_label = "HIGH"
-        elif max_score >= 4.0:
-            sev_label = "MEDIUM"
-        elif max_score >= 0:
-            sev_label = "LOW"
-        # 2. database_specific.severity (some sources put a plain string here).
-        if sev_label == "UNKNOWN":
+        if v.get("withdrawn"):
+            continue
+        score, version, vector = _best_cvss(v)
+        source = v.get("id", "")
+        if score is None:
+            # GO-/OSV- records often carry no vector; their CVE or GHSA alias may.
+            for alias in v.get("aliases", []) or []:
+                if not alias.startswith(("CVE-", "GHSA-")):
+                    continue
+                rec = osv_vuln(alias)
+                if rec:
+                    score, version, vector = _best_cvss(rec)
+                    if score is not None:
+                        source = alias
+                        break
+        label = _severity_for(score)
+        if score is None:
             ds = v.get("database_specific") or {}
-            if isinstance(ds, dict):
-                ds_sev = ds.get("severity")
-                if isinstance(ds_sev, str) and ds_sev.upper() in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}:
-                    sev_label = ds_sev.upper()
-        # 3. Heuristic for OSS-Fuzz entries (OSV-YYYY-N) which carry no rating:
-        #    crash-class keywords in summary imply HIGH severity (memory-safety bugs
-        #    in C/C++ are usually exploitable). Bias up rather than down — false
-        #    HIGH is recoverable, missed CRITICAL is not.
-        if sev_label == "UNKNOWN":
-            text = ((v.get("summary") or "") + " " + (v.get("details") or "")).lower()
-            if any(k in text for k in (
-                "heap-buffer-overflow", "stack-buffer-overflow", "use-after-free",
-                "out-of-bounds", "integer-overflow", "null-deref", "double-free",
-                "uninitialized", "global-buffer-overflow", "memory leak",
-            )):
-                sev_label = "HIGH"
+            ds_sev = ds.get("severity") if isinstance(ds, dict) else None
+            if isinstance(ds_sev, str) and ds_sev.upper() in {"CRITICAL", "HIGH", "MEDIUM", "MODERATE", "LOW"}:
+                label = "MEDIUM" if ds_sev.upper() == "MODERATE" else ds_sev.upper()
+        ds = v.get("database_specific") or {}
         out.append({
             "id": v.get("id", ""),
-            "aliases": v.get("aliases", []),
-            "summary": (v.get("summary") or v.get("details", "")).strip()[:240],
-            "severity": sev_label,
-            "score": max_score if max_score >= 0 else None,
-            "references": [r.get("url", "") for r in (v.get("references") or [])[:3]],
+            "aliases": v.get("aliases", []) or [],
+            "summary": (v.get("summary") or v.get("details") or "").strip()[:240],
+            "details": (v.get("details") or "").strip()[:2000],
+            "severity": label,
+            "score": score,
+            "cvss_version": version,
+            "cvss_vector": vector,
+            "score_source": source if score is not None else "",
+            "published": v.get("published", ""),
+            "modified": v.get("modified", ""),
+            "fixed": _fixed_events(v, query or {}),
+            "cwe_ids": (ds.get("cwe_ids") if isinstance(ds, dict) else None) or [],
+            "url": f"https://osv.dev/vulnerability/{v.get('id', '')}",
+            "references": [r.get("url", "") for r in (v.get("references") or []) if r.get("url")][:12],
         })
     return out
-
-
-_CVSS_BASE_RE = re.compile(r'CVSS:[\d.]+/[^/]*?\bAV:', re.IGNORECASE)
-
-
-def _cvss_base_score(vector: str) -> float | None:
-    # OSV returns full CVSS vectors as strings. We parse out the metrics naively
-    # and use a lookup — sufficient for severity-band classification.
-    if not vector or "CVSS" not in vector:
-        return None
-    # OSV sometimes includes a /baseScore=X.Y suffix; prefer that when present.
-    m = re.search(r'baseScore=(\d+(?:\.\d+)?)', vector)
-    if m:
-        try:
-            return float(m.group(1))
-        except ValueError:
-            pass
-    # Approximate from AV/AC/PR/UI/S/C/I/A — full CVSS calc is overkill.
-    # Use AV (Attack Vector) as primary band: N=high, A=med, L/P=low.
-    av = re.search(r'AV:([NALP])', vector)
-    s = re.search(r'/S:([UC])', vector)
-    if not av:
-        return None
-    base = {"N": 8.0, "A": 6.5, "L": 5.0, "P": 4.0}.get(av.group(1), 5.0)
-    if s and s.group(1) == "C":  # scope changed = bump
-        base = min(base + 1.0, 10.0)
-    return base
 
 
 def enrich_with_osv(detected: list[dict[str, Any]]) -> None:
@@ -876,6 +993,7 @@ def emit_aibom_json(target: Path, components: list[dict[str, Any]]) -> dict[str,
         "version": VERSION,
         "scan_time": _iso_now(),
         "target": str(target),
+        "target_commit": _root_component(target, "").get("version", ""),
         "aibom_analysis": {
             "summary": {
                 "total_components": len(components),

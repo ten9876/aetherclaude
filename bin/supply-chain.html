@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AetherSDR Supply Chain</title>
+<meta name="description" content="Every third-party package AetherSDR ships or links, with the open CVEs in the version it uses.">
+<style>
+:root{--bg:#060b13;--bg-1:#0a121e;--bg-2:#0e1a2a;--bg-3:#12233a;--panel:rgba(18,34,56,.55);--ink:#eaf2fb;--ink-soft:#c4d4e8;--muted:#8598b4;--muted-dim:#5f708a;--line:rgba(120,165,210,.12);--line-hi:rgba(120,190,230,.28);--accent:#3aa7ff;--accent-bright:#5de3ff;--good:#27a86f;--warn:#b3831c;--crit:#e8506a;--gold:#e0b84a;--sev-critical:#e8506a;--sev-high:#f08a3c;--sev-medium:#e0b84a;--sev-low:#5fa8d3;--sev-none:#5f708a;--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,sans-serif;--mono:'SF Mono','JetBrains Mono','Fira Code',ui-monospace,Menlo,monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink-soft);font-family:var(--sans);font-size:13px;padding:24px 16px}
+.wrap{max-width:1200px;margin:0 auto}
+a{color:var(--accent-bright);text-decoration:none}
+a:hover{text-decoration:underline}
+h1{font-size:20px;font-weight:400;color:var(--accent-bright);letter-spacing:.5px}
+.sub{color:var(--muted);margin-top:4px;line-height:1.5}
+.sub code{font-family:var(--mono);font-size:12px;color:var(--ink-soft)}
+.heroes{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin:18px 0 14px}
+.hero{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px 18px}
+.hero .t{font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--muted);font-weight:600}
+.hero .n{font-size:30px;line-height:1.2;color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px}
+.hero .d{color:var(--muted);font-size:12px;margin-top:2px}
+.hero.crit .n{color:var(--sev-critical)}.hero.high .n{color:var(--sev-high)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px 16px;margin-bottom:14px;overflow-x:auto}
+.ph{font-size:12px;font-weight:600;letter-spacing:.4px;color:var(--muted);text-transform:uppercase;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;text-transform:none;letter-spacing:0;font-weight:400}
+.tab{background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink-soft);border-radius:8px;padding:5px 11px;cursor:pointer;font-size:12px;font-family:var(--sans)}
+.tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
+input.q{background:var(--bg-2);border:1px solid var(--line-hi);color:var(--ink);border-radius:8px;padding:5px 10px;font-size:12px;width:200px;font-family:var(--sans)}
+table{width:100%;border-collapse:collapse;min-width:860px}
+th{font-size:11px;font-weight:500;color:var(--muted-dim);text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;font-size:12px;white-space:nowrap;vertical-align:middle}
+th.r,td.r{text-align:right}
+td.mono{font-family:var(--mono)}
+tr.row{cursor:pointer}
+tr.row:hover td{background:var(--bg-2)}
+tr.row.open td{background:var(--bg-2)}
+tr.row.quiet{cursor:default}
+tr.row.quiet:hover td{background:none}
+.pkg b{color:var(--ink);font-weight:600}
+.pkg .car{display:inline-block;width:12px;color:var(--muted);font-size:10px;transition:transform .15s}
+tr.row.open .car{transform:rotate(90deg)}
+.ver{max-width:170px;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:bottom}
+.dim{color:var(--muted)}
+.zero{color:var(--muted-dim)}
+.score{display:inline-block;min-width:38px;text-align:center;font-family:var(--mono);font-weight:700;font-size:12px;border-radius:5px;padding:1px 6px;color:#041019}
+.sev-CRITICAL{background:var(--sev-critical)}.sev-HIGH{background:var(--sev-high)}.sev-MEDIUM{background:var(--sev-medium)}.sev-LOW{background:var(--sev-low)}
+.sev-NONE,.sev-UNKNOWN{background:none;color:var(--muted);border:1px solid var(--line-hi)}
+.badge{font-size:10px;font-weight:700;letter-spacing:.3px;border:1px solid var(--muted);color:var(--muted);border-radius:4px;padding:0 5px}
+.badge.opt{border-color:var(--line-hi);color:var(--muted-dim)}
+.status{font-size:11px;color:var(--muted-dim);font-style:italic}
+.status.fail{color:var(--warn)}
+.clean{color:var(--good);font-size:11px}
+tr.ex td{background:var(--bg-1);padding:0;white-space:normal}
+.exp{padding:12px 16px 14px}
+.meta{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:11px;color:var(--muted);margin-bottom:10px}
+.meta b{color:var(--ink-soft);font-weight:500}
+.meta a{word-break:break-all}
+.cve{background:var(--bg-2);border:1px solid var(--line);border-radius:12px;padding:10px 14px;margin-top:8px}
+.cve .hd{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.cve .id{font-family:var(--mono);font-weight:700;color:var(--ink);font-size:12.5px}
+.cve .alias{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.cve .sm{margin-top:6px;color:var(--ink-soft);line-height:1.5}
+.cve .facts{margin-top:6px;display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:10px;row-gap:2px;font-size:11px}
+.cve .facts .k{color:var(--muted-dim)}
+.cve .facts span{overflow-wrap:anywhere}
+.cve .facts code{font-family:var(--mono);font-size:11px;color:var(--ink-soft)}
+.cve .refs{margin-top:6px;display:flex;flex-direction:column;gap:2px;font-size:11px}
+.cve .refs a{overflow-wrap:anywhere}
+.foot{color:var(--muted-dim);font-size:11px;line-height:1.6;margin-top:6px}
+.err{color:var(--crit);padding:18px 4px}
+@media (max-width:700px){
+  input.q{width:100%}
+  .panel{padding:12px 8px}
+  table{min-width:0}
+  /* Version and delivery are repeated in the expanded row. */
+  th:nth-child(2),th:nth-child(3),tr.row td:nth-child(2),tr.row td:nth-child(3){display:none}
+  td{padding:7px 5px}
+  .pkg b{white-space:normal;word-break:break-all}
+  tr.row td.pkg{white-space:normal}
+  .exp{padding:10px 8px 12px}
+  .cve{padding:10px}
+  .heroes{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .hero{padding:12px 14px}.hero .n{font-size:24px}
+}
+</style></head>
+<body><div class="wrap">
+<h1>AetherSDR Supply Chain</h1>
+<div class="sub" id="sub">Every third-party package AetherSDR ships, links or downloads, with the open advisories in the version it uses.</div>
+<div class="heroes" id="heroes"></div>
+<div class="panel">
+  <div class="ph"><span id="count">Packages</span>
+    <span class="tabs" id="tabs"></span>
+    <input class="q" id="q" type="search" placeholder="Filter packages…" aria-label="Filter packages">
+  </div>
+  <table><thead><tr>
+    <th>Package</th><th>Version</th><th>Delivery</th><th class="r">Highest CVSS</th><th>Most critical CVE</th><th class="r">Open</th>
+  </tr></thead><tbody id="rows"><tr><td colspan="6" class="dim">Loading…</td></tr></tbody></table>
+</div>
+<div class="foot" id="foot"></div>
+</div>
+<script>
+'use strict';
+// Every value below comes from OSV.dev or the project's manifests: build
+// nodes with textContent, and accept only http(s) links.
+const SEV_ORDER = {CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, NONE: 4, UNKNOWN: 5};
+let DATA = null, TAB = 'cves', Q = '';
+const open = new Set();
+
+function el(tag, attrs, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') n.className = v;
+    else if (k === 'text') n.textContent = v;
+    else if (k === 'href') {
+      if (/^https?:\/\//i.test(v)) { n.href = v; n.rel = 'noopener noreferrer'; n.target = '_blank'; }
+      else if (/^\/[a-z0-9]/i.test(v)) n.href = v;  // same-site path
+    }
+    else n.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) n.append(k.nodeType ? k : document.createTextNode(String(k)));
+  return n;
+}
+function link(url, text) { return /^(https?:\/\/|\/[a-z0-9])/i.test(url || '') ? el('a', {href: url, text: text || url}) : el('span', {text: text || ''}); }
+function scoreBadge(score, sev) {
+  const s = SEV_ORDER[sev] != null ? sev : 'UNKNOWN';
+  return el('span', {class: 'score sev-' + s, text: score != null ? Number(score).toFixed(1) : (s === 'UNKNOWN' ? '—' : s[0] + s.slice(1).toLowerCase()),
+                     title: score != null ? s : 'No CVSS score published'});
+}
+function shortVer(p) { return p.version || (p.commit ? p.commit.slice(0, 12) : ''); }
+function fmtDate(s) { return s ? s.slice(0, 10) : ''; }
+
+function heroes(d) {
+  const box = document.getElementById('heroes'); box.textContent = '';
+  const s = d.summary;
+  const card = (cls, t, n, dtext) => box.append(el('div', {class: 'hero ' + cls}, el('div', {class: 't', text: t}), el('div', {class: 'n', text: n}), el('div', {class: 'd', text: dtext})));
+  card('crit', 'Critical', s.by_severity.CRITICAL || 0, 'open advisories, CVSS ≥ 9.0');
+  card('high', 'High', s.by_severity.HIGH || 0, 'open advisories, CVSS 7.0–8.9');
+  card('', 'Affected packages', s.affected, `of ${s.checked} checked against OSV.dev`);
+  card('', 'Packages tracked', s.total, `${s.not_checked} not checkable (no version or source)`);
+}
+
+function matches(p) {
+  if (TAB === 'cves' && !p.vulns.length) return false;
+  if (TAB === 'clean' && (p.vulns.length || p.osv_status !== 'checked')) return false;
+  if (TAB === 'unchecked' && p.osv_status === 'checked') return false;
+  if (!Q) return true;
+  const hay = [p.name, p.version, p.commit, p.purl, p.delivery, ...p.vulns.flatMap(v => [v.id, v.cve, ...(v.aliases || [])])].join(' ').toLowerCase();
+  return hay.includes(Q);
+}
+
+function render() {
+  const d = DATA, body = document.getElementById('rows');
+  body.textContent = '';
+  const list = d.packages.filter(matches);
+  document.getElementById('count').textContent = `${list.length} package${list.length === 1 ? '' : 's'}`;
+  if (!list.length) { body.append(el('tr', {}, el('td', {colspan: 6, class: 'dim', text: 'Nothing matches.'}))); return; }
+  for (const p of list) {
+    const has = p.vulns.length > 0, key = p.key;
+    const tr = el('tr', {class: 'row' + (has ? '' : ' quiet') + (open.has(key) ? ' open' : ''), tabindex: has ? 0 : null, 'aria-expanded': has ? String(open.has(key)) : null});
+    tr.append(
+      el('td', {class: 'pkg'}, el('span', {class: 'car', text: has ? '▶' : ''}), el('b', {text: p.name}), p.scope !== 'required' ? el('span', {}, ' ', el('span', {class: 'badge opt', text: p.scope})) : null),
+      el('td', {class: 'mono'}, el('span', {class: 'ver', title: p.version || p.commit || '', text: shortVer(p) || '—'})),
+      el('td', {class: 'dim', text: p.delivery || ''}),
+      el('td', {class: 'r'}, has ? scoreBadge(p.max_score, p.max_severity) : (p.osv_status === 'checked' ? el('span', {class: 'clean', text: 'none open'}) : el('span', {class: 'status' + (p.osv_status === 'lookup failed' ? ' fail' : ''), text: p.osv_status}))),
+      el('td', {class: 'mono'}, has ? (p.top_cve || p.top_id) : ''),
+      el('td', {class: 'r mono'}, has ? String(p.vulns.length) : el('span', {class: 'zero', text: '0'})));
+    if (has) {
+      const toggle = () => {
+        open.has(key) ? open.delete(key) : open.add(key);
+        history.replaceState(null, '', open.has(key) ? '#' + encodeURIComponent(p.name) : location.pathname);
+        render();
+      };
+      tr.addEventListener('click', toggle);
+      tr.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+    }
+    body.append(tr);
+    if (has && open.has(key)) body.append(el('tr', {class: 'ex'}, el('td', {colspan: 6}, detail(p))));
+  }
+}
+
+function detail(p) {
+  const box = el('div', {class: 'exp'});
+  const meta = el('div', {class: 'meta'});
+  const add = (k, v) => { if (v) meta.append(el('span', {}, k + ' ', v.nodeType ? v : el('b', {text: v}))); };
+  add('Version', p.version || null); add('Commit', p.commit || null); add('License', p.license || null);
+  add('purl', p.purl || null); if (p.repo_url) add('Source', link(p.repo_url));
+  box.append(meta);
+  for (const v of p.vulns) {
+    const hd = el('div', {class: 'hd'}, scoreBadge(v.score, v.severity), el('span', {class: 'id', text: v.cve || v.id}));
+    const others = [v.id, ...(v.aliases || [])].filter(a => a !== (v.cve || v.id));
+    if (others.length) hd.append(el('span', {class: 'alias', text: others.join(' · ')}));
+    const card = el('div', {class: 'cve'}, hd);
+    if (v.summary) card.append(el('div', {class: 'sm', text: v.summary}));
+    const facts = el('div', {class: 'facts'});
+    const fact = (k, val) => { if (val) facts.append(el('span', {class: 'k', text: k}), val.nodeType ? val : el('span', {text: val})); };
+    fact('CVSS', v.cvss_vector ? el('span', {}, el('code', {text: v.cvss_vector}), ` (v${v.cvss_version}${v.score_source && v.score_source !== v.id ? ', from ' + v.score_source : ''})`) : 'No CVSS score published');
+    fact('Fix', (v.fixed || []).join('; '));
+    fact('CWE', (v.cwe_ids || []).join(', '));
+    fact('Published', fmtDate(v.published));
+    fact('Modified', fmtDate(v.modified));
+    card.append(facts);
+    const refs = el('div', {class: 'refs'}, link(v.url, 'OSV.dev: ' + v.id));
+    for (const r of (v.references || []).slice(0, 6)) refs.append(link(r));
+    card.append(refs);
+    box.append(card);
+  }
+  return box;
+}
+
+function tabs(d) {
+  const t = document.getElementById('tabs'); t.textContent = '';
+  const n = {cves: d.packages.filter(p => p.vulns.length).length, all: d.packages.length,
+             clean: d.packages.filter(p => !p.vulns.length && p.osv_status === 'checked').length,
+             unchecked: d.packages.filter(p => p.osv_status !== 'checked').length};
+  for (const [k, label] of [['cves', 'With open CVEs'], ['all', 'All'], ['clean', 'None open'], ['unchecked', 'Not checked']]) {
+    const b = el('button', {class: 'tab' + (TAB === k ? ' on' : ''), text: `${label} (${n[k]})`});
+    b.addEventListener('click', () => { TAB = k; tabs(d); render(); });
+    t.append(b);
+  }
+}
+
+function header(d) {
+  const sub = document.getElementById('sub');
+  sub.textContent = 'Every third-party package AetherSDR ships, links or downloads, with the open advisories in the version it uses. ';
+  const when = d.scan_time ? new Date(d.scan_time) : null;
+  sub.append(el('br'), 'Scanned ', el('b', {text: when ? when.toLocaleString() : 'unknown'}));
+  if (d.commit) sub.append(' at ', link(`https://github.com/aethersdr/AetherSDR/commit/${d.commit}`, d.commit.slice(0, 9)));
+  sub.append(' · ', link('/sbom.json', 'CycloneDX SBOM'));
+  const foot = document.getElementById('foot'); foot.textContent = '';
+  foot.append('Advisories from ', link('https://osv.dev/', 'OSV.dev'),
+    ', matched on the version, tag or pinned commit each package records. "Open" means OSV lists that version as affected; it does not say whether AetherSDR reaches the affected code. ',
+    'Highest CVSS is the base score of the highest-rated advisory (v3.x or v4.0, whichever the advisory publishes). ',
+    `Scanner cpp-aibom ${d.scanner_version || ''}; refreshed nightly.`);
+}
+
+fetch('/api/supply-chain', {cache: 'no-cache'}).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }).then(d => {
+  DATA = d;
+  d.packages.forEach((p, i) => { p.key = p.name + '\u0000' + i; });
+  if (!d.packages.some(p => p.vulns.length)) TAB = 'all';
+  // A link to /supply-chain#<package> opens that package.
+  const want = decodeURIComponent(location.hash.slice(1));
+  const hit = want && d.packages.find(p => p.name === want && p.vulns.length);
+  if (hit) open.add(hit.key);
+  header(d); heroes(d); tabs(d); render();
+  if (hit) { const r = document.querySelector('tr.row.open'); if (r) r.scrollIntoView({block: 'start'}); }
+  document.getElementById('q').addEventListener('input', e => { Q = e.target.value.trim().toLowerCase(); render(); });
+}).catch(e => {
+  const body = document.getElementById('rows'); body.textContent = '';
+  body.append(el('tr', {}, el('td', {colspan: 6, class: 'err', text: 'Supply-chain data unavailable (' + e.message + ').'})));
+});
+</script>
+</body></html>
