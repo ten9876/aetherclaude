@@ -13,6 +13,9 @@ Covers:
   - FetchContent pins from the project's own CMake files only
   - a KB match merges into the vendored record named by its third_party key
   - OSV.dev query forms: purl for Go, commit or tag for git sources
+  - a version pinned in a file (Qt: cmake/qt-pin.env) sets version, delivery
+    and purl, and a CPE-only package is looked up in NVD
+  - NVD records: best CVSS vector scored, fix version, CWE, rejected skipped
   - CycloneDX output carries version, scope, license expressions, VCS links
 """
 import importlib.machinery
@@ -131,10 +134,13 @@ def build_tree(root: Path):
         'Upstream: https://github.com/iontodirel/libmodem\nCommit: `a8a387bc235230b4cefba64c86a5d5363677997c`\n')
     (root / 'CMakeLists.txt').write_text(
         'pkg_check_modules(rtmidi REQUIRED IMPORTED_TARGET rtmidi)\n'
+        'find_package(Qt6 6.12 REQUIRED COMPONENTS Core)\n'
         'FetchContent_Declare(libASPL\n    GIT_REPOSITORY https://github.com/gavv/libASPL.git\n'
         '    GIT_TAG        v3.1.2\n)\n')
     (tp / 'zstd' / 'CMakeLists.txt').write_text(
         'FetchContent_Declare(ignored GIT_REPOSITORY https://github.com/x/y GIT_TAG v9.9)\n')
+    (root / 'cmake').mkdir()
+    (root / 'cmake' / 'qt-pin.env').write_text('# pin\nQT_VERSION=6.12.0\nQT_SOURCE_FLOOR=6.12\n')
     (root / 'src').mkdir()
     (root / 'src' / 'midi.cpp').write_text('#include <RtMidi.h>\n')
 
@@ -182,10 +188,15 @@ with tempfile.TemporaryDirectory() as tmp:
     kb = [{'name': 'RtMidi', 'category': 'hardware', 'license': 'MIT', 'purl': 'pkg:github/thestk/rtmidi',
            'third_party': 'rtmidi', 'detect': {'include': ['RtMidi.h'], 'cmake': ['rtmidi']}},
           {'name': 'Vulkan', 'category': 'system', 'license': 'Apache-2.0', 'purl': 'pkg:generic/vulkan-loader',
-           'scope': 'optional', 'detect': {'include': [], 'cmake': ['rtmidi']}}]
+           'scope': 'optional', 'detect': {'include': [], 'cmake': ['rtmidi']}},
+          {'name': 'Qt6', 'category': 'ui', 'license': 'LGPL-3.0-or-later', 'purl': 'pkg:generic/qt',
+           'cpe': 'cpe:2.3:a:qt:qt',
+           'version_pin': {'file': 'cmake/qt-pin.env', 'key': 'QT_VERSION', 'delivery': 'bundled in release builds'},
+           'detect': {'include': [], 'cmake': ['Qt6']}}]
     sig = aibom.extract_signals(root, sources, cmakes)
     detected = [r for r in (aibom.match_component(c, sig) for c in kb) if r]
     merged = aibom.merge_inventory(detected, declared, aibom.scan_vendored(root), fetched, kb)
+    aibom.apply_version_pins(merged, root, kb)
     mby = {}
     for r in merged:
         mby.setdefault(r['name'], []).append(r)
@@ -207,6 +218,43 @@ with tempfile.TemporaryDirectory() as tmp:
            {'version': 'v1.3.1', 'package': {'name': 'https://github.com/madler/zlib', 'ecosystem': 'GIT'}}])
     check('osv nothing to ask', aibom.osv_queries(mby['Vulkan'][0]), [])
 
+    qt = mby['Qt6'][0]
+    check('qt pin', (qt['version'], qt['delivery'], qt['purl'], qt['cpe']),
+          ('6.12.0', 'bundled in release builds', 'pkg:generic/qt@6.12.0', 'cpe:2.3:a:qt:qt'))
+    check('qt not an OSV query', aibom.osv_queries(qt), [])
+    asked = []
+    real_nvd = aibom.nvd_query
+    aibom.nvd_query = lambda cpe: asked.append(cpe) or [{'id': 'CVE-1'}]
+    try:
+        got = aibom.osv_lookup(dict(qt))
+        check('qt via NVD', (asked, got), (['cpe:2.3:a:qt:qt:6.12.0'], [{'id': 'CVE-1'}]))
+        rec = dict(qt)
+        aibom.nvd_query = lambda cpe: None
+        aibom.osv_lookup(rec)
+        check('NVD failure reported', (rec['osv_status'], rec['vuln_source']), ('lookup failed', 'NVD'))
+        rec = dict(qt, version='')
+        aibom.osv_lookup(rec)
+        check('no pin, no lookup', rec['osv_status'], 'not checked: version unknown')
+    finally:
+        aibom.nvd_query = real_nvd
+
+    nvd = [{'id': 'CVE-2025-5683', 'published': '2025-06-01T00:00:00.000', 'lastModified': '2025-07-01T00:00:00.000',
+            'descriptions': [{'lang': 'es', 'value': 'x'}, {'lang': 'en', 'value': ' Heap overflow in ICNS. '}],
+            'metrics': {'cvssMetricV31': [{'cvssData': {'vectorString': 'CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H'}}],
+                        'cvssMetricV40': [{'cvssData': {'vectorString': 'CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N'}}]},
+            'weaknesses': [{'description': [{'value': 'CWE-122'}, {'value': 'NVD-CWE-Other'}]}],
+            'configurations': [{'nodes': [{'cpeMatch': [
+                {'vulnerable': True, 'criteria': 'cpe:2.3:a:qt:qt:*:*:*:*:*:*:*:*', 'versionEndExcluding': '6.8.4'},
+                {'vulnerable': True, 'criteria': 'cpe:2.3:a:other:thing:*:*:*:*:*:*:*:*', 'versionEndExcluding': '1.0'}]}]}],
+            'references': [{'url': 'https://codereview.qt-project.org/c/1'}]},
+           {'id': 'CVE-2020-0001', 'vulnStatus': 'Rejected'}]
+    out = aibom._summarize_nvd(nvd, 'cpe:2.3:a:qt:qt:6.5.0')
+    check('nvd rejected skipped', [v['id'] for v in out], ['CVE-2025-5683'])
+    v = out[0]
+    check('nvd fields', (v['score'], v['cvss_version'], v['severity'], v['summary'], v['fixed'], v['cwe_ids'], v['url']),
+          (9.3, '4.0', 'CRITICAL', 'Heap overflow in ICNS.', ['fixed in 6.8.4'], ['CWE-122'],
+           'https://nvd.nist.gov/vuln/detail/CVE-2025-5683'))
+
     for r in merged:
         r.setdefault('vulnerabilities', [])
     cdx = aibom.emit_cyclonedx(root, merged)
@@ -217,6 +265,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check('cdx MIT id', cby['rtmidi']['licenses'], [{'license': {'id': 'MIT'}}])
     check('cdx vcs', cby['WDSP']['externalReferences'],
           [{'type': 'vcs', 'url': 'https://github.com/TAPR/OpenHPSDR-wdsp'}])
+    check('cdx cpe', cby['Qt6']['cpe'], 'cpe:2.3:a:qt:qt:6.12.0:*:*:*:*:*:*:*')
     check('cdx unique refs', len({c['bom-ref'] for c in cdx['components']}), len(cdx['components']))
     json.dumps(cdx)
 

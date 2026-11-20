@@ -31,6 +31,7 @@ def _package(c):
         "scope": c.get("scope") or "required",
         "delivery": c.get("delivery", ""),
         "osv_status": status,
+        "vuln_source": c.get("vuln_source", ""),
         "max_score": top.get("score"),
         "max_severity": top.get("severity") or ("UNKNOWN" if vulns else ""),
         "top_id": top.get("id", ""),

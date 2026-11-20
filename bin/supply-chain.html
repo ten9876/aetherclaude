@@ -98,7 +98,7 @@ tr.ex td{background:var(--bg-1);padding:0;white-space:normal}
 </div>
 <script>
 'use strict';
-// Every value below comes from OSV.dev or the project's manifests: build
+// Every value below comes from OSV.dev, NVD or the project's manifests: build
 // nodes with textContent, and accept only http(s) links.
 const SEV_ORDER = {CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, NONE: 4, UNKNOWN: 5};
 let DATA = null, TAB = 'cves', Q = '';
@@ -134,7 +134,7 @@ function heroes(d) {
   const card = (cls, t, n, dtext) => box.append(el('div', {class: 'hero ' + cls}, el('div', {class: 't', text: t}), el('div', {class: 'n', text: n}), el('div', {class: 'd', text: dtext})));
   card('crit', 'Critical', s.by_severity.CRITICAL || 0, 'open advisories, CVSS ≥ 9.0');
   card('high', 'High', s.by_severity.HIGH || 0, 'open advisories, CVSS 7.0–8.9');
-  card('', 'Affected packages', s.affected, `of ${s.checked} checked against OSV.dev`);
+  card('', 'Affected packages', s.affected, `of ${s.checked} checked for advisories`);
   card('', 'Packages tracked', s.total, `${s.not_checked} not checkable (no version or source)`);
 }
 
@@ -198,7 +198,7 @@ function detail(p) {
     fact('Published', fmtDate(v.published));
     fact('Modified', fmtDate(v.modified));
     card.append(facts);
-    const refs = el('div', {class: 'refs'}, link(v.url, 'OSV.dev: ' + v.id));
+    const refs = el('div', {class: 'refs'}, link(v.url, (/^https:\/\/nvd\.nist\.gov\//.test(v.url || '') ? 'NVD: ' : 'OSV.dev: ') + v.id));
     for (const r of (v.references || []).slice(0, 6)) refs.append(link(r));
     card.append(refs);
     box.append(card);
@@ -226,8 +226,8 @@ function header(d) {
   if (d.commit) sub.append(' at ', link(`https://github.com/aethersdr/AetherSDR/commit/${d.commit}`, d.commit.slice(0, 9)));
   sub.append(' · ', link('/sbom.json', 'CycloneDX SBOM'));
   const foot = document.getElementById('foot'); foot.textContent = '';
-  foot.append('Advisories from ', link('https://osv.dev/', 'OSV.dev'),
-    ', matched on the version, tag or pinned commit each package records. "Open" means OSV lists that version as affected; it does not say whether AetherSDR reaches the affected code. ',
+  foot.append('Advisories from ', link('https://osv.dev/', 'OSV.dev'), ', and from ', link('https://nvd.nist.gov/', 'NVD'),
+    ' for packages OSV.dev has no source for (Qt), matched on the version, tag or pinned commit each package records. "Open" means the database lists that version as affected; it does not say whether AetherSDR reaches the affected code. ',
     'Highest CVSS is the base score of the highest-rated advisory (v3.x or v4.0, whichever the advisory publishes). ',
     `Scanner cpp-aibom ${d.scanner_version || ''}; refreshed nightly.`);
 }

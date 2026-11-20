@@ -59,9 +59,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 
 
 def _real_home() -> Path:
@@ -703,6 +704,40 @@ def merge_inventory(detected: list[dict[str, Any]], declared: list[dict[str, Any
     return out
 
 
+def _read_pin(path: Path, key: str) -> str:
+    """KEY=value from a shell-style pin file (comments and quotes allowed)."""
+    try:
+        for line in path.read_text().splitlines():
+            m = re.match(r'\s*%s=(.*)$' % re.escape(key), line)
+            if m:
+                return m.group(1).split('#', 1)[0].strip().strip('"\'')
+    except OSError:
+        pass
+    return ""
+
+
+def apply_version_pins(records: list[dict[str, Any]], target: Path, kb: list[dict[str, Any]]) -> None:
+    """Version, delivery and CPE for KB components whose version the project
+    pins in a file (Qt: cmake/qt-pin.env), rather than in a vendored tree."""
+    kb_by_name = {c["name"]: c for c in kb}
+    for rec in records:
+        meta = kb_by_name.get(rec["name"], {})
+        if meta.get("cpe"):
+            rec["cpe"] = meta["cpe"]
+        pin = meta.get("version_pin")
+        if not pin or rec.get("version"):
+            continue
+        version = _read_pin(target / pin["file"], pin["key"])
+        if not version:
+            continue
+        rec["version"] = version
+        if pin.get("delivery"):
+            rec["delivery"] = pin["delivery"]
+        if rec.get("purl", "").startswith("pkg:") and "@" not in rec["purl"]:
+            rec["purl"] = f'{rec["purl"]}@{version}'
+        rec["detection"] = f'{rec.get("detection", "")}; pinned — {pin["file"]} {pin["key"]}={version}'.lstrip("; ")
+
+
 # ── OSV.dev client ─────────────────────────────────────────────────────────────
 def osv_queries(rec: dict[str, Any]) -> list[dict[str, Any]]:
     """OSV.dev query bodies for a component. Versioned purls of ecosystems
@@ -728,6 +763,11 @@ def osv_lookup(rec: dict[str, Any]) -> list[dict[str, Any]]:
     """Advisories affecting this component, one per vulnerability (records
     that alias each other are merged). Sets rec["osv_status"]."""
     queries = osv_queries(rec)
+    if not queries and rec.get("cpe") and rec.get("version"):
+        found_nvd = nvd_query(f'{rec["cpe"]}:{rec["version"]}')
+        rec["osv_status"] = "lookup failed" if found_nvd is None else "checked"
+        rec["vuln_source"] = "NVD"
+        return found_nvd or []
     if not queries:
         if not (rec.get("version") or rec.get("commit")):
             rec["osv_status"] = "not checked: version unknown"
@@ -743,6 +783,7 @@ def osv_lookup(rec: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         found.extend(res)
     rec["osv_status"] = "lookup failed" if failed and not found else "checked"
+    rec["vuln_source"] = "OSV.dev"
     return _merge_aliases(found)
 
 
@@ -777,7 +818,7 @@ OSV_SCHEMA = 2          # bump when the cached summary shape changes
 OSV_VULN_URL = "https://api.osv.dev/v1/vulns/"
 
 
-def _osv_http(url: str, body: dict[str, Any] | None) -> tuple[dict[str, Any] | None, str]:
+def _osv_http(url: str, body: dict[str, Any] | None, retry_wait: float = 1) -> tuple[dict[str, Any] | None, str]:
     req = Request(url, data=json.dumps(body).encode() if body is not None else None,
                   method="POST" if body is not None else "GET",
                   headers={"Content-Type": "application/json", "User-Agent": f"cpp-aibom/{VERSION}"})
@@ -794,7 +835,7 @@ def _osv_http(url: str, body: dict[str, Any] | None) -> tuple[dict[str, Any] | N
             last_err = f"network: {e.reason}"
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
-        time.sleep(1)
+        time.sleep(retry_wait)
     return None, last_err
 
 
@@ -854,6 +895,84 @@ def osv_vuln(vid: str) -> dict[str, Any] | None:
         return None
     _cache_put(key, payload)
     return payload or None
+
+
+NVD_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+
+
+def nvd_query(cpe: str) -> list[dict[str, Any]] | None:
+    """CVEs whose NVD configurations match this versioned CPE (the products
+    OSV.dev has no source for, such as Qt). None when the lookup failed."""
+    key = f"v{OSV_SCHEMA} nvd {cpe}"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    raw: list[dict[str, Any]] = []
+    start = 0
+    for _page in range(10):
+        url = f"{NVD_API_URL}?virtualMatchString={quote(cpe, safe=':*')}&startIndex={start}"
+        payload, err = _osv_http(url, None, retry_wait=7)
+        if payload is None:
+            sys.stderr.write(f"cpp-aibom: NVD query failed for {cpe}: {err}\n")
+            return None
+        page = payload.get("vulnerabilities", []) or []
+        raw.extend(x.get("cve", {}) for x in page)
+        start += len(page)
+        if not page or start >= payload.get("totalResults", 0):
+            break
+    summarized = _summarize_nvd(raw, cpe)
+    _cache_put(key, summarized)
+    return summarized
+
+
+def _nvd_fixed(cve: dict[str, Any], cpe: str) -> list[str]:
+    product = ":".join(cpe.split(":")[:5]) + ":"
+    out: list[str] = []
+    for conf in cve.get("configurations", []) or []:
+        for node in conf.get("nodes", []) or []:
+            for m in node.get("cpeMatch", []) or []:
+                if not (m.get("vulnerable") and m.get("criteria", "").startswith(product)):
+                    continue
+                if m.get("versionEndExcluding"):
+                    out.append(f'fixed in {m["versionEndExcluding"]}')
+                elif m.get("versionEndIncluding"):
+                    out.append(f'last affected {m["versionEndIncluding"]}')
+    return list(dict.fromkeys(out))
+
+
+def _summarize_nvd(cves: list[dict[str, Any]], cpe: str) -> list[dict[str, Any]]:
+    out = []
+    for c in cves:
+        if c.get("vulnStatus") == "Rejected":
+            continue
+        best: tuple[float | None, str, str] = (None, "", "")
+        for metric_list in (c.get("metrics") or {}).values():
+            for m in metric_list or []:
+                vector = (m.get("cvssData") or {}).get("vectorString", "")
+                res = cvss_base_score(vector)
+                if res and (best[0] is None or res[0] > best[0]):
+                    best = (res[0], res[1], vector)
+        desc = next((d.get("value", "") for d in c.get("descriptions", []) or [] if d.get("lang") == "en"), "")
+        cwes = [d.get("value", "") for w in c.get("weaknesses", []) or [] for d in w.get("description", []) or []
+                if d.get("value", "").startswith("CWE-")]
+        out.append({
+            "id": c.get("id", ""),
+            "aliases": [],
+            "summary": desc.strip()[:240],
+            "details": desc.strip()[:2000],
+            "severity": _severity_for(best[0]),
+            "score": best[0],
+            "cvss_version": best[1],
+            "cvss_vector": best[2],
+            "score_source": c.get("id", "") if best[0] is not None else "",
+            "published": c.get("published", ""),
+            "modified": c.get("lastModified", ""),
+            "fixed": _nvd_fixed(c, cpe),
+            "cwe_ids": list(dict.fromkeys(cwes)),
+            "url": f'https://nvd.nist.gov/vuln/detail/{c.get("id", "")}',
+            "references": [r.get("url", "") for r in c.get("references", []) or [] if r.get("url")][:12],
+        })
+    return out
 
 
 _CVSS_MOD: list[Any] = []
@@ -1042,12 +1161,14 @@ def emit_cyclonedx(target: Path, components: list[dict[str, Any]]) -> dict[str, 
             {"name": "aibom:detection", "value": c["detection"]},
             {"name": "aibom:location", "value": c["location"]},
         ]
-        for key in ("delivery", "commit", "third_party"):
+        for key in ("delivery", "commit", "third_party", "vuln_source"):
             if c.get(key):
                 props.append({"name": f"aibom:{key}", "value": c[key]})
         comp["properties"] = props
         if c["purl"]:
             comp["purl"] = c["purl"]
+        if c.get("cpe") and c.get("version"):
+            comp["cpe"] = f'{c["cpe"]}:{c["version"]}:*:*:*:*:*:*:*'
         if c["license"]:
             comp["licenses"] = [_license_choice(c["license"])]
         if c.get("repo_url"):
@@ -1254,6 +1375,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
             detected.append(rec)
     detected = merge_inventory(detected, parse_third_party_licenses(target), scan_vendored(target),
                                scan_fetchcontent(cmakes, target), kb)
+    apply_version_pins(detected, target, kb)
     detected = apply_overrides(detected, cfg)
     detected.sort(key=lambda c: (c["category"], c["name"]))
 

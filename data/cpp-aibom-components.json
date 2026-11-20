@@ -1,5 +1,5 @@
 {
-  "$comment": "cpp-aibom knowledge base. Each entry's `detect` block lists signals the scanner matches in source/CMake files. Confidence = high (both include AND cmake fire), medium (only one fires), or low (fuzzy only). Adding a component is a data-only PR. Schema: name (unique), category, description, license (SPDX), purl (used for OSV.dev), detect.include (header substring list), detect.cmake (find_package/target_link_libraries/include name list), ai_ml (bool: ML inference component, changes CycloneDX type to ml-model), third_party (vendored directory name, merges the KB match with that directory's record), repo_url (upstream repository, used for OSV.dev GIT lookups), scope (CycloneDX scope when not required).",
+  "$comment": "cpp-aibom knowledge base. Each entry's `detect` block lists signals the scanner matches in source/CMake files. Confidence = high (both include AND cmake fire), medium (only one fires), or low (fuzzy only). Adding a component is a data-only PR. Schema: name (unique), category, description, license (SPDX), purl (used for OSV.dev), detect.include (header substring list), detect.cmake (find_package/target_link_libraries/include name list), ai_ml (bool: ML inference component, changes CycloneDX type to ml-model), third_party (vendored directory name, merges the KB match with that directory's record), repo_url (upstream repository, used for OSV.dev GIT lookups), scope (CycloneDX scope when not required), cpe (NVD vendor:product prefix, e.g. cpe:2.3:a:qt:qt; looked up in NVD when OSV.dev has no source for it), version_pin (file + KEY=value the project pins the version in, and the delivery that implies).",
   "version": 1,
   "categories": ["dsp", "audio_io", "audio_dsp", "audio_codec", "audio_ml", "rpc", "ui", "network", "hardware", "dependency", "system", "other"],
   "components": [
@@ -197,6 +197,8 @@
       "description": "Qt 6 cross-platform application framework",
       "license": "LGPL-3.0-or-later",
       "purl": "pkg:generic/qt",
+      "cpe": "cpe:2.3:a:qt:qt",
+      "version_pin": {"file": "cmake/qt-pin.env", "key": "QT_VERSION", "delivery": "bundled in release builds"},
       "detect": {"include": ["QtCore/QObject", "QObject", "QtWidgets/QApplication"], "cmake": ["Qt6"]}
     },
     {
